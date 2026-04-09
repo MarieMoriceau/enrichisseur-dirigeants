@@ -29,6 +29,19 @@ async def index(request: Request):
 # ════════════════════════════════════════════════════════════════════
 #  PARSING — accepte Organisation, Org ID, nom, etc.
 # ════════════════════════════════════════════════════════════════════
+def parse_excel_bytes(content: bytes) -> list[dict]:
+    import openpyxl, io as _io
+    wb = openpyxl.load_workbook(_io.BytesIO(content), read_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows: return []
+    headers = [str(h).strip().lower() if h else "" for h in rows[0]]
+    result = []
+    for row in rows[1:]:
+        d = {headers[i]: str(v).strip() if v is not None else "" for i, v in enumerate(row)}
+        result.append(normalize_row(d))
+    return result
+
 def parse_csv_bytes(content: bytes) -> list[dict]:
     text = content.decode("utf-8-sig", errors="replace")
     first_line = text.splitlines()[0] if text.splitlines() else ""
@@ -94,7 +107,8 @@ async def get_pappers(siren: str) -> tuple[list[dict], str]:
                     })
             domaine = data.get("domaine_url","") or data.get("site_web","")
             return dirigeants, domaine
-    except Exception:
+    except Exception as e:
+        print(f'[ERROR claude_find_all] {e}')
         return [], ""
 
 
@@ -185,7 +199,8 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
                     "domaine_trouve": domaine_trouve
                 })
             return results
-    except Exception:
+    except Exception as e:
+        print(f'[ERROR claude_find_all] {e}')
         return []
 
 
@@ -202,6 +217,7 @@ async def enrich_societe(row: dict) -> list[dict]:
     if pappers_domaine and not domaine:
         domaine = pappers_domaine
 
+    await asyncio.sleep(2)  # evite rate limiting
     claude_contacts = await claude_find_all(nom_societe, domaine, siren, org_id, dirigeants_pappers)
 
     if not domaine and claude_contacts:
@@ -266,7 +282,10 @@ async def upload(background_tasks: BackgroundTasks, file: UploadFile = File(None
     rows = []
     if file and file.filename:
         content = await file.read()
-        rows = parse_csv_bytes(content)
+        if file.filename.lower().endswith((".xlsx", ".xls")):
+            rows = parse_excel_bytes(content)
+        else:
+            rows = parse_csv_bytes(content)
     elif paste:
         rows = parse_paste(paste)
     if not rows:
@@ -293,7 +312,7 @@ async def run_job(job_id: str):
         job["results"].extend(results)
         job["progress"] = i + 1
         save_job(job_id, job)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(3)
     job = load_job(job_id)
     if job.get("status") != "stopped":
         job["status"] = "done"
