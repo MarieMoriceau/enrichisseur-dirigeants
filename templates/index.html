@@ -37,6 +37,7 @@ tr:hover td { background: #f8fafc; }
 .info { font-size: 12px; color: #059669; font-weight: 600; margin-top: 8px; }
 .row-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
 .stat { font-size: 12px; color: #64748b; }
+.countdown { font-size: 11px; color: #7c3aed; font-weight: 600; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -66,6 +67,7 @@ tr:hover td { background: #f8fafc; }
     </div>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <div style="font-size:11px;color:#94a3b8;margin-top:6px" id="progressLabel"></div>
+    <div class="countdown" id="countdown"></div>
   </div>
 
   <div class="card">
@@ -85,6 +87,7 @@ let results = [];
 let running = false;
 let stopFlag = false;
 let currentIdx = 0;
+let countdownInterval = null;
 
 function handleDrop(e) {
   e.preventDefault();
@@ -107,7 +110,6 @@ function handleFile(file) {
 }
 
 function parseCSV(text) {
-  // BOM
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const sep = (text.split('\n')[0].split(';').length > text.split('\n')[0].split(',').length) ? ';' : ',';
   const lines = text.trim().split('\n');
@@ -122,33 +124,26 @@ function parseCSV(text) {
 }
 
 function parseXLSX(buffer) {
-  // Import SheetJS depuis CDN
   if (!window.XLSX) {
     const s = document.createElement('script');
     s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-    s.onload = () => {
-      const wb = window.XLSX.read(buffer, {type:'array'});
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const data = window.XLSX.utils.sheet_to_json(ws, {defval:''});
-      rows = data.map(r => {
-        const low = {};
-        Object.keys(r).forEach(k => low[k.toLowerCase().trim()] = String(r[k]).trim());
-        return normalizeRow(low);
-      }).filter(r => r.nom);
-      onRowsParsed();
-    };
+    s.onload = () => { doParseXLSX(buffer); };
     document.head.appendChild(s);
   } else {
-    const wb = window.XLSX.read(buffer, {type:'array'});
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const data = window.XLSX.utils.sheet_to_json(ws, {defval:''});
-    rows = data.map(r => {
-      const low = {};
-      Object.keys(r).forEach(k => low[k.toLowerCase().trim()] = String(r[k]).trim());
-      return normalizeRow(low);
-    }).filter(r => r.nom);
-    onRowsParsed();
+    doParseXLSX(buffer);
   }
+}
+
+function doParseXLSX(buffer) {
+  const wb = window.XLSX.read(buffer, {type:'array'});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const data = window.XLSX.utils.sheet_to_json(ws, {defval:''});
+  rows = data.map(r => {
+    const low = {};
+    Object.keys(r).forEach(k => low[k.toLowerCase().trim()] = String(r[k]).trim());
+    return normalizeRow(low);
+  }).filter(r => r.nom);
+  onRowsParsed();
 }
 
 function normalizeRow(r) {
@@ -165,6 +160,25 @@ function onRowsParsed() {
   document.getElementById('fileInfo').textContent += ` — ${rows.length} société(s) détectée(s)`;
   document.getElementById('btnStart').disabled = false;
   document.getElementById('statLabel').textContent = `${rows.length} sociétés à enrichir`;
+}
+
+// Attente avec compte à rebours affiché
+async function waitWithCountdown(seconds) {
+  return new Promise(resolve => {
+    let remaining = seconds;
+    const el = document.getElementById('countdown');
+    el.textContent = `⏳ Pause ${remaining}s pour éviter la surcharge Claude…`;
+    countdownInterval = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        clearInterval(countdownInterval);
+        el.textContent = '';
+        resolve();
+      } else {
+        el.textContent = `⏳ Pause ${remaining}s pour éviter la surcharge Claude…`;
+      }
+    }, 1000);
+  });
 }
 
 async function startEnrichment() {
@@ -201,11 +215,17 @@ async function startEnrichment() {
       results.push({ societe: rows[i].nom, siren: rows[i].siren, email: '', confiance: 'faible', source: '', nom_dg: '', titre: '', prenom: '' });
       renderResults();
     }
+
+    // ✅ FIX : attendre 8 secondes entre chaque société pour ne pas surcharger Claude
+    if (i < rows.length - 1 && !stopFlag) {
+      await waitWithCountdown(8);
+    }
   }
 
   document.getElementById('progressFill').style.width = '100%';
   document.getElementById('progressLabel').textContent = `${stopFlag ? 'Arrêté' : 'Terminé'} — ${results.length} contacts trouvés`;
   document.getElementById('statLabel').textContent = stopFlag ? '⏹ Arrêté' : '✅ Terminé !';
+  document.getElementById('countdown').textContent = '';
   document.getElementById('btnStop').style.display = 'none';
   document.getElementById('btnStart').disabled = false;
   document.getElementById('btnExport').style.display = 'inline-block';
@@ -214,6 +234,8 @@ async function startEnrichment() {
 
 function stopEnrichment() {
   stopFlag = true;
+  if (countdownInterval) clearInterval(countdownInterval);
+  document.getElementById('countdown').textContent = '';
   document.getElementById('btnStop').style.display = 'none';
   document.getElementById('btnExport').style.display = 'inline-block';
 }
