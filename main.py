@@ -180,11 +180,37 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
                 }
             )
             data = r.json()
-            text_block = next((b for b in data.get("content", []) if b.get("type") == "text"), None)
-            if not text_block: return []
-            m = re.search(r'\{[\s\S]*\}', text_block["text"])
-            if not m: return []
-            parsed = json.loads(m.group())
+            # Récupère TOUS les blocs texte et les concatène
+            all_text = " ".join(
+                b.get("text", "") for b in data.get("content", [])
+                if b.get("type") == "text"
+            )
+            print(f"[DEBUG] Réponse Claude ({len(all_text)} chars): {all_text[:300]}")
+            if not all_text:
+                print(f"[DEBUG] Pas de texte, blocs: {[b.get('type') for b in data.get('content', [])]}")
+                return []
+            # Cherche le JSON le plus complet (avec "contacts")
+            matches = re.findall(r'\{[\s\S]*?\}', all_text)
+            parsed = None
+            for m in reversed(matches):
+                try:
+                    p = json.loads(m)
+                    if "contacts" in p:
+                        parsed = p
+                        break
+                except:
+                    continue
+            if not parsed:
+                # Essai avec regex plus large
+                m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
+                if not m:
+                    print(f"[DEBUG] Pas de JSON contacts trouvé dans: {all_text[:200]}")
+                    return []
+                try:
+                    parsed = json.loads(m.group())
+                except:
+                    print(f"[DEBUG] JSON invalide: {m.group()[:200]}")
+                    return []
             contacts = parsed.get("contacts", [])
             domaine_trouve = parsed.get("domaine", "")
             results = []
