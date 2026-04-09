@@ -21,16 +21,13 @@ def load_job(jid):
     with open(p) as f: return json.load(f)
 
 
-# ════════════════════════════════════════════════════════════════════
-#  ROUTES UI
-# ════════════════════════════════════════════════════════════════════
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
 # ════════════════════════════════════════════════════════════════════
-#  PARSING
+#  PARSING — accepte Organisation, Org ID, nom, etc.
 # ════════════════════════════════════════════════════════════════════
 def parse_csv_bytes(content: bytes) -> list[dict]:
     text = content.decode("utf-8-sig", errors="replace")
@@ -48,21 +45,23 @@ def parse_paste(text: str) -> list[dict]:
 
 def normalize_row(row: dict) -> dict:
     aliases = {
-        "nom":     ["nom","name","société","societe","company","entreprise","organisation"],
-        "siren":   ["siren","siret"],
-        "domaine": ["domaine","domain","website","site","url"],
+        "nom":    ["nom","name","société","societe","company","entreprise","organisation"],
+        "siren":  ["siren","siret"],
+        "domaine":["domaine","domain","website","site","url"],
+        "org_id": ["org id","org_id","id","identifiant","organization id"],
     }
     result = {"id": str(uuid.uuid4())}
     for target, keys in aliases.items():
         for k in keys:
-            if k in row and row[k] and row[k] != "—":
-                result[target] = row[k]; break
-        if target not in result: result[target] = ""
+            if k in row and row[k] and str(row[k]) not in ("—", "", "None"):
+                result[target] = str(row[k]); break
+        if target not in result:
+            result[target] = ""
     return result
 
 
 # ════════════════════════════════════════════════════════════════════
-#  PAPPERS — MANDATAIRES LÉGAUX + DOMAINE
+#  PAPPERS
 # ════════════════════════════════════════════════════════════════════
 async def get_pappers(siren: str) -> tuple[list[dict], str]:
     if not PAPPERS_KEY or not siren:
@@ -81,18 +80,15 @@ async def get_pappers(siren: str) -> tuple[list[dict], str]:
                 nom = rep.get("nom", "") or rep.get("denomination", "")
                 if prenom or nom:
                     dirigeants.append({
-                        "prenom": prenom,
-                        "nom": nom,
-                        "titre": rep.get("qualite", ""),
-                        "source": "Pappers"
+                        "prenom": prenom, "nom": nom,
+                        "titre": rep.get("qualite", ""), "source": "Pappers"
                     })
             for ben in data.get("beneficiaires_effectifs", []):
                 prenom = ben.get("prenom", "")
                 nom = ben.get("nom", "")
                 if prenom and nom and not any(d["prenom"]==prenom and d["nom"]==nom for d in dirigeants):
                     dirigeants.append({
-                        "prenom": prenom,
-                        "nom": nom,
+                        "prenom": prenom, "nom": nom,
                         "titre": f"Associé ({ben.get('pourcentage_parts','?')}%)",
                         "source": "Pappers"
                     })
@@ -103,45 +99,40 @@ async def get_pappers(siren: str) -> tuple[list[dict], str]:
 
 
 # ════════════════════════════════════════════════════════════════════
-#  CLAUDE — TROUVE TOUS LES DIRIGEANTS + EMAILS VIA WEB SEARCH
+#  CLAUDE — TOUS LES DIRIGEANTS + EMAILS
 # ════════════════════════════════════════════════════════════════════
-async def claude_find_all(nom_societe: str, domaine: str, siren: str, dirigeants_pappers: list[dict]) -> list[dict]:
-    """
-    Claude cherche sur le web TOUS les dirigeants opérationnels
-    (CEO, CFO, COO, Partners, Associés...) + leurs emails
-    """
+async def claude_find_all(nom_societe: str, domaine: str, siren: str, org_id: str, dirigeants_pappers: list[dict]) -> list[dict]:
     if not ANTHROPIC_KEY:
         return []
 
     pappers_info = ""
     if dirigeants_pappers:
-        pappers_info = "Dirigeants légaux déjà connus (Pappers) :\n" + \
+        pappers_info = "Dirigeants légaux connus (registre) :\n" + \
             "\n".join([f"- {d['prenom']} {d['nom']} ({d['titre']})" for d in dirigeants_pappers])
+
+    # Identifiants dispo pour la recherche
+    identifiants = []
+    if nom_societe: identifiants.append(f"Nom : {nom_societe}")
+    if siren: identifiants.append(f"SIREN : {siren}")
+    if domaine: identifiants.append(f"Domaine : {domaine}")
+    if org_id: identifiants.append(f"ID Leaders League : {org_id}")
 
     prompt = f"""Tu es un assistant B2B expert en recherche de contacts de dirigeants de sociétés françaises.
 
-Société : {nom_societe}
-{"SIREN : " + siren if siren else ""}
-{"Domaine web : " + domaine if domaine else ""}
+{chr(10).join(identifiants)}
 {pappers_info}
 
-MISSION : Trouve TOUS les dirigeants opérationnels de cette société :
-- CEO / Directeur Général / PDG
-- CFO / DAF / Directeur Financier  
+MISSION : Trouve TOUS les dirigeants opérationnels :
+- CEO / Directeur Général / PDG / Gérant
+- CFO / DAF / Directeur Financier
 - COO / Directeur des Opérations
 - CMO / Directeur Marketing
 - CTO / Directeur Technique
-- Partners / Associés (cabinets)
-- Managing Director
-- Tout autre C-level ou associé visible
+- Partners / Associés (pour les cabinets)
+- Managing Director / VP
 
-Pour chaque personne trouvée, cherche aussi son email professionnel.
-
-Utilise la recherche web pour trouver ces informations sur :
-- Le site officiel de la société
-- LinkedIn
-- Societe.com, Pappers, Infogreffe
-- Articles de presse, communiqués
+Pour chaque personne, cherche aussi son email professionnel.
+Cherche sur : site officiel, LinkedIn, Pappers, Societe.com, presse.
 
 Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
 {{
@@ -177,14 +168,11 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
             data = r.json()
             text_block = next((b for b in data.get("content", []) if b.get("type") == "text"), None)
             if not text_block: return []
-
             m = re.search(r'\{[\s\S]*\}', text_block["text"])
             if not m: return []
-
             parsed = json.loads(m.group())
             contacts = parsed.get("contacts", [])
             domaine_trouve = parsed.get("domaine", "")
-
             results = []
             for c in contacts:
                 results.append({
@@ -193,7 +181,7 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
                     "titre": c.get("titre", ""),
                     "email": c.get("email", "") or "",
                     "confiance": c.get("confiance_email", ""),
-                    "source": "Claude (" + c.get("source", "web") + ")",
+                    "source": f"Claude ({c.get('source','web')})",
                     "domaine_trouve": domaine_trouve
                 })
             return results
@@ -208,25 +196,21 @@ async def enrich_societe(row: dict) -> list[dict]:
     nom_societe = row.get("nom", "")
     siren = row.get("siren", "")
     domaine = row.get("domaine", "")
+    org_id = row.get("org_id", "")
 
-    # 1. Pappers → mandataires légaux + domaine
     dirigeants_pappers, pappers_domaine = await get_pappers(siren)
     if pappers_domaine and not domaine:
         domaine = pappers_domaine
 
-    # 2. Claude → tous les dirigeants opérationnels + emails
-    claude_contacts = await claude_find_all(nom_societe, domaine, siren, dirigeants_pappers)
+    claude_contacts = await claude_find_all(nom_societe, domaine, siren, org_id, dirigeants_pappers)
 
-    # Si Claude a trouvé un domaine qu'on n'avait pas
     if not domaine and claude_contacts:
         domaine = claude_contacts[0].get("domaine_trouve", "") or domaine
 
-    # 3. Fusion : Claude en priorité, Pappers en complément
     results = []
-
-    # Contacts Claude
     for c in claude_contacts:
         results.append({
+            "org_id": org_id,
             "societe": nom_societe,
             "siren": siren,
             "domaine": domaine,
@@ -240,12 +224,12 @@ async def enrich_societe(row: dict) -> list[dict]:
             "notes": ""
         })
 
-    # Ajoute les mandataires Pappers non déjà présents dans Claude
     noms_claude = {(r["prenom"].lower(), r["nom_dg"].lower()) for r in results}
     for dg in dirigeants_pappers:
         key = (dg["prenom"].lower(), dg["nom"].lower())
         if key not in noms_claude:
             results.append({
+                "org_id": org_id,
                 "societe": nom_societe,
                 "siren": siren,
                 "domaine": domaine,
@@ -259,16 +243,15 @@ async def enrich_societe(row: dict) -> list[dict]:
                 "notes": "Email non trouvé"
             })
 
-    # Si rien du tout
     if not results:
         results.append({
+            "org_id": org_id,
             "societe": nom_societe,
             "siren": siren,
             "domaine": domaine,
             "prenom": "", "nom_dg": "", "titre": "",
             "email": "", "telephone": "",
-            "confiance": "faible",
-            "source": "",
+            "confiance": "faible", "source": "",
             "notes": "Aucun contact trouvé"
         })
 
@@ -299,15 +282,31 @@ async def run_job(job_id: str):
     job["status"] = "running"
     save_job(job_id, job)
     for i, row in enumerate(job["rows"]):
+        # Vérifie si stop demandé
+        job = load_job(job_id)
+        if job.get("status") == "stopped":
+            return
         results = await enrich_societe(row)
         job = load_job(job_id)
+        if job.get("status") == "stopped":
+            return
         job["results"].extend(results)
         job["progress"] = i + 1
         save_job(job_id, job)
         await asyncio.sleep(0.5)
     job = load_job(job_id)
-    job["status"] = "done"
+    if job.get("status") != "stopped":
+        job["status"] = "done"
+        save_job(job_id, job)
+
+@app.post("/stop/{job_id}")
+async def stop(job_id: str):
+    job = load_job(job_id)
+    if not job:
+        return JSONResponse({"error": "Job introuvable"}, status_code=404)
+    job["status"] = "stopped"
     save_job(job_id, job)
+    return {"status": "stopped"}
 
 @app.get("/status/{job_id}")
 async def status(job_id: str):
@@ -321,7 +320,7 @@ async def export(job_id: str):
     if not job or not job["results"]:
         return JSONResponse({"error": "Aucun résultat"}, status_code=404)
     output = io.StringIO()
-    fields = ["societe","siren","domaine","prenom","nom_dg","titre","email","telephone","confiance","source","notes"]
+    fields = ["org_id","societe","siren","domaine","prenom","nom_dg","titre","email","telephone","confiance","source","notes"]
     writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(job["results"])
