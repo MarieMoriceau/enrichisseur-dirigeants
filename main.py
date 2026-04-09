@@ -1,21 +1,24 @@
-import os, io, csv, json, asyncio, httpx
+import os, io, csv, json, asyncio, httpx, re, uuid
 from fastapi import FastAPI, UploadFile, File, Form, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from typing import Optional
-import uuid
 
-app = FastAPI(title="Enrichisseur Dirigeants")
+app = FastAPI(title="Enrichisseur Dirigeants v2")
 templates = Jinja2Templates(directory="templates")
 
-# ─── CONFIG APIS ────────────────────────────────────────────────────
 ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
-PHAROW_KEY     = os.getenv("PHAROW_API_KEY", "")
+PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 
-# ─── STOCKAGE EN MÉMOIRE (jobs) ─────────────────────────────────────
-jobs: dict[str, dict] = {}   # job_id → {rows, results, status, progress}
+# Titres qui indiquent un dirigeant ou associé
+TITRES_CIBLES = [
+    "président", "directeur général", "gérant", "associé", "administrateur",
+    "directeur financier", "daf", "dg", "pdg", "ceo", "cfo", "coo",
+    "vice-président", "directeur général délégué"
+]
+
+jobs: dict[str, dict] = {}
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -32,39 +35,26 @@ async def index(request: Request):
 def parse_csv_bytes(content: bytes) -> list[dict]:
     text = content.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
-    rows = []
-    for r in reader:
-        row = {k.strip().lower(): v.strip() for k, v in r.items()}
-        rows.append(normalize_row(row))
-    return rows
+    return [normalize_row({k.strip().lower(): v.strip() for k, v in r.items()}) for r in reader]
 
 def parse_paste(text: str) -> list[dict]:
-    """Accepte CSV ou lignes simples nom;siren;domaine"""
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     if not lines:
         return []
-    # Détecte séparateur
     sep = ";" if ";" in lines[0] else ","
     reader = csv.DictReader(lines, delimiter=sep)
-    rows = []
-    for r in reader:
-        row = {k.strip().lower(): v.strip() for k, v in r.items()}
-        rows.append(normalize_row(row))
-    return rows
+    return [normalize_row({k.strip().lower(): v.strip() for k, v in r.items()}) for r in reader]
 
 def normalize_row(row: dict) -> dict:
-    """Normalise les noms de colonnes flexibles"""
     aliases = {
-        "nom": ["nom","name","société","societe","company","entreprise"],
-        "siren": ["siren","siret"],
-        "domaine": ["domaine","domain","website","site","url"],
-        "prenom_dg": ["prenom","prénom","firstname","first_name","prenom_dg"],
-        "nom_dg": ["nom_dg","lastname","last_name","dirigeant","manager","dg"],
+        "nom":      ["nom","name","société","societe","company","entreprise","organisation"],
+        "siren":    ["siren","siret"],
+        "domaine":  ["domaine","domain","website","site","url"],
     }
     result = {"id": str(uuid.uuid4())}
     for target, keys in aliases.items():
         for k in keys:
-            if k in row and row[k]:
+            if k in row and row[k] and row[k] != "—":
                 result[target] = row[k]
                 break
         if target not in result:
@@ -73,132 +63,131 @@ def normalize_row(row: dict) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════
-#  ENRICHISSEMENT — SOURCES EN CASCADE
+#  PAPPERS — TOUS LES MANDATAIRES
 # ════════════════════════════════════════════════════════════════════
-async def enrich_one(row: dict) -> dict:
-    """Tente Pharow → Fullenrich → Claude en fallback"""
-    result = {
-        "nom": row.get("nom",""),
-        "siren": row.get("siren",""),
-        "domaine": row.get("domaine",""),
-        "prenom_dg": row.get("prenom_dg",""),
-        "nom_dg": row.get("nom_dg",""),
-        "email": "",
-        "telephone": "",
-        "titre": "",
-        "confiance": "",
-        "source": "",
-        "notes": "",
-    }
-
-    # 1. PHAROW
-    if PHAROW_KEY and row.get("siren"):
-        pharow = await try_pharow(row["siren"])
-        if pharow:
-            result.update(pharow)
-            result["source"] = "Pharow"
-            if result.get("email"):
-                return result
-
-    # 2. FULLENRICH
-    if FULLENRICH_KEY and (result.get("prenom_dg") or row.get("prenom_dg")) and result.get("domaine"):
-        prenom = result.get("prenom_dg") or row.get("prenom_dg","")
-        nom    = result.get("nom_dg") or row.get("nom_dg","")
-        fe = await try_fullenrich(prenom, nom, result["domaine"])
-        if fe:
-            result.update(fe)
-            result["source"] = (result.get("source","") + " + Fullenrich").lstrip(" + ")
-            if result.get("email"):
-                return result
-
-    # 3. CLAUDE FALLBACK
-    claude = await try_claude(row)
-    if claude:
-        result.update(claude)
-        result["source"] = (result.get("source","") + " + Claude").lstrip(" + ")
-
-    return result
-
-
-# ── PHAROW ──────────────────────────────────────────────────────────
-async def try_pharow(siren: str) -> Optional[dict]:
-    """Doc: https://docs.pharow.com"""
+async def get_dirigeants_pappers(siren: str) -> list[dict]:
+    """Retourne tous les mandataires sociaux via Pappers API"""
+    if not PAPPERS_KEY or not siren:
+        return []
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
-                "https://api.pharow.com/v1/companies/search",
-                params={"siren": siren},
-                headers={"Authorization": f"Bearer {PHAROW_KEY}"}
+                "https://api.pappers.fr/v2/entreprise",
+                params={"api_token": PAPPERS_KEY, "siren": siren}
             )
             if r.status_code != 200:
-                return None
+                return []
             data = r.json()
-            company = data.get("data", {})
-            contacts = company.get("contacts", [])
-            if not contacts:
-                return None
-            top = contacts[0]
-            return {
-                "prenom_dg": top.get("first_name",""),
-                "nom_dg": top.get("last_name",""),
-                "titre": top.get("job_title",""),
-                "email": top.get("email",""),
-                "telephone": top.get("phone",""),
-                "domaine": company.get("domain",""),
-                "confiance": "haute",
-            }
+
+            dirigeants = []
+            # Représentants légaux
+            for rep in data.get("representants", []):
+                qualite = rep.get("qualite", "").lower()
+                # Filtre : on prend DG, Gérant, Président, Associés
+                if any(t in qualite for t in TITRES_CIBLES) or "associé" in qualite:
+                    dirigeants.append({
+                        "prenom": rep.get("prenom", ""),
+                        "nom": rep.get("nom", "") or rep.get("denomination", ""),
+                        "titre": rep.get("qualite", ""),
+                        "source_dirigeant": "Pappers"
+                    })
+
+            # Bénéficiaires effectifs (associés)
+            for ben in data.get("beneficiaires_effectifs", []):
+                prenom = ben.get("prenom", "")
+                nom = ben.get("nom", "")
+                # Eviter les doublons
+                if not any(d["prenom"] == prenom and d["nom"] == nom for d in dirigeants):
+                    dirigeants.append({
+                        "prenom": prenom,
+                        "nom": nom,
+                        "titre": f"Associé ({ben.get('pourcentage_parts', '?')}%)",
+                        "source_dirigeant": "Pappers"
+                    })
+
+            # Récupère aussi le domaine si pas connu
+            domaine = data.get("domaine_url", "") or data.get("site_web", "")
+
+            return dirigeants, domaine
+
     except Exception as e:
-        return None
+        return [], ""
 
 
-# ── FULLENRICH ───────────────────────────────────────────────────────
-async def try_fullenrich(prenom: str, nom: str, domaine: str) -> Optional[dict]:
-    """Doc: https://docs.fullenrich.com"""
+# ════════════════════════════════════════════════════════════════════
+#  FULLENRICH — EMAIL PAR PERSONNE
+# ════════════════════════════════════════════════════════════════════
+async def get_email_fullenrich(prenom: str, nom: str, domaine: str, societe: str) -> dict:
+    if not FULLENRICH_KEY or not prenom or not nom:
+        return {}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
             r = await client.post(
-                "https://api.fullenrich.com/v1/enrich",
+                "https://api.fullenrich.com/v1/enrichments",
                 headers={
                     "Authorization": f"Bearer {FULLENRICH_KEY}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "first_name": prenom,
-                    "last_name": nom,
-                    "company_domain": domaine
+                    "name": f"{prenom} {nom} - {societe}",
+                    "datas": [{
+                        "first_name": prenom,
+                        "last_name": nom,
+                        "company_name": societe,
+                        "domain": domaine or ""
+                    }]
                 }
             )
-            if r.status_code != 200:
-                return None
+            if r.status_code not in (200, 201):
+                return {}
+
             data = r.json()
-            person = data.get("person", {})
-            emails = person.get("emails", [])
-            phones = person.get("phones", [])
-            return {
-                "email": emails[0].get("value","") if emails else "",
-                "telephone": phones[0].get("value","") if phones else "",
-                "titre": person.get("title",""),
-                "confiance": "haute" if emails else "faible",
-            }
+            enrichment_id = data.get("id")
+            if not enrichment_id:
+                return {}
+
+            # Poll le résultat (max 30s)
+            for _ in range(10):
+                await asyncio.sleep(3)
+                r2 = await client.get(
+                    f"https://api.fullenrich.com/v1/enrichments/{enrichment_id}",
+                    headers={"Authorization": f"Bearer {FULLENRICH_KEY}"}
+                )
+                result = r2.json()
+                status = result.get("status")
+                if status == "completed":
+                    contacts = result.get("data", [])
+                    if contacts:
+                        c = contacts[0]
+                        emails = c.get("emails", [])
+                        phones = c.get("phones", [])
+                        return {
+                            "email": emails[0].get("value", "") if emails else "",
+                            "telephone": phones[0].get("value", "") if phones else "",
+                            "confiance": "haute" if emails else "faible",
+                            "source_email": "Fullenrich"
+                        }
+                    break
+                elif status == "failed":
+                    break
+            return {}
     except Exception:
-        return None
+        return {}
 
 
-# ── CLAUDE FALLBACK ──────────────────────────────────────────────────
-async def try_claude(row: dict) -> Optional[dict]:
+# ════════════════════════════════════════════════════════════════════
+#  CLAUDE FALLBACK — EMAIL + DAF
+# ════════════════════════════════════════════════════════════════════
+async def get_email_claude(prenom: str, nom: str, societe: str, domaine: str) -> dict:
     if not ANTHROPIC_KEY:
-        return None
-    prompt = f"""Tu es un assistant B2B spécialisé en recherche de contacts de dirigeants de sociétés françaises.
+        return {}
+    prompt = f"""Société: {societe}
+Dirigeant: {prenom} {nom}
+{"Domaine: " + domaine if domaine else ""}
 
-Société: {row.get('nom','')}
-{"SIREN: " + row['siren'] if row.get('siren') else ""}
-{"Domaine web: " + row['domaine'] if row.get('domaine') else ""}
-{"DG connu: " + row.get('prenom_dg','') + " " + row.get('nom_dg','') if row.get('prenom_dg') else ""}
-
-Trouve le dirigeant principal (PDG/DG/Président/Gérant) et son email professionnel.
-
-Réponds UNIQUEMENT avec ce JSON (pas de markdown, pas de texte autour):
-{{"prenom_dg":"...","nom_dg":"...","titre":"...","domaine":"...","email":"...","confiance":"haute|moyenne|faible","notes":"..."}}"""
+Trouve l'email professionnel de cette personne.
+Réponds UNIQUEMENT avec ce JSON (pas de markdown):
+{{"email":"...ou null","domaine":"...ou null","confiance":"haute|moyenne|faible","notes":"..."}}"""
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -211,26 +200,105 @@ Réponds UNIQUEMENT avec ce JSON (pas de markdown, pas de texte autour):
                 },
                 json={
                     "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 500,
+                    "max_tokens": 300,
                     "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                     "messages": [{"role": "user", "content": prompt}]
                 }
             )
             data = r.json()
-            text_block = next((b for b in data.get("content",[]) if b.get("type")=="text"), None)
+            text_block = next((b for b in data.get("content", []) if b.get("type") == "text"), None)
             if not text_block:
-                return None
-            import re
+                return {}
             m = re.search(r'\{.*?\}', text_block["text"], re.DOTALL)
             if not m:
-                return None
-            return json.loads(m.group())
+                return {}
+            parsed = json.loads(m.group())
+            parsed["source_email"] = "Claude"
+            return parsed
     except Exception:
-        return None
+        return {}
 
 
 # ════════════════════════════════════════════════════════════════════
-#  ENDPOINTS API
+#  ENRICHISSEMENT PRINCIPAL
+# ════════════════════════════════════════════════════════════════════
+async def enrich_societe(row: dict) -> list[dict]:
+    """
+    Pour une société, retourne une liste de résultats (un par dirigeant)
+    """
+    nom_societe = row.get("nom", "")
+    siren = row.get("siren", "")
+    domaine = row.get("domaine", "")
+
+    results = []
+
+    # 1. Récupère tous les dirigeants via Pappers
+    dirigeants = []
+    pappers_domaine = ""
+    if siren:
+        dirigeants, pappers_domaine = await get_dirigeants_pappers(siren)
+        if pappers_domaine and not domaine:
+            domaine = pappers_domaine
+
+    # Si Pappers n'a rien → on met au moins une ligne avec Claude fallback
+    if not dirigeants:
+        dirigeants = [{"prenom": "", "nom": "", "titre": "", "source_dirigeant": ""}]
+
+    # 2. Pour chaque dirigeant, cherche l'email
+    for dg in dirigeants:
+        prenom = dg.get("prenom", "")
+        nom_dg = dg.get("nom", "")
+        titre = dg.get("titre", "")
+
+        result = {
+            "societe": nom_societe,
+            "siren": siren,
+            "domaine": domaine,
+            "prenom": prenom,
+            "nom_dg": nom_dg,
+            "titre": titre,
+            "email": "",
+            "telephone": "",
+            "confiance": "",
+            "source": dg.get("source_dirigeant", ""),
+            "notes": ""
+        }
+
+        if prenom and nom_dg:
+            # Fullenrich
+            fe = await get_email_fullenrich(prenom, nom_dg, domaine, nom_societe)
+            if fe:
+                result["email"] = fe.get("email", "")
+                result["telephone"] = fe.get("telephone", "")
+                result["confiance"] = fe.get("confiance", "")
+                result["source"] += (" + " if result["source"] else "") + fe.get("source_email", "")
+
+            # Claude fallback si pas d'email
+            if not result["email"]:
+                claude = await get_email_claude(prenom, nom_dg, nom_societe, domaine)
+                if claude:
+                    result["email"] = claude.get("email", "")
+                    result["confiance"] = claude.get("confiance", "")
+                    result["notes"] = claude.get("notes", "")
+                    result["source"] += (" + " if result["source"] else "") + "Claude"
+                    if not domaine and claude.get("domaine"):
+                        result["domaine"] = claude["domaine"]
+        else:
+            # Pas de dirigeant connu → Claude cherche tout
+            claude = await get_email_claude("", "", nom_societe, domaine)
+            if claude:
+                result["email"] = claude.get("email", "")
+                result["notes"] = claude.get("notes", "")
+                result["source"] = "Claude"
+
+        results.append(result)
+        await asyncio.sleep(0.2)
+
+    return results
+
+
+# ════════════════════════════════════════════════════════════════════
+#  JOBS
 # ════════════════════════════════════════════════════════════════════
 @app.post("/upload")
 async def upload(background_tasks: BackgroundTasks, file: UploadFile = File(None), paste: str = Form("")):
@@ -253,12 +321,11 @@ async def upload(background_tasks: BackgroundTasks, file: UploadFile = File(None
 async def run_job(job_id: str):
     job = jobs[job_id]
     job["status"] = "running"
-    rows = job["rows"]
-    for i, row in enumerate(rows):
-        result = await enrich_one(row)
-        job["results"].append(result)
+    for i, row in enumerate(job["rows"]):
+        results = await enrich_societe(row)
+        job["results"].extend(results)
         job["progress"] = i + 1
-        await asyncio.sleep(0.3)   # rate limiting
+        await asyncio.sleep(0.3)
     job["status"] = "done"
 
 
@@ -282,7 +349,7 @@ async def export(job_id: str):
         return JSONResponse({"error": "Aucun résultat"}, status_code=404)
 
     output = io.StringIO()
-    fields = ["nom","siren","domaine","prenom_dg","nom_dg","titre","email","telephone","confiance","source","notes"]
+    fields = ["societe", "siren", "domaine", "prenom", "nom_dg", "titre", "email", "telephone", "confiance", "source", "notes"]
     writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(job["results"])
