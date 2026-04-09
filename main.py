@@ -124,54 +124,63 @@ async def get_email_fullenrich(prenom: str, nom: str, domaine: str, societe: str
     if not FULLENRICH_KEY or not prenom or not nom:
         return {}
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
+            # POST — démarrer l'enrichissement
+            payload = {
+                "name": f"{prenom} {nom} - {societe}",
+                "datas": [{
+                    "firstname": prenom,
+                    "lastname": nom,
+                    "company_name": societe,
+                    "domain": domaine or "",
+                    "enrich_fields": ["contact.emails", "contact.phones"]
+                }]
+            }
             r = await client.post(
-                "https://api.fullenrich.com/v1/enrichments",
+                "https://app.fullenrich.com/api/v1/contact/enrich/bulk",
                 headers={
                     "Authorization": f"Bearer {FULLENRICH_KEY}",
                     "Content-Type": "application/json"
                 },
-                json={
-                    "name": f"{prenom} {nom} - {societe}",
-                    "datas": [{
-                        "first_name": prenom,
-                        "last_name": nom,
-                        "company_name": societe,
-                        "domain": domaine or ""
-                    }]
-                }
+                json=payload
             )
             if r.status_code not in (200, 201):
                 return {}
 
             data = r.json()
-            enrichment_id = data.get("id")
+            enrichment_id = data.get("enrichment_id") or data.get("id")
             if not enrichment_id:
                 return {}
 
-            # Poll le résultat (max 30s)
-            for _ in range(10):
+            # Poll le résultat (max 45s)
+            for _ in range(15):
                 await asyncio.sleep(3)
                 r2 = await client.get(
-                    f"https://api.fullenrich.com/v1/enrichments/{enrichment_id}",
+                    f"https://app.fullenrich.com/api/v1/contact/enrich/bulk/{enrichment_id}",
                     headers={"Authorization": f"Bearer {FULLENRICH_KEY}"}
                 )
                 result = r2.json()
                 status = result.get("status")
-                if status == "completed":
-                    contacts = result.get("data", [])
+                if status in ("finished", "completed", "done"):
+                    contacts = result.get("datas") or result.get("data") or []
                     if contacts:
                         c = contacts[0]
-                        emails = c.get("emails", [])
-                        phones = c.get("phones", [])
+                        emails = c.get("emails") or c.get("email_addresses") or []
+                        phones = c.get("phones") or c.get("phone_numbers") or []
+                        email_val = ""
+                        if emails:
+                            email_val = emails[0].get("value") or emails[0].get("email") or ""
+                        phone_val = ""
+                        if phones:
+                            phone_val = phones[0].get("value") or phones[0].get("phone") or ""
                         return {
-                            "email": emails[0].get("value", "") if emails else "",
-                            "telephone": phones[0].get("value", "") if phones else "",
-                            "confiance": "haute" if emails else "faible",
+                            "email": email_val,
+                            "telephone": phone_val,
+                            "confiance": "haute" if email_val else "faible",
                             "source_email": "Fullenrich"
                         }
                     break
-                elif status == "failed":
+                elif status in ("failed", "error", "cancelled"):
                     break
             return {}
     except Exception:
