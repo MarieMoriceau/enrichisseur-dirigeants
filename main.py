@@ -164,7 +164,7 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
 }}"""
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=45) as client:
             r = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -174,11 +174,23 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
                 },
                 json={
                     "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 2000,
+                    "max_tokens": 1000,
                     "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                     "messages": [{"role": "user", "content": prompt}]
                 }
             )
+            print(f"[DEBUG] Claude status: {r.status_code}")
+            if r.status_code == 529:
+                print("[DEBUG] Overloaded - attente 30s")
+                await asyncio.sleep(30)
+                return []
+            if r.status_code == 429:
+                print("[DEBUG] Rate limit - attente 60s")
+                await asyncio.sleep(60)
+                return []
+            if r.status_code != 200:
+                print(f"[DEBUG] Erreur API: {r.text[:200]}")
+                return []
             data = r.json()
             # Récupère TOUS les blocs texte et les concatène
             all_text = " ".join(
@@ -243,7 +255,7 @@ async def enrich_societe(row: dict) -> list[dict]:
     if pappers_domaine and not domaine:
         domaine = pappers_domaine
 
-    await asyncio.sleep(2)  # evite rate limiting
+    await asyncio.sleep(1)  # evite rate limiting
     claude_contacts = await claude_find_all(nom_societe, domaine, siren, org_id, dirigeants_pappers)
 
     if not domaine and claude_contacts:
@@ -338,7 +350,7 @@ async def run_job(job_id: str):
         job["results"].extend(results)
         job["progress"] = i + 1
         save_job(job_id, job)
-        await asyncio.sleep(3)
+        await asyncio.sleep(1)
     job = load_job(job_id)
     if job.get("status") != "stopped":
         job["status"] = "done"
