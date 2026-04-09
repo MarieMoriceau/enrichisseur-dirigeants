@@ -164,7 +164,8 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
 }}"""
 
     try:
-        async with httpx.AsyncClient(timeout=45) as client:
+        async with httpx.AsyncClient(timeout=90) as client:
+            print(f"[DEBUG] Appel Claude pour: {nom_societe[:30]}")
             r = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -179,7 +180,9 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte avant ou après) :
                     "messages": [{"role": "user", "content": prompt}]
                 }
             )
-            print(f"[DEBUG] Claude status: {r.status_code}")
+            print(f"[DEBUG] Claude status: {r.status_code}, response size: {len(r.text)}")
+            if r.status_code != 200:
+                print(f"[DEBUG] Body: {r.text[:300]}")
             if r.status_code == 529:
                 print("[DEBUG] Overloaded - attente 30s")
                 await asyncio.sleep(30)
