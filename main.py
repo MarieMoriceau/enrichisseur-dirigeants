@@ -34,7 +34,10 @@ async def index(request: Request):
 # ════════════════════════════════════════════════════════════════════
 def parse_csv_bytes(content: bytes) -> list[dict]:
     text = content.decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(text))
+    # Détecte le séparateur
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    sep = ";" if first_line.count(";") > first_line.count(",") else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=sep)
     return [normalize_row({k.strip().lower(): v.strip() for k, v in r.items()}) for r in reader]
 
 def parse_paste(text: str) -> list[dict]:
