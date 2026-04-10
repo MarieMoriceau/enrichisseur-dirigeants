@@ -31,60 +31,90 @@ async def enrich_one(request: Request):
 
     # -------------------------------------------------------
     # ÉTAPE 1 : Pappers → SIREN + représentants légaux
+    # On essaie d'abord par domaine, puis par nom si 404
     # -------------------------------------------------------
-    if PAPPERS_KEY and (domaine or siren):
-        try:
-            async with httpx.AsyncClient(timeout=10) as c:
-                # On cherche par site_internet si on a le domaine, sinon par siren
-                if domaine:
-                    params = {"api_token": PAPPERS_KEY, "site_internet": domaine}
-                else:
-                    params = {"api_token": PAPPERS_KEY, "siren": siren}
+    if PAPPERS_KEY:
+        pappers_data = None
 
-                print(f"[PAPPERS] Appel pour {nom} avec params={list(params.keys())}")
-                r = await c.get("https://api.pappers.fr/v2/entreprise", params=params)
-                print(f"[PAPPERS] Status {r.status_code} pour {nom}")
+        # Tentative 1 : par domaine
+        if domaine:
+            try:
+                async with httpx.AsyncClient(timeout=10) as c:
+                    print(f"[PAPPERS] Recherche par domaine : {domaine}")
+                    r = await c.get("https://api.pappers.fr/v2/entreprise",
+                        params={"api_token": PAPPERS_KEY, "site_internet": domaine})
+                    print(f"[PAPPERS] Status {r.status_code} pour {nom}")
+                    if r.status_code == 200:
+                        pappers_data = r.json()
+                    else:
+                        print(f"[PAPPERS] 404 domaine, on va essayer par nom")
+            except Exception as e:
+                print(f"[PAPPERS ERROR domaine] {e}")
 
-                if r.status_code == 200:
-                    d = r.json()
-                    # Récupérer le SIREN si on ne l'avait pas
-                    if not siren:
-                        siren = d.get("siren", "")
-                    # Récupérer les représentants légaux
-                    for rep in d.get("representants", []):
-                        if rep.get("personne_morale"):
-                            continue  # on ignore les représentants qui sont des sociétés
-                        pappers_contacts.append({
-                            "prenom": rep.get("prenom", ""),
-                            "nom":    rep.get("nom", ""),
-                            "titre":  rep.get("qualite", "Représentant légal"),
-                            "source": "Pappers"
-                        })
-                    print(f"[PAPPERS] {len(pappers_contacts)} représentants pour {nom}")
-                else:
-                    print(f"[PAPPERS] Erreur {r.status_code}: {r.text[:100]}")
-        except Exception as e:
-            print(f"[PAPPERS ERROR] {nom}: {e}")
+        # Tentative 2 : par nom de société si domaine a échoué
+        if not pappers_data and not siren:
+            try:
+                async with httpx.AsyncClient(timeout=10) as c:
+                    print(f"[PAPPERS] Recherche par nom : {nom}")
+                    r = await c.get("https://api.pappers.fr/v2/recherche",
+                        params={"api_token": PAPPERS_KEY, "q": nom, "par_page": 1})
+                    print(f"[PAPPERS] Recherche nom status {r.status_code} pour {nom}")
+                    if r.status_code == 200:
+                        resultats = r.json().get("resultats", [])
+                        if resultats:
+                            siren = resultats[0].get("siren", "")
+                            print(f"[PAPPERS] SIREN trouvé par nom : {siren}")
+            except Exception as e:
+                print(f"[PAPPERS ERROR nom] {e}")
+
+        # Tentative 3 : par SIREN si on en a un (original ou trouvé par nom)
+        if not pappers_data and siren:
+            try:
+                async with httpx.AsyncClient(timeout=10) as c:
+                    print(f"[PAPPERS] Recherche par SIREN : {siren}")
+                    r = await c.get("https://api.pappers.fr/v2/entreprise",
+                        params={"api_token": PAPPERS_KEY, "siren": siren})
+                    print(f"[PAPPERS] Status SIREN {r.status_code} pour {nom}")
+                    if r.status_code == 200:
+                        pappers_data = r.json()
+            except Exception as e:
+                print(f"[PAPPERS ERROR siren] {e}")
+
+        # Extraire SIREN + représentants depuis la réponse Pappers
+        if pappers_data:
+            if not siren:
+                siren = pappers_data.get("siren", "")
+            for rep in pappers_data.get("representants", []):
+                if rep.get("personne_morale"):
+                    continue
+                pappers_contacts.append({
+                    "prenom": rep.get("prenom", ""),
+                    "nom":    rep.get("nom", ""),
+                    "titre":  rep.get("qualite", "Représentant légal"),
+                    "source": "Pappers"
+                })
+            print(f"[PAPPERS] {len(pappers_contacts)} représentants | SIREN={siren}")
 
     # -------------------------------------------------------
-    # ÉTAPE 2 : Claude → dirigeants non légaux (CEO, CFO, DAF...)
+    # ÉTAPE 2 : Claude → tous les dirigeants (CEO, CFO, DAF...)
+    # On lui donne tout ce qu'on sait pour qu'il trouve le max
     # -------------------------------------------------------
     claude_contacts = []
 
     if not ANTHROPIC_KEY:
         print("[ERROR] Pas de clé Anthropic !")
     else:
-        # On liste les noms déjà trouvés via Pappers pour éviter les doublons
-        noms_deja_trouves = [f"{c['prenom']} {c['nom']}" for c in pappers_contacts]
-        exclusion = f"\nExclure ces personnes déjà connues : {', '.join(noms_deja_trouves)}" if noms_deja_trouves else ""
+        noms_deja_trouves = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
+        exclusion = f"\nNe pas inclure (déjà connus) : {', '.join(noms_deja_trouves)}" if noms_deja_trouves else ""
 
         prompt = f"""Tu es un expert en dirigeants d'entreprises françaises.
-Trouve les dirigeants opérationnels (pas les représentants légaux) de cette société :
+Trouve TOUS les dirigeants de cette société :
 Nom: {nom}{chr(10)+"SIREN: "+siren if siren else ""}{chr(10)+"Site: "+domaine if domaine else ""}{exclusion}
 
-Cherche : CEO, Directeur Général, CFO, DAF, CTO, COO, CMO, DRH, Partners, Associés.
-Ne cherche PAS les gérants ou présidents légaux (déjà récupérés).
-Si tu ne trouves personne de certain, retourne une liste vide.
+Cherche : CEO, Directeur Général, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
+Inclus tous les dirigeants que tu connais avec certitude.
+Si tu n'es pas certain d'un nom, ne l'inclus pas.
+Si tu ne trouves personne, retourne une liste vide.
 
 Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
 {{"contacts":[{{"prenom":"...","nom":"...","titre":"..."}}]}}"""
@@ -103,7 +133,7 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                         },
                         json={
                             "model": "claude-sonnet-4-20250514",
-                            "max_tokens": 600,
+                            "max_tokens": 800,
                             # PHASE 2 : remplacer [] par [{"type":"web_search_20250305","name":"web_search"}]
                             "tools": [],
                             "messages": [{"role": "user", "content": prompt}]
@@ -140,7 +170,7 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                     await asyncio.sleep(delays[attempt])
 
     # -------------------------------------------------------
-    # ÉTAPE 3 : Fusionner Pappers + Claude
+    # ÉTAPE 3 : Fusionner Pappers + Claude (Pappers en premier)
     # -------------------------------------------------------
     tous_contacts = pappers_contacts + claude_contacts
 
