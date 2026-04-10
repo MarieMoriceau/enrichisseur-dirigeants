@@ -31,7 +31,6 @@ async def enrich_one(request: Request):
 
     # -------------------------------------------------------
     # ÉTAPE 1 : Pappers → SIREN + représentants légaux
-    # On essaie d'abord par domaine, puis par nom si 404
     # -------------------------------------------------------
     if PAPPERS_KEY:
         pappers_data = None
@@ -47,18 +46,17 @@ async def enrich_one(request: Request):
                     if r.status_code == 200:
                         pappers_data = r.json()
                     else:
-                        print(f"[PAPPERS] 404 domaine, on va essayer par nom")
+                        print(f"[PAPPERS] 404 domaine, tentative par nom")
             except Exception as e:
                 print(f"[PAPPERS ERROR domaine] {e}")
 
-        # Tentative 2 : par nom de société si domaine a échoué
+        # Tentative 2 : par nom si domaine échoue
         if not pappers_data and not siren:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
                     print(f"[PAPPERS] Recherche par nom : {nom}")
                     r = await c.get("https://api.pappers.fr/v2/recherche",
                         params={"api_token": PAPPERS_KEY, "q": nom, "par_page": 1})
-                    print(f"[PAPPERS] Recherche nom status {r.status_code} pour {nom}")
                     if r.status_code == 200:
                         resultats = r.json().get("resultats", [])
                         if resultats:
@@ -67,20 +65,18 @@ async def enrich_one(request: Request):
             except Exception as e:
                 print(f"[PAPPERS ERROR nom] {e}")
 
-        # Tentative 3 : par SIREN si on en a un (original ou trouvé par nom)
+        # Tentative 3 : par SIREN
         if not pappers_data and siren:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
                     print(f"[PAPPERS] Recherche par SIREN : {siren}")
                     r = await c.get("https://api.pappers.fr/v2/entreprise",
                         params={"api_token": PAPPERS_KEY, "siren": siren})
-                    print(f"[PAPPERS] Status SIREN {r.status_code} pour {nom}")
                     if r.status_code == 200:
                         pappers_data = r.json()
             except Exception as e:
                 print(f"[PAPPERS ERROR siren] {e}")
 
-        # Extraire SIREN + représentants depuis la réponse Pappers
         if pappers_data:
             if not siren:
                 siren = pappers_data.get("siren", "")
@@ -91,13 +87,14 @@ async def enrich_one(request: Request):
                     "prenom": rep.get("prenom", ""),
                     "nom":    rep.get("nom", ""),
                     "titre":  rep.get("qualite", "Représentant légal"),
+                    "email":  "",
+                    "confiance": "",
                     "source": "Pappers"
                 })
             print(f"[PAPPERS] {len(pappers_contacts)} représentants | SIREN={siren}")
 
     # -------------------------------------------------------
-    # ÉTAPE 2 : Claude → tous les dirigeants (CEO, CFO, DAF...)
-    # On lui donne tout ce qu'on sait pour qu'il trouve le max
+    # ÉTAPE 2 : Claude + web_search → dirigeants + emails
     # -------------------------------------------------------
     claude_contacts = []
 
@@ -107,22 +104,22 @@ async def enrich_one(request: Request):
         noms_deja_trouves = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
         exclusion = f"\nNe pas inclure (déjà connus) : {', '.join(noms_deja_trouves)}" if noms_deja_trouves else ""
 
-        prompt = f"""Tu es un expert en dirigeants d'entreprises françaises.
-Trouve TOUS les dirigeants de cette société :
+        prompt = f"""Recherche sur le web les dirigeants et leurs emails professionnels pour cette société française :
 Nom: {nom}{chr(10)+"SIREN: "+siren if siren else ""}{chr(10)+"Site: "+domaine if domaine else ""}{exclusion}
 
-Cherche : CEO, Directeur Général, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
-Inclus tous les dirigeants que tu connais avec certitude.
-Si tu n'es pas certain d'un nom, ne l'inclus pas.
-Si tu ne trouves personne, retourne une liste vide.
+Cherche sur LinkedIn, le site officiel, Societe.com, Manageo :
+- CEO, Directeur Général, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs
+- Leur email professionnel (format prénom.nom@domaine.fr ou similaire)
+
+Pour les emails non trouvés, essaie de déduire le format depuis le domaine ({domaine}) si tu connais la convention de la société.
 
 Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
-{{"contacts":[{{"prenom":"...","nom":"...","titre":"..."}}]}}"""
+{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
 
-        delays = [5, 15, 30]
+        delays = [10, 25, 45]
         for attempt in range(3):
             try:
-                async with httpx.AsyncClient(timeout=60) as c:
+                async with httpx.AsyncClient(timeout=90) as c:
                     print(f"[CLAUDE] Tentative {attempt+1}/3 pour {nom}")
                     r = await c.post(
                         "https://api.anthropic.com/v1/messages",
@@ -133,9 +130,9 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                         },
                         json={
                             "model": "claude-sonnet-4-20250514",
-                            "max_tokens": 800,
-                            # PHASE 2 : remplacer [] par [{"type":"web_search_20250305","name":"web_search"}]
-                            "tools": [],
+                            "max_tokens": 1000,
+                            # ✅ PHASE 2 : web_search activé
+                            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                             "messages": [{"role": "user", "content": prompt}]
                         }
                     )
@@ -154,7 +151,7 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                         if m:
                             parsed = json.loads(m.group())
                             for ct in parsed.get("contacts", []):
-                                ct["source"] = "Claude"
+                                ct["source"] = "Claude+web"
                             claude_contacts = parsed.get("contacts", [])
                             print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
                         else:
@@ -170,26 +167,26 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                     await asyncio.sleep(delays[attempt])
 
     # -------------------------------------------------------
-    # ÉTAPE 3 : Fusionner Pappers + Claude (Pappers en premier)
+    # ÉTAPE 3 : Fusionner Pappers + Claude
     # -------------------------------------------------------
     tous_contacts = pappers_contacts + claude_contacts
 
     if not tous_contacts:
-        tous_contacts = [{"prenom":"","nom":"","titre":"","source":""}]
+        tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
 
     results = []
     for ct in tous_contacts:
         results.append({
-            "org_id":  org_id,
-            "societe": nom,
-            "siren":   siren,
-            "domaine": domaine,
-            "prenom":  ct.get("prenom",""),
-            "nom_dg":  ct.get("nom",""),
-            "titre":   ct.get("titre",""),
-            "email":   "",
-            "confiance": "",
-            "source":  ct.get("source",""),
+            "org_id":   org_id,
+            "societe":  nom,
+            "siren":    siren,
+            "domaine":  domaine,
+            "prenom":   ct.get("prenom",""),
+            "nom_dg":   ct.get("nom",""),
+            "titre":    ct.get("titre",""),
+            "email":    ct.get("email","") or "",
+            "confiance": ct.get("confiance_email", ct.get("confiance","")),
+            "source":   ct.get("source",""),
         })
 
     print(f"[DONE] {nom} → {len(results)} contacts au total")
