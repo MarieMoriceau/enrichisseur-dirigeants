@@ -10,7 +10,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f1f5f9; min-
 .header { background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); color: white; padding: 24px 32px; }
 .header h1 { font-size: 20px; font-weight: 800; margin-bottom: 4px; }
 .header p { font-size: 13px; opacity: 0.75; }
-.container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
 .card { background: white; border-radius: 12px; border: 1px solid #e2e8f0; padding: 20px; margin-bottom: 16px; }
 .card h2 { font-size: 14px; font-weight: 700; color: #1e293b; margin-bottom: 14px; }
 .zone { border: 2px dashed #cbd5e1; border-radius: 10px; padding: 36px; text-align: center; cursor: pointer; color: #64748b; transition: all 0.2s; }
@@ -27,23 +27,27 @@ table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { background: #f8fafc; color: #475569; font-weight: 700; padding: 10px 12px; text-align: left; border-bottom: 2px solid #e2e8f0; }
 td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
 tr:hover td { background: #f8fafc; }
+.email-ok { color: #2563eb; font-weight: 600; }
 .no-email { color: #94a3b8; font-style: italic; }
 .badge { border-radius: 4px; padding: 2px 7px; font-size: 10px; font-weight: 700; }
-.src { background: #eff6ff; color: #2563eb; }
+.haute { background: #dcfce7; color: #166534; }
+.moyenne { background: #fef9c3; color: #854d0e; }
+.faible { background: #fee2e2; color: #991b1b; }
+.src-pappers { background: #eff6ff; color: #2563eb; }
+.src-claude { background: #f5f3ff; color: #7c3aed; }
 .info { font-size: 12px; color: #059669; font-weight: 600; margin-top: 8px; }
 .row-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
 .stat { font-size: 12px; color: #64748b; }
-.countdown { font-size: 11px; color: #7c3aed; font-weight: 600; margin-top: 4px; }
-.phase-note { font-size: 11px; background: #fef9c3; color: #854d0e; border-radius: 6px; padding: 6px 10px; margin-top: 10px; }
+.countdown { font-size: 11px; color: #7c3aed; font-weight: 600; margin-top: 4px; height: 16px; }
+.phase-note { font-size: 11px; background: #dcfce7; color: #166534; border-radius: 6px; padding: 6px 10px; margin-top: 10px; font-weight: 600; }
 </style>
 </head>
 <body>
 <div class="header">
   <h1>🔍 Enrichisseur Dirigeants</h1>
-  <p>Claude AI — CEO, DG, Président, CFO, DAF · Phase 1 : noms &amp; titres</p>
+  <p>Pappers + Claude AI avec recherche web — Dirigeants &amp; Emails</p>
 </div>
 <div class="container">
-
   <div class="card">
     <h2>📋 Importer vos sociétés (CSV ou Excel)</h2>
     <div class="zone" id="zone" onclick="document.getElementById('fileInput').click()"
@@ -56,7 +60,7 @@ tr:hover td { background: #f8fafc; }
       <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV ou Excel — colonnes : nom/organisation, siren, domaine</div>
     </div>
     <div class="info" id="fileInfo"></div>
-    <div class="phase-note">⚡ Phase 1 active : noms et titres uniquement — rapide et stable. Les emails seront ajoutés en Phase 2.</div>
+    <div class="phase-note">✅ Phase 2 : recherche web activée — dirigeants + emails (pause 20s entre sociétés)</div>
     <div class="row-btns">
       <button class="btn btn-primary" id="btnStart" onclick="startEnrichment()" disabled>⚡ Lancer l'enrichissement</button>
       <button class="btn btn-stop" id="btnStop" onclick="stopEnrichment()">⏹ Arrêter</button>
@@ -72,19 +76,14 @@ tr:hover td { background: #f8fafc; }
     <h2>✅ Résultats</h2>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Source</th></tr></thead>
+      <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Email</th><th>Confiance</th><th>Source</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
   </div>
-
 </div>
 <script>
-let rows = [];
-let results = [];
-let running = false;
-let stopFlag = false;
-let countdownInterval = null;
+let rows = [], results = [], running = false, stopFlag = false, countdownInterval = null;
 
 function handleDrop(e) {
   e.preventDefault();
@@ -96,11 +95,11 @@ function handleFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext === 'csv') {
     const reader = new FileReader();
-    reader.onload = e => { parseCSV(e.target.result); };
+    reader.onload = e => parseCSV(e.target.result);
     reader.readAsText(file, 'UTF-8');
-  } else if (ext === 'xlsx' || ext === 'xls') {
+  } else {
     const reader = new FileReader();
-    reader.onload = e => { parseXLSX(e.target.result); };
+    reader.onload = e => parseXLSX(e.target.result);
     reader.readAsArrayBuffer(file);
   }
   document.getElementById('fileInfo').textContent = `✅ Fichier chargé : ${file.name}`;
@@ -108,7 +107,7 @@ function handleFile(file) {
 
 function parseCSV(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-  const sep = (text.split('\n')[0].split(';').length > text.split('\n')[0].split(',').length) ? ';' : ',';
+  const sep = text.split('\n')[0].split(';').length > text.split('\n')[0].split(',').length ? ';' : ',';
   const lines = text.trim().split('\n');
   const headers = lines[0].split(sep).map(h => h.trim().toLowerCase());
   rows = lines.slice(1).filter(l => l.trim()).map(line => {
@@ -124,11 +123,9 @@ function parseXLSX(buffer) {
   if (!window.XLSX) {
     const s = document.createElement('script');
     s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-    s.onload = () => { doParseXLSX(buffer); };
+    s.onload = () => doParseXLSX(buffer);
     document.head.appendChild(s);
-  } else {
-    doParseXLSX(buffer);
-  }
+  } else doParseXLSX(buffer);
 }
 
 function doParseXLSX(buffer) {
@@ -179,9 +176,7 @@ async function waitWithCountdown(seconds) {
 
 async function startEnrichment() {
   if (running) return;
-  running = true;
-  stopFlag = false;
-  results = [];
+  running = true; stopFlag = false; results = [];
   document.getElementById('btnStart').disabled = true;
   document.getElementById('btnStop').style.display = 'inline-block';
   document.getElementById('btnExport').style.display = 'none';
@@ -189,8 +184,7 @@ async function startEnrichment() {
 
   for (let i = 0; i < rows.length; i++) {
     if (stopFlag) break;
-    const pct = Math.round((i / rows.length) * 100);
-    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressFill').style.width = Math.round(i/rows.length*100) + '%';
     document.getElementById('progressLabel').textContent = `${i}/${rows.length} enrichis`;
     document.getElementById('statLabel').textContent = `⏳ ${rows[i].nom}…`;
 
@@ -201,23 +195,17 @@ async function startEnrichment() {
         body: JSON.stringify(rows[i])
       });
       const data = await resp.json();
-      if (data.results) {
-        results.push(...data.results);
-        renderResults();
-      }
+      if (data.results) { results.push(...data.results); renderResults(); }
     } catch(e) {
-      results.push({ societe: rows[i].nom, siren: rows[i].siren, prenom: '', nom_dg: '', titre: '', source: '' });
+      results.push({ societe: rows[i].nom, siren:'', prenom:'', nom_dg:'', titre:'', email:'', confiance:'', source:'' });
       renderResults();
     }
 
-    // Pause entre chaque société (3s suffisent sans web_search)
-    if (i < rows.length - 1 && !stopFlag) {
-      await waitWithCountdown(3);
-    }
+    if (i < rows.length - 1 && !stopFlag) await waitWithCountdown(20);
   }
 
   document.getElementById('progressFill').style.width = '100%';
-  document.getElementById('progressLabel').textContent = `${stopFlag ? 'Arrêté' : 'Terminé'} — ${results.length} contacts trouvés`;
+  document.getElementById('progressLabel').textContent = `${stopFlag?'Arrêté':'Terminé'} — ${results.length} contacts trouvés`;
   document.getElementById('statLabel').textContent = stopFlag ? '⏹ Arrêté' : '✅ Terminé !';
   document.getElementById('countdown').textContent = '';
   document.getElementById('btnStop').style.display = 'none';
@@ -235,24 +223,28 @@ function stopEnrichment() {
 }
 
 function renderResults() {
-  const tbody = document.getElementById('tbody');
-  document.getElementById('statLabel').textContent = `👤 ${results.filter(r => r.nom_dg).length}/${results.length} dirigeants trouvés`;
-  tbody.innerHTML = results.map(r => `<tr>
-    <td><strong>${r.societe||'—'}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${r.org_id}</span>`:''}</td>
-    <td>${r.prenom||'—'}</td>
-    <td>${r.nom_dg||'—'}</td>
-    <td>${r.titre||'—'}</td>
-    <td>${r.source?`<span class="badge src">${r.source}</span>`:'—'}</td>
-  </tr>`).join('');
+  const withEmail = results.filter(r => r.email).length;
+  document.getElementById('statLabel').textContent = `✉️ ${withEmail} emails | 👤 ${results.filter(r=>r.nom_dg).length} dirigeants`;
+  document.getElementById('tbody').innerHTML = results.map(r => {
+    const conf = r.confiance || '';
+    const srcClass = (r.source||'').includes('Pappers') ? 'src-pappers' : 'src-claude';
+    return `<tr>
+      <td><strong>${r.societe||'—'}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${r.org_id}</span>`:''}</td>
+      <td>${r.prenom||'—'}</td>
+      <td>${r.nom_dg||'—'}</td>
+      <td>${r.titre||'—'}</td>
+      <td>${r.email?`<span class="email-ok">${r.email}</span>`:`<span class="no-email">—</span>`}</td>
+      <td>${conf?`<span class="badge ${conf}">${conf}</span>`:'—'}</td>
+      <td>${r.source?`<span class="badge ${srcClass}">${r.source}</span>`:'—'}</td>
+    </tr>`;
+  }).join('');
 }
 
 function exportCSV() {
-  const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','source'];
+  const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','email','confiance','source'];
   const lines = [headers.join(';')];
-  results.forEach(r => {
-    lines.push(headers.map(h => `"${(r[h]||'').replace(/"/g,'""')}"`).join(';'));
-  });
-  const blob = new Blob(['\uFEFF' + lines.join('\n')], {type: 'text/csv;charset=utf-8'});
+  results.forEach(r => lines.push(headers.map(h=>`"${(r[h]||'').replace(/"/g,'""')}"`).join(';')));
+  const blob = new Blob(['\uFEFF'+lines.join('\n')], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'enrichissement_dirigeants.csv';
