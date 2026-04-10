@@ -25,103 +25,130 @@ async def enrich_one(request: Request):
     domaine = data.get("domaine", "")
     org_id  = data.get("org_id", "")
 
-    print(f"[START] {nom} | key={'OK' if ANTHROPIC_KEY else 'MISSING'}")
+    print(f"[START] {nom} | domaine={domaine} | siren={siren}")
 
-    # Pappers → domaine si manquant
-    if not domaine and siren and PAPPERS_KEY:
+    pappers_contacts = []
+
+    # -------------------------------------------------------
+    # ÉTAPE 1 : Pappers → SIREN + représentants légaux
+    # -------------------------------------------------------
+    if PAPPERS_KEY and (domaine or siren):
         try:
-            async with httpx.AsyncClient(timeout=8) as c:
-                r = await c.get("https://api.pappers.fr/v2/entreprise",
-                    params={"api_token": PAPPERS_KEY, "siren": siren})
+            async with httpx.AsyncClient(timeout=10) as c:
+                # On cherche par site_internet si on a le domaine, sinon par siren
+                if domaine:
+                    params = {"api_token": PAPPERS_KEY, "site_internet": domaine}
+                else:
+                    params = {"api_token": PAPPERS_KEY, "siren": siren}
+
+                print(f"[PAPPERS] Appel pour {nom} avec params={list(params.keys())}")
+                r = await c.get("https://api.pappers.fr/v2/entreprise", params=params)
+                print(f"[PAPPERS] Status {r.status_code} pour {nom}")
+
                 if r.status_code == 200:
                     d = r.json()
-                    domaine = d.get("domaine_url","") or d.get("site_web","")
+                    # Récupérer le SIREN si on ne l'avait pas
+                    if not siren:
+                        siren = d.get("siren", "")
+                    # Récupérer les représentants légaux
+                    for rep in d.get("representants", []):
+                        if rep.get("personne_morale"):
+                            continue  # on ignore les représentants qui sont des sociétés
+                        pappers_contacts.append({
+                            "prenom": rep.get("prenom", ""),
+                            "nom":    rep.get("nom", ""),
+                            "titre":  rep.get("qualite", "Représentant légal"),
+                            "source": "Pappers"
+                        })
+                    print(f"[PAPPERS] {len(pappers_contacts)} représentants pour {nom}")
+                else:
+                    print(f"[PAPPERS] Erreur {r.status_code}: {r.text[:100]}")
         except Exception as e:
-            print(f"[PAPPERS ERROR] {e}")
+            print(f"[PAPPERS ERROR] {nom}: {e}")
 
-    contacts = []
+    # -------------------------------------------------------
+    # ÉTAPE 2 : Claude → dirigeants non légaux (CEO, CFO, DAF...)
+    # -------------------------------------------------------
+    claude_contacts = []
+
     if not ANTHROPIC_KEY:
         print("[ERROR] Pas de clé Anthropic !")
-        return {"results": [{"org_id":org_id,"societe":nom,"siren":siren,"domaine":domaine,
-            "prenom":"","nom_dg":"","titre":"","email":"","confiance":"faible","source":"Clé API manquante"}]}
+    else:
+        # On liste les noms déjà trouvés via Pappers pour éviter les doublons
+        noms_deja_trouves = [f"{c['prenom']} {c['nom']}" for c in pappers_contacts]
+        exclusion = f"\nExclure ces personnes déjà connues : {', '.join(noms_deja_trouves)}" if noms_deja_trouves else ""
 
-    # -------------------------------------------------------
-    # PHASE 1 : noms et titres uniquement (pas d'email pour l'instant)
-    # PHASE 2 (à réactiver plus tard) : ajouter web_search + recherche email
-    # -------------------------------------------------------
-    prompt = f"""Tu es un expert en annuaires d'entreprises françaises.
-Donne-moi les dirigeants de cette société :
-Nom: {nom}{chr(10)+"SIREN: "+siren if siren else ""}{chr(10)+"Site: "+domaine if domaine else ""}
+        prompt = f"""Tu es un expert en dirigeants d'entreprises françaises.
+Trouve les dirigeants opérationnels (pas les représentants légaux) de cette société :
+Nom: {nom}{chr(10)+"SIREN: "+siren if siren else ""}{chr(10)+"Site: "+domaine if domaine else ""}{exclusion}
 
-Cherche dans ta connaissance : CEO, DG, Président, Gérant, CFO, DAF, CTO, COO, CMO, Partners, Associés.
+Cherche : CEO, Directeur Général, CFO, DAF, CTO, COO, CMO, DRH, Partners, Associés.
+Ne cherche PAS les gérants ou présidents légaux (déjà récupérés).
+Si tu ne trouves personne de certain, retourne une liste vide.
 
 Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
-{{"domaine":"...ou null","contacts":[{{"prenom":"...","nom":"...","titre":"..."}}]}}"""
+{{"contacts":[{{"prenom":"...","nom":"...","titre":"..."}}]}}"""
 
-    # -------------------------------------------------------
-    # PHASE 2 (désactivé) — réactiver quand on voudra les emails :
-    #
-    # prompt += " Et leur email professionnel."
-    # tools = [{"type": "web_search_20250305", "name": "web_search"}]
-    # (remplacer tools=[] par tools=tools dans l'appel API ci-dessous)
-    # -------------------------------------------------------
+        delays = [5, 15, 30]
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=60) as c:
+                    print(f"[CLAUDE] Tentative {attempt+1}/3 pour {nom}")
+                    r = await c.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": ANTHROPIC_KEY,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json"
+                        },
+                        json={
+                            "model": "claude-sonnet-4-20250514",
+                            "max_tokens": 600,
+                            # PHASE 2 : remplacer [] par [{"type":"web_search_20250305","name":"web_search"}]
+                            "tools": [],
+                            "messages": [{"role": "user", "content": prompt}]
+                        }
+                    )
+                    print(f"[CLAUDE] Status {r.status_code} pour {nom}")
 
-    delays = [5, 15, 30]
+                    if r.status_code in (429, 529):
+                        wait = delays[attempt]
+                        print(f"[WAIT] Status {r.status_code} — attente {wait}s")
+                        await asyncio.sleep(wait)
+                        continue
 
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=60) as c:
-                print(f"[CLAUDE] Tentative {attempt+1}/3 pour {nom}")
-                r = await c.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": ANTHROPIC_KEY,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json"
-                    },
-                    json={
-                        "model": "claude-sonnet-4-20250514",
-                        "max_tokens": 600,
-                        # PHASE 2 : remplacer [] par [{"type":"web_search_20250305","name":"web_search"}]
-                        "tools": [],
-                        "messages": [{"role": "user", "content": prompt}]
-                    }
-                )
-                print(f"[CLAUDE] Status {r.status_code} pour {nom}")
-
-                if r.status_code in (429, 529):
-                    wait = delays[attempt]
-                    print(f"[WAIT] Status {r.status_code} — attente {wait}s avant retry")
-                    await asyncio.sleep(wait)
-                    continue
-
-                if r.status_code == 200:
-                    all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
-                    print(f"[CLAUDE] Réponse {len(all_text)} chars pour {nom}")
-                    m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
-                    if m:
-                        parsed = json.loads(m.group())
-                        if not domaine and parsed.get("domaine"):
-                            domaine = parsed["domaine"]
-                        contacts = parsed.get("contacts", [])
-                        print(f"[OK] {len(contacts)} contacts pour {nom}")
+                    if r.status_code == 200:
+                        all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
+                        print(f"[CLAUDE] Réponse {len(all_text)} chars pour {nom}")
+                        m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
+                        if m:
+                            parsed = json.loads(m.group())
+                            for ct in parsed.get("contacts", []):
+                                ct["source"] = "Claude"
+                            claude_contacts = parsed.get("contacts", [])
+                            print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
+                        else:
+                            print(f"[CLAUDE WARN] Pas de JSON pour {nom}: {all_text[:100]}")
+                        break
                     else:
-                        print(f"[WARN] Pas de JSON pour {nom}: {all_text[:200]}")
-                    break
-                else:
-                    print(f"[ERROR] Status {r.status_code}: {r.text[:200]}")
-                    break
+                        print(f"[CLAUDE ERROR] Status {r.status_code}: {r.text[:200]}")
+                        break
 
-        except Exception as e:
-            print(f"[EXCEPTION] {nom} tentative {attempt+1}: {e}")
-            if attempt < 2:
-                await asyncio.sleep(delays[attempt])
+            except Exception as e:
+                print(f"[CLAUDE EXCEPTION] {nom} tentative {attempt+1}: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(delays[attempt])
 
-    if not contacts:
-        contacts = [{"prenom":"","nom":"","titre":""}]
+    # -------------------------------------------------------
+    # ÉTAPE 3 : Fusionner Pappers + Claude
+    # -------------------------------------------------------
+    tous_contacts = pappers_contacts + claude_contacts
+
+    if not tous_contacts:
+        tous_contacts = [{"prenom":"","nom":"","titre":"","source":""}]
 
     results = []
-    for ct in contacts:
+    for ct in tous_contacts:
         results.append({
             "org_id":  org_id,
             "societe": nom,
@@ -130,9 +157,10 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
             "prenom":  ct.get("prenom",""),
             "nom_dg":  ct.get("nom",""),
             "titre":   ct.get("titre",""),
-            # PHASE 2 : ces champs seront remplis quand on réactivera la recherche email
-            "email":    "",
+            "email":   "",
             "confiance": "",
-            "source":   "Claude (mémoire)",
+            "source":  ct.get("source",""),
         })
+
+    print(f"[DONE] {nom} → {len(results)} contacts au total")
     return {"results": results}
