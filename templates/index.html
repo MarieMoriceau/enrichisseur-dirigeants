@@ -27,23 +27,20 @@ table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { background: #f8fafc; color: #475569; font-weight: 700; padding: 10px 12px; text-align: left; border-bottom: 2px solid #e2e8f0; }
 td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
 tr:hover td { background: #f8fafc; }
-.email-ok { color: #2563eb; font-weight: 600; }
 .no-email { color: #94a3b8; font-style: italic; }
 .badge { border-radius: 4px; padding: 2px 7px; font-size: 10px; font-weight: 700; }
-.haute { background: #dcfce7; color: #166534; }
-.moyenne { background: #fef9c3; color: #854d0e; }
-.faible { background: #fee2e2; color: #991b1b; }
 .src { background: #eff6ff; color: #2563eb; }
 .info { font-size: 12px; color: #059669; font-weight: 600; margin-top: 8px; }
 .row-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
 .stat { font-size: 12px; color: #64748b; }
 .countdown { font-size: 11px; color: #7c3aed; font-weight: 600; margin-top: 4px; }
+.phase-note { font-size: 11px; background: #fef9c3; color: #854d0e; border-radius: 6px; padding: 6px 10px; margin-top: 10px; }
 </style>
 </head>
 <body>
 <div class="header">
   <h1>🔍 Enrichisseur Dirigeants</h1>
-  <p>Pappers + Claude AI — CEO, CFO, Partners, Associés</p>
+  <p>Claude AI — CEO, DG, Président, CFO, DAF · Phase 1 : noms &amp; titres</p>
 </div>
 <div class="container">
 
@@ -59,6 +56,7 @@ tr:hover td { background: #f8fafc; }
       <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV ou Excel — colonnes : nom/organisation, siren, domaine</div>
     </div>
     <div class="info" id="fileInfo"></div>
+    <div class="phase-note">⚡ Phase 1 active : noms et titres uniquement — rapide et stable. Les emails seront ajoutés en Phase 2.</div>
     <div class="row-btns">
       <button class="btn btn-primary" id="btnStart" onclick="startEnrichment()" disabled>⚡ Lancer l'enrichissement</button>
       <button class="btn btn-stop" id="btnStop" onclick="stopEnrichment()">⏹ Arrêter</button>
@@ -74,7 +72,7 @@ tr:hover td { background: #f8fafc; }
     <h2>✅ Résultats</h2>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>Société</th><th>Dirigeant</th><th>Email</th><th>Confiance</th><th>Source</th></tr></thead>
+      <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Source</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -86,7 +84,6 @@ let rows = [];
 let results = [];
 let running = false;
 let stopFlag = false;
-let currentIdx = 0;
 let countdownInterval = null;
 
 function handleDrop(e) {
@@ -162,12 +159,11 @@ function onRowsParsed() {
   document.getElementById('statLabel').textContent = `${rows.length} sociétés à enrichir`;
 }
 
-// Attente avec compte à rebours affiché
 async function waitWithCountdown(seconds) {
   return new Promise(resolve => {
     let remaining = seconds;
     const el = document.getElementById('countdown');
-    el.textContent = `⏳ Pause ${remaining}s pour éviter la surcharge Claude…`;
+    el.textContent = `⏳ Pause ${remaining}s…`;
     countdownInterval = setInterval(() => {
       remaining--;
       if (remaining <= 0) {
@@ -175,7 +171,7 @@ async function waitWithCountdown(seconds) {
         el.textContent = '';
         resolve();
       } else {
-        el.textContent = `⏳ Pause ${remaining}s pour éviter la surcharge Claude…`;
+        el.textContent = `⏳ Pause ${remaining}s…`;
       }
     }, 1000);
   });
@@ -186,7 +182,6 @@ async function startEnrichment() {
   running = true;
   stopFlag = false;
   results = [];
-  currentIdx = 0;
   document.getElementById('btnStart').disabled = true;
   document.getElementById('btnStop').style.display = 'inline-block';
   document.getElementById('btnExport').style.display = 'none';
@@ -194,7 +189,6 @@ async function startEnrichment() {
 
   for (let i = 0; i < rows.length; i++) {
     if (stopFlag) break;
-    currentIdx = i;
     const pct = Math.round((i / rows.length) * 100);
     document.getElementById('progressFill').style.width = pct + '%';
     document.getElementById('progressLabel').textContent = `${i}/${rows.length} enrichis`;
@@ -212,13 +206,13 @@ async function startEnrichment() {
         renderResults();
       }
     } catch(e) {
-      results.push({ societe: rows[i].nom, siren: rows[i].siren, email: '', confiance: 'faible', source: '', nom_dg: '', titre: '', prenom: '' });
+      results.push({ societe: rows[i].nom, siren: rows[i].siren, prenom: '', nom_dg: '', titre: '', source: '' });
       renderResults();
     }
 
-    // ✅ FIX : attendre 8 secondes entre chaque société pour ne pas surcharger Claude
+    // Pause entre chaque société (3s suffisent sans web_search)
     if (i < rows.length - 1 && !stopFlag) {
-      await waitWithCountdown(8);
+      await waitWithCountdown(3);
     }
   }
 
@@ -242,23 +236,18 @@ function stopEnrichment() {
 
 function renderResults() {
   const tbody = document.getElementById('tbody');
-  const withEmail = results.filter(r => r.email).length;
-  document.getElementById('statLabel').textContent = `✉️ ${withEmail}/${results.length} emails`;
-
-  tbody.innerHTML = results.map(r => {
-    const conf = r.confiance || '';
-    return `<tr>
-      <td><strong>${r.societe||'—'}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${r.org_id}</span>`:''}</td>
-      <td>${r.prenom||''} ${r.nom_dg||''}<br><span style="font-size:10px;color:#94a3b8">${r.titre||''}</span></td>
-      <td>${r.email?`<span class="email-ok">${r.email}</span>`:`<span class="no-email">Non trouvé</span>`}</td>
-      <td>${conf?`<span class="badge ${conf}">${conf}</span>`:'—'}</td>
-      <td>${r.source?`<span class="badge src">${r.source}</span>`:'—'}</td>
-    </tr>`;
-  }).join('');
+  document.getElementById('statLabel').textContent = `👤 ${results.filter(r => r.nom_dg).length}/${results.length} dirigeants trouvés`;
+  tbody.innerHTML = results.map(r => `<tr>
+    <td><strong>${r.societe||'—'}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${r.org_id}</span>`:''}</td>
+    <td>${r.prenom||'—'}</td>
+    <td>${r.nom_dg||'—'}</td>
+    <td>${r.titre||'—'}</td>
+    <td>${r.source?`<span class="badge src">${r.source}</span>`:'—'}</td>
+  </tr>`).join('');
 }
 
 function exportCSV() {
-  const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','email','confiance','source'];
+  const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','source'];
   const lines = [headers.join(';')];
   results.forEach(r => {
     lines.push(headers.map(h => `"${(r[h]||'').replace(/"/g,'""')}"`).join(';'));
@@ -266,7 +255,7 @@ function exportCSV() {
   const blob = new Blob(['\uFEFF' + lines.join('\n')], {type: 'text/csv;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'enrichissement.csv';
+  a.download = 'enrichissement_dirigeants.csv';
   a.click();
 }
 </script>
