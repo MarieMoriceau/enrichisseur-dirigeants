@@ -6,8 +6,9 @@ from fastapi.templating import Jinja2Templates
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-PAPPERS_KEY   = os.getenv("PAPPERS_API_KEY", "")
+ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
+PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
+FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -15,7 +16,12 @@ async def index(request: Request):
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "anthropic_key": bool(ANTHROPIC_KEY), "pappers_key": bool(PAPPERS_KEY)}
+    return {
+        "ok": True,
+        "anthropic_key": bool(ANTHROPIC_KEY),
+        "pappers_key": bool(PAPPERS_KEY),
+        "fullenrich_key": bool(FULLENRICH_KEY),
+    }
 
 @app.post("/enrich_one")
 async def enrich_one(request: Request):
@@ -35,7 +41,6 @@ async def enrich_one(request: Request):
     if PAPPERS_KEY:
         pappers_data = None
 
-        # Tentative 1 : par domaine
         if domaine:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -45,12 +50,9 @@ async def enrich_one(request: Request):
                     print(f"[PAPPERS] Status {r.status_code} pour {nom}")
                     if r.status_code == 200:
                         pappers_data = r.json()
-                    else:
-                        print(f"[PAPPERS] 404 domaine, tentative par nom")
             except Exception as e:
                 print(f"[PAPPERS ERROR domaine] {e}")
 
-        # Tentative 2 : par nom si domaine échoue
         if not pappers_data and not siren:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -65,7 +67,6 @@ async def enrich_one(request: Request):
             except Exception as e:
                 print(f"[PAPPERS ERROR nom] {e}")
 
-        # Tentative 3 : par SIREN
         if not pappers_data and siren:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -107,13 +108,11 @@ async def enrich_one(request: Request):
         prompt = f"""Recherche sur le web les dirigeants et leurs emails professionnels pour cette société française :
 Nom: {nom}{chr(10)+"SIREN: "+siren if siren else ""}{chr(10)+"Site: "+domaine if domaine else ""}{exclusion}
 
-Cherche sur LinkedIn, le site officiel, Societe.com, Manageo :
-- CEO, Directeur Général, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs
-- Leur email professionnel (format prénom.nom@domaine.fr ou similaire)
+Cherche sur LinkedIn, le site officiel, Societe.com :
+CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
+Et leur email professionnel si trouvé.
 
-Pour les emails non trouvés, essaie de déduire le format depuis le domaine ({domaine}) si tu connais la convention de la société.
-
-Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
+Réponds UNIQUEMENT avec ce JSON :
 {{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
 
         delays = [10, 25, 45]
@@ -131,7 +130,6 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                         json={
                             "model": "claude-sonnet-4-20250514",
                             "max_tokens": 1000,
-                            # ✅ PHASE 2 : web_search activé
                             "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                             "messages": [{"role": "user", "content": prompt}]
                         }
@@ -140,7 +138,7 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
 
                     if r.status_code in (429, 529):
                         wait = delays[attempt]
-                        print(f"[WAIT] Status {r.status_code} — attente {wait}s")
+                        print(f"[WAIT] {r.status_code} — attente {wait}s")
                         await asyncio.sleep(wait)
                         continue
 
@@ -154,11 +152,9 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                                 ct["source"] = "Claude+web"
                             claude_contacts = parsed.get("contacts", [])
                             print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
-                        else:
-                            print(f"[CLAUDE WARN] Pas de JSON pour {nom}: {all_text[:100]}")
                         break
                     else:
-                        print(f"[CLAUDE ERROR] Status {r.status_code}: {r.text[:200]}")
+                        print(f"[CLAUDE ERROR] {r.status_code}: {r.text[:200]}")
                         break
 
             except Exception as e:
@@ -167,12 +163,51 @@ Réponds UNIQUEMENT avec ce JSON, sans texte avant ni après :
                     await asyncio.sleep(delays[attempt])
 
     # -------------------------------------------------------
-    # ÉTAPE 3 : Fusionner Pappers + Claude
+    # ÉTAPE 3 : Fullenrich → email pour contacts sans email
+    # ou avec confiance faible uniquement (économie de quota)
     # -------------------------------------------------------
     tous_contacts = pappers_contacts + claude_contacts
 
+    if FULLENRICH_KEY and domaine:
+        for ct in tous_contacts:
+            email_actuel = ct.get("email", "")
+            confiance = ct.get("confiance_email", ct.get("confiance", ""))
+            # On appelle Fullenrich seulement si pas d'email ou confiance faible
+            if email_actuel and confiance != "faible":
+                continue
+            prenom = ct.get("prenom", "")
+            nom_ct = ct.get("nom", "")
+            if not prenom or not nom_ct:
+                continue
+            try:
+                async with httpx.AsyncClient(timeout=15) as c:
+                    print(f"[FULLENRICH] Recherche email pour {prenom} {nom_ct} @ {domaine}")
+                    r = await c.post(
+                        "https://api.fullenrich.com/v1/enrich/email",
+                        headers={
+                            "Authorization": f"Bearer {FULLENRICH_KEY}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "first_name": prenom,
+                            "last_name": nom_ct,
+                            "domain": domaine
+                        }
+                    )
+                    print(f"[FULLENRICH] Status {r.status_code} pour {prenom} {nom_ct}")
+                    if r.status_code == 200:
+                        fe_data = r.json()
+                        email_trouve = fe_data.get("email") or fe_data.get("data", {}).get("email", "")
+                        if email_trouve:
+                            print(f"[FULLENRICH OK] {email_trouve}")
+                            ct["email"] = email_trouve
+                            ct["confiance_email"] = "haute"
+                            ct["source"] = ct.get("source","") + "+Fullenrich"
+            except Exception as e:
+                print(f"[FULLENRICH ERROR] {prenom} {nom_ct}: {e}")
+
     if not tous_contacts:
-        tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
+        tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance_email":"","source":""}]
 
     results = []
     for ct in tous_contacts:
