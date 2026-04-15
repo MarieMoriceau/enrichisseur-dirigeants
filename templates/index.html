@@ -76,7 +76,7 @@ tr:hover td { background: #f8fafc; }
     <h2>✅ Résultats</h2>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Email</th><th>Confiance</th><th>Source</th></tr></thead>
+      <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Email</th><th>LinkedIn</th><th>Confiance</th><th>Source</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -276,6 +276,7 @@ function renderResults() {
       <td>${r.nom_dg||'—'}</td>
       <td>${r.titre||'—'}</td>
       <td>${r.email?`<span class="email-ok">${r.email}</span>`:`<span class="no-email">—</span>`}</td>
+      <td>${r.linkedin?`<a href="${r.linkedin}" target="_blank" style="color:#0077b5;font-size:11px">🔗 LinkedIn</a>`:'—'}</td>
       <td>${conf?`<span class="badge ${conf}">${conf}</span>`:'—'}</td>
       <td>${src?`<span class="badge ${srcClass}">${src}</span>`:'—'}</td>
     </tr>`;
@@ -283,7 +284,7 @@ function renderResults() {
 }
 
 function exportCSV() {
-  const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','email','confiance','source'];
+  const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','email','linkedin','confiance','source'];
   const lines = [headers.join(';')];
   results.forEach(r => lines.push(headers.map(h=>`"${(r[h]||'').replace(/"/g,'""')}"`).join(';')));
   const blob = new Blob(['\uFEFF'+lines.join('\n')], {type:'text/csv;charset=utf-8'});
