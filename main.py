@@ -10,6 +10,7 @@ ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 PIPEDRIVE_KEY  = os.getenv("PIPEDRIVE_API_KEY", "")
+KASPR_KEY      = os.getenv("KASPR_API_KEY", "")
 
 ANCIENS_KEYWORDS = [
     "ancien", "ancienne", "ex-", "ex ", "démissionnaire",
@@ -63,6 +64,7 @@ async def health():
         "pappers_key": bool(PAPPERS_KEY),
         "fullenrich_key": bool(FULLENRICH_KEY),
         "pipedrive_key": bool(PIPEDRIVE_KEY),
+        "kaspr_key": bool(KASPR_KEY),
     }
 
 async def check_pipedrive(prenom: str, nom: str) -> str:
@@ -90,6 +92,79 @@ async def check_pipedrive(prenom: str, nom: str) -> str:
     except Exception as e:
         print(f"[PIPEDRIVE ERROR] {terme}: {e}")
     return ""
+
+async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
+    """Cherche l'URL LinkedIn du dirigeant via Claude+web."""
+    if not ANTHROPIC_KEY:
+        return ""
+    try:
+        prompt = f"""Trouve l'URL LinkedIn exacte de cette personne :
+Prénom: {prenom}
+Nom: {nom}
+Société: {societe}
+
+Réponds UNIQUEMENT avec l'URL complète (ex: https://www.linkedin.com/in/prenom-nom-xxxxx/)
+Si tu n'es pas certain, réponds: NON"""
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 100,
+                    "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                    "messages": [{"role": "user", "content": prompt}]
+                }
+            )
+            if r.status_code == 200:
+                all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
+                # Extraire l'URL LinkedIn
+                m = re.search(r'https?://(?:www\.)?linkedin\.com/in/[^\s\)"']+', all_text)
+                if m:
+                    url = m.group().rstrip('/')
+                    print(f"[LINKEDIN] ✅ {prenom} {nom} → {url}")
+                    return url
+    except Exception as e:
+        print(f"[LINKEDIN ERROR] {prenom} {nom}: {e}")
+    print(f"[LINKEDIN] ❌ Pas trouvé pour {prenom} {nom}")
+    return ""
+
+
+async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
+    """Récupère l'email via Kaspr avec une URL LinkedIn."""
+    if not KASPR_KEY or not linkedin_url:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            print(f"[KASPR] Appel pour {prenom} {nom} — {linkedin_url}")
+            r = await c.post(
+                "https://api.developers.kaspr.io/profile/linkedin",
+                headers={"Authorization": KASPR_KEY, "Content-Type": "application/json"},
+                json={"name": f"{prenom} {nom}", "id": linkedin_url}
+            )
+            print(f"[KASPR] Status {r.status_code} pour {prenom} {nom}")
+            if r.status_code == 200:
+                d = r.json()
+                # Chercher l'email dans la réponse
+                emails = d.get("emails", []) or d.get("workEmails", []) or d.get("work_emails", [])
+                if isinstance(emails, list) and emails:
+                    email = emails[0] if isinstance(emails[0], str) else emails[0].get("value","")
+                    if email and "@" in email:
+                        print(f"[KASPR] ✅ Email trouvé : {email}")
+                        return email
+                # Format alternatif
+                email = d.get("email","") or d.get("workEmail","") or d.get("work_email","")
+                if email and "@" in email:
+                    print(f"[KASPR] ✅ Email trouvé : {email}")
+                    return email
+            elif r.status_code == 402:
+                print(f"[KASPR] Plus de crédits !")
+            else:
+                print(f"[KASPR] Erreur {r.status_code}: {r.text[:100]}")
+    except Exception as e:
+        print(f"[KASPR ERROR] {prenom} {nom}: {e}")
+    return ""
+
 
 async def corriger_domaine(siren: str, societe: str) -> str:
     """Tente de trouver le vrai domaine via Pappers puis Claude."""
@@ -314,6 +389,25 @@ Réponds UNIQUEMENT avec ce JSON :
                 ct["confiance_email"] = "haute"
                 ct["source"] = ct.get("source","") + "+Pipedrive"
 
+    # ÉTAPE 4 : Kaspr — cherche LinkedIn puis email
+    if KASPR_KEY:
+        for ct in tous_contacts:
+            if ct.get("email"):
+                continue
+            prenom = ct.get("prenom","")
+            nom_ct = ct.get("nom","")
+            if not prenom or not nom_ct:
+                continue
+            # Chercher l'URL LinkedIn via Claude
+            linkedin_url = await trouver_linkedin(prenom, nom_ct, nom)
+            if linkedin_url:
+                email_kaspr = await kaspr_email(prenom, nom_ct, linkedin_url)
+                if email_kaspr:
+                    ct["email"] = email_kaspr
+                    ct["confiance_email"] = "haute"
+                    ct["linkedin"] = linkedin_url
+                    ct["source"] = ct.get("source","") + "+Kaspr"
+
     if not tous_contacts:
         tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
 
@@ -328,6 +422,7 @@ Réponds UNIQUEMENT avec ce JSON :
             "nom_dg":    ct.get("nom",""),
             "titre":     ct.get("titre",""),
             "email":     ct.get("email","") or "",
+            "linkedin":  ct.get("linkedin",""),
             "confiance": ct.get("confiance_email", ct.get("confiance","")),
             "source":    ct.get("source",""),
         })
