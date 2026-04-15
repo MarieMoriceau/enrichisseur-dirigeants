@@ -44,10 +44,23 @@ def nettoyer_domaine(url: str) -> str:
     return d
 
 def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
-    a = nom_csv.lower().strip()
-    b = nom_pappers.lower().strip()
-    mots_a = set(w for w in a.split() if len(w) > 3)
-    mots_b = set(w for w in b.split() if len(w) > 3)
+    import unicodedata
+    def normaliser(s):
+        # Enlever accents, tirets, points, espaces multiples
+        s = s.lower().strip()
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        s = re.sub(r"[.\-_/]", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+    a = normaliser(nom_csv)
+    b = normaliser(nom_pappers)
+    # Correspondance exacte après normalisation
+    if a == b:
+        return True
+    # Au moins 1 mot significatif en commun
+    mots_a = set(w for w in a.split() if len(w) > 2)
+    mots_b = set(w for w in b.split() if len(w) > 2)
     if not mots_a:
         return True
     return len(mots_a & mots_b) > 0
@@ -389,24 +402,8 @@ Réponds UNIQUEMENT avec ce JSON :
                 ct["confiance_email"] = "haute"
                 ct["source"] = ct.get("source","") + "+Pipedrive"
 
-    # ÉTAPE 4 : Kaspr — cherche LinkedIn puis email
-    if KASPR_KEY:
-        for ct in tous_contacts:
-            if ct.get("email"):
-                continue
-            prenom = ct.get("prenom","")
-            nom_ct = ct.get("nom","")
-            if not prenom or not nom_ct:
-                continue
-            # Chercher l'URL LinkedIn via Claude
-            linkedin_url = await trouver_linkedin(prenom, nom_ct, nom)
-            if linkedin_url:
-                email_kaspr = await kaspr_email(prenom, nom_ct, linkedin_url)
-                if email_kaspr:
-                    ct["email"] = email_kaspr
-                    ct["confiance_email"] = "haute"
-                    ct["linkedin"] = linkedin_url
-                    ct["source"] = ct.get("source","") + "+Kaspr"
+    # ÉTAPE 4 : Kaspr + LinkedIn → géré en batch dans /enrich_emails après la Passe 1
+    # (évite la surcharge Claude pendant la Passe 1)
 
     if not tous_contacts:
         tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
@@ -432,19 +429,44 @@ Réponds UNIQUEMENT avec ce JSON :
 
 
 # -------------------------------------------------------
-# ROUTE PASSE 2 : Fullenrich batch
+# ROUTE PASSE 2 : Kaspr + LinkedIn + Fullenrich batch
 # -------------------------------------------------------
 @app.post("/enrich_emails")
 async def enrich_emails(request: Request):
     data = await request.json()
     contacts = data.get("contacts", [])
 
-    if not FULLENRICH_KEY:
-        return {"error": "Clé Fullenrich manquante"}
     if not contacts:
         return {"emails": {}}
 
-    # Corriger les domaines invalides avant envoi
+    emails_result = {}
+
+    # -------------------------------------------------------
+    # KASPR : cherche LinkedIn puis email pour chaque contact
+    # -------------------------------------------------------
+    if KASPR_KEY:
+        for ct in contacts:
+            email = ct.get("email","")
+            if email and "*" not in email:
+                continue
+            prenom = ct.get("prenom","")
+            nom_ct = ct.get("nom","")
+            societe_ct = ct.get("societe","")
+            idx = str(ct.get("idx",0))
+            if not prenom or not nom_ct:
+                continue
+            print(f"[KASPR] Recherche LinkedIn pour {prenom} {nom_ct}")
+            linkedin_url = await trouver_linkedin(prenom, nom_ct, societe_ct)
+            if linkedin_url:
+                email_kaspr = await kaspr_email(prenom, nom_ct, linkedin_url)
+                if email_kaspr:
+                    ct["email"] = email_kaspr
+                    ct["linkedin"] = linkedin_url
+                    ct["source_kaspr"] = True
+                    emails_result[idx] = {"email": email_kaspr, "linkedin": linkedin_url, "source": "+Kaspr"}
+                    print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
+
+    # Corriger les domaines invalides avant Fullenrich
     for ct in contacts:
         if not domaine_valide(ct.get("domaine","")):
             siren = ct.get("siren","")
@@ -522,11 +544,15 @@ async def enrich_emails(request: Request):
                                     emails_par_idx[idx] = val
                                     break
                     print(f"[FULLENRICH] {len(emails_par_idx)} emails trouvés")
-                    return {"emails": emails_par_idx}
+                    # Fusionner Kaspr + Fullenrich
+                    for k, v in emails_par_idx.items():
+                        if k not in emails_result:
+                            emails_result[k] = {"email": v, "source": "+Fullenrich"}
+                    return {"emails": emails_result}
 
             print(f"[FULLENRICH] Timeout 180s")
-            return {"emails": {}}
+            return {"emails": emails_result}
 
     except Exception as e:
         print(f"[FULLENRICH EXCEPTION] {e}")
-        return {"emails": {}}
+        return {"emails": emails_result}
