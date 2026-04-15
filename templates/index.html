@@ -21,8 +21,6 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f1f5f9; min-
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-stop { background: #ef4444; color: white; display: none; }
 .btn-export { background: #059669; color: white; display: none; }
-.btn-email { background: linear-gradient(135deg, #059669, #0891b2); color: white; display: none; }
-.btn-email:disabled { opacity: 0.4; cursor: not-allowed; }
 .progress-bar { height: 6px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin-top: 12px; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, #2563eb, #7c3aed); border-radius: 99px; transition: width 0.3s; width: 0%; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -38,6 +36,7 @@ tr:hover td { background: #f8fafc; }
 .src-pappers { background: #eff6ff; color: #2563eb; }
 .src-claude { background: #f5f3ff; color: #7c3aed; }
 .src-fullenrich { background: #dcfce7; color: #166534; }
+.src-pipedrive { background: #fef9c3; color: #854d0e; }
 .info { font-size: 12px; color: #059669; font-weight: 600; margin-top: 8px; }
 .row-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
 .stat { font-size: 12px; color: #64748b; }
@@ -47,10 +46,9 @@ tr:hover td { background: #f8fafc; }
 <body>
 <div class="header">
   <h1>🔍 Enrichisseur Dirigeants</h1>
-  <p>Pappers + Claude AI + Fullenrich — Dirigeants actifs &amp; Emails</p>
+  <p>Pappers + Claude AI + Pipedrive + Fullenrich — Startups &amp; Levées de fonds</p>
 </div>
 <div class="container">
-
   <div class="card">
     <h2>📋 Importer vos sociétés (CSV ou Excel)</h2>
     <div class="zone" id="zone" onclick="document.getElementById('fileInput').click()"
@@ -60,13 +58,12 @@ tr:hover td { background: #f8fafc; }
       <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" onchange="handleFile(this.files[0])">
       <div style="font-size:28px;margin-bottom:8px">📂</div>
       <div style="font-weight:700">Glissez votre fichier ici ou cliquez</div>
-      <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV ou Excel — colonnes : nom/organisation, siren, domaine</div>
+      <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV levées de fonds ou standard — colonnes : Nom, Site web, Fondateurs, siren, domaine</div>
     </div>
     <div class="info" id="fileInfo"></div>
     <div class="row-btns">
       <button class="btn btn-primary" id="btnStart" onclick="startEnrichment()" disabled>⚡ Lancer l'enrichissement complet</button>
       <button class="btn btn-stop" id="btnStop" onclick="stopEnrichment()">⏹ Arrêter</button>
-      <button class="btn btn-email" id="btnEmail" onclick="startEmailEnrichment()" style="display:none">✉️ Passe 2 — Emails via Fullenrich</button>
       <button class="btn btn-export" id="btnExport" onclick="exportCSV()">⬇️ Export CSV</button>
       <span class="stat" id="statLabel"></span>
     </div>
@@ -84,8 +81,8 @@ tr:hover td { background: #f8fafc; }
     </table>
     </div>
   </div>
-
 </div>
+
 <script>
 let rows = [], results = [], running = false, stopFlag = false, countdownInterval = null;
 
@@ -144,13 +141,23 @@ function doParseXLSX(buffer) {
   onRowsParsed();
 }
 
+function cleanDomain(url) {
+  if (!url) return '';
+  return url.toLowerCase()
+    .replace('https://','').replace('http://','').replace('www.','')
+    .split('/')[0].trim();
+}
+
 function normalizeRow(r) {
   const get = (...keys) => { for (const k of keys) { if (r[k] && r[k] !== '—') return r[k]; } return ''; };
+  // Supporte les 2 formats : levées de fonds ET format standard
+  const rawDomaine = get('site web','domaine','domain','website','site','url');
   return {
-    nom:    get('nom','name','organisation','société','societe','company','entreprise'),
-    siren:  get('siren','siret'),
-    domaine:get('domaine','domain','website','site','url'),
-    org_id: get('org id','org_id','id'),
+    nom:        get('nom','name','organisation','société','societe','company','entreprise'),
+    siren:      get('siren','siret'),
+    domaine:    cleanDomain(rawDomaine),
+    org_id:     get('org id','org_id','id'),
+    fondateurs: get('fondateurs','founders','fondateur'),
   };
 }
 
@@ -160,20 +167,19 @@ function onRowsParsed() {
   document.getElementById('statLabel').textContent = `${rows.length} sociétés à enrichir`;
 }
 
-// PASSE 1 : Pappers + Claude
 async function startEnrichment() {
   if (running) return;
   running = true; stopFlag = false; results = [];
   document.getElementById('btnStart').disabled = true;
   document.getElementById('btnStop').style.display = 'inline-block';
-  document.getElementById('btnEmail').style.display = 'none';
   document.getElementById('btnExport').style.display = 'none';
   document.getElementById('tbody').innerHTML = '';
 
+  // PASSE 1 : Pappers + Claude + Pipedrive
   for (let i = 0; i < rows.length; i++) {
     if (stopFlag) break;
     document.getElementById('progressFill').style.width = Math.round(i/rows.length*100) + '%';
-    document.getElementById('progressLabel').textContent = `${i}/${rows.length} enrichis`;
+    document.getElementById('progressLabel').textContent = `Passe 1 — ${i}/${rows.length} enrichis`;
     document.getElementById('statLabel').textContent = `⏳ ${rows[i].nom}…`;
 
     try {
@@ -189,84 +195,61 @@ async function startEnrichment() {
       renderResults();
     }
 
-    // Petite pause pour éviter le rate limit Claude
     if (i < rows.length - 1 && !stopFlag) {
       await new Promise(r => setTimeout(r, 3000));
     }
   }
 
+  // PASSE 2 : Fullenrich batch automatique
+  const aEnricher = results.filter(r => r.nom_dg && (!r.email || r.confiance === 'faible'));
+  if (!stopFlag && aEnricher.length > 0) {
+    document.getElementById('statLabel').textContent = `⏳ Fullenrich — ${aEnricher.length} contacts à enrichir…`;
+    document.getElementById('progressLabel').textContent = 'Passe 2 — Fullenrich en cours…';
+    document.getElementById('progressFill').style.width = '80%';
+
+    try {
+      const resp = await fetch('/enrich_emails', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ contacts: aEnricher.map(r => ({
+          idx:      results.indexOf(r),
+          prenom:   r.prenom,
+          nom:      r.nom_dg,
+          domaine:  r.domaine,
+          societe:  r.societe,
+          siren:    r.siren,
+          email:    r.email,
+          confiance: r.confiance
+        }))})
+      });
+      const data = await resp.json();
+      const emails = data.emails || {};
+      let found = 0;
+      for (const [idxStr, email] of Object.entries(emails)) {
+        const idx = parseInt(idxStr);
+        if (idx >= 0 && idx < results.length) {
+          results[idx].email = email;
+          results[idx].confiance = 'haute';
+          const src = results[idx].source || '';
+          if (!src.includes('Fullenrich')) results[idx].source = src + '+Fullenrich';
+          found++;
+        }
+      }
+      renderResults();
+      document.getElementById('statLabel').textContent = `✅ Terminé — ${found} emails Fullenrich ajoutés !`;
+    } catch(e) {
+      document.getElementById('statLabel').textContent = '⚠️ Passe 1 OK — erreur Fullenrich';
+    }
+  } else if (!stopFlag) {
+    document.getElementById('statLabel').textContent = '✅ Terminé !';
+  }
+
   document.getElementById('progressFill').style.width = '100%';
-  document.getElementById('progressLabel').textContent = `${stopFlag?'Arrêté':'Terminé'} — ${results.length} contacts`;
-  document.getElementById('statLabel').textContent = stopFlag ? '⏹ Arrêté' : '✅ Passe 1 terminée !';
+  document.getElementById('progressLabel').textContent = `Terminé — ${results.length} contacts trouvés`;
   document.getElementById('btnStop').style.display = 'none';
   document.getElementById('btnStart').disabled = false;
   document.getElementById('btnExport').style.display = 'inline-block';
-  // Lancement automatique de la Passe 2 si des contacts sans email existent
-  if (results.filter(r => r.nom_dg && !r.email).length > 0) {
-    await startEmailEnrichment();
-  } else {
-    document.getElementById('statLabel').textContent = '✅ Terminé — tous les emails déjà trouvés !';
-  }
   running = false;
-}
-
-// PASSE 2 : Fullenrich batch
-async function startEmailEnrichment() {
-  const btn = document.getElementById('btnEmail');
-  btn.disabled = true;
-  btn.textContent = '⏳ Fullenrich en cours…';
-  document.getElementById('statLabel').textContent = '⏳ Enrichissement emails en cours (1-3 min)…';
-  document.getElementById('progressFill').style.width = '30%';
-
-  const toEnrich = results
-    .map((r, idx) => ({ ...r, idx }))
-    .filter(r => r.nom_dg && (!r.email || r.confiance === 'faible'));
-
-  if (toEnrich.length === 0) {
-    btn.textContent = '✅ Tous les emails déjà trouvés';
-    return;
-  }
-
-  try {
-    const resp = await fetch('/enrich_emails', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ contacts: toEnrich.map(r => ({
-        idx:      r.idx,
-        prenom:   r.prenom,
-        nom:      r.nom_dg,
-        domaine:  r.domaine,
-        societe:  r.societe,
-        siren:    r.siren,
-        email:    r.email,
-        confiance: r.confiance
-      }))})
-    });
-    const data = await resp.json();
-    const emails = data.emails || {};
-
-    let found = 0;
-    for (const [idxStr, email] of Object.entries(emails)) {
-      const idx = parseInt(idxStr);
-      if (idx >= 0 && idx < results.length) {
-        results[idx].email = email;
-        results[idx].confiance = 'haute';
-        const src = results[idx].source || '';
-        if (!src.includes('Fullenrich')) results[idx].source = src + '+Fullenrich';
-        found++;
-      }
-    }
-
-    renderResults();
-    document.getElementById('progressFill').style.width = '100%';
-    document.getElementById('statLabel').textContent = `✅ Fullenrich : ${found} emails trouvés !`;
-    btn.textContent = `✅ ${found} emails ajoutés`;
-
-  } catch(e) {
-    document.getElementById('statLabel').textContent = '❌ Erreur Fullenrich';
-    btn.disabled = false;
-    btn.textContent = '✉️ Réessayer Fullenrich';
-  }
 }
 
 function stopEnrichment() {
@@ -282,9 +265,11 @@ function renderResults() {
   document.getElementById('statLabel').textContent = `✉️ ${withEmail} emails | 👤 ${results.filter(r=>r.nom_dg).length} dirigeants`;
   document.getElementById('tbody').innerHTML = results.map(r => {
     const conf = r.confiance || '';
+    const src = r.source || '';
     let srcClass = 'src-claude';
-    if ((r.source||'').includes('Fullenrich')) srcClass = 'src-fullenrich';
-    else if ((r.source||'').includes('Pappers') && !(r.source||'').includes('Claude')) srcClass = 'src-pappers';
+    if (src.includes('Fullenrich')) srcClass = 'src-fullenrich';
+    else if (src.includes('Pipedrive')) srcClass = 'src-pipedrive';
+    else if (src.includes('Pappers') && !src.includes('Claude')) srcClass = 'src-pappers';
     return `<tr>
       <td><strong>${r.societe||'—'}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${r.org_id}</span>`:''}</td>
       <td>${r.prenom||'—'}</td>
@@ -292,7 +277,7 @@ function renderResults() {
       <td>${r.titre||'—'}</td>
       <td>${r.email?`<span class="email-ok">${r.email}</span>`:`<span class="no-email">—</span>`}</td>
       <td>${conf?`<span class="badge ${conf}">${conf}</span>`:'—'}</td>
-      <td>${r.source?`<span class="badge ${srcClass}">${r.source}</span>`:'—'}</td>
+      <td>${src?`<span class="badge ${srcClass}">${src}</span>`:'—'}</td>
     </tr>`;
   }).join('');
 }
