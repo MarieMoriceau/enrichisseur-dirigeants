@@ -10,6 +10,17 @@ ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 
+# Mots-clés qui signalent un ancien dirigeant → on filtre
+ANCIENS_KEYWORDS = [
+    "ancien", "ancienne", "ex-", "ex ", "démissionnaire", "démissionnair",
+    "jusqu'au", "jusqu au", "sortant", "ancien gérant", "ancien directeur",
+    "ancien président", "ancien co-gérant", "anciennement"
+]
+
+def est_ancien_dirigeant(titre: str) -> bool:
+    titre_lower = titre.lower()
+    return any(kw in titre_lower for kw in ANCIENS_KEYWORDS)
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -24,7 +35,7 @@ async def health():
     }
 
 # -------------------------------------------------------
-# ROUTE PASSE 1 : Pappers + Claude (rapide, sans email)
+# ROUTE PASSE 1 : Pappers + Claude
 # -------------------------------------------------------
 @app.post("/enrich_one")
 async def enrich_one(request: Request):
@@ -37,11 +48,12 @@ async def enrich_one(request: Request):
     print(f"[START] {nom} | domaine={domaine} | siren={siren}")
 
     pappers_contacts = []
+    pappers_data = None
 
     # ÉTAPE 1 : Pappers
     if PAPPERS_KEY:
-        pappers_data = None
 
+        # Tentative 1 : par domaine
         if domaine:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -49,9 +61,13 @@ async def enrich_one(request: Request):
                         params={"api_token": PAPPERS_KEY, "site_internet": domaine})
                     if r.status_code == 200:
                         pappers_data = r.json()
+                        print(f"[PAPPERS] Trouvé par domaine : {domaine}")
+                    else:
+                        print(f"[PAPPERS] 404 domaine {domaine}, essai par nom")
             except Exception as e:
-                print(f"[PAPPERS ERROR] {e}")
+                print(f"[PAPPERS ERROR domaine] {e}")
 
+        # Tentative 2 : par nom (amélioration Bos Brands)
         if not pappers_data and not siren:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -61,9 +77,16 @@ async def enrich_one(request: Request):
                         resultats = r.json().get("resultats", [])
                         if resultats:
                             siren = resultats[0].get("siren", "")
+                            # Récupérer aussi le vrai domaine si on ne l'avait pas
+                            vrai_domaine = resultats[0].get("domaine_url", "") or resultats[0].get("site_web", "")
+                            if vrai_domaine and not domaine:
+                                domaine = vrai_domaine
+                                print(f"[PAPPERS] Vrai domaine trouvé : {domaine}")
+                            print(f"[PAPPERS] SIREN trouvé par nom : {siren}")
             except Exception as e:
                 print(f"[PAPPERS ERROR nom] {e}")
 
+        # Tentative 3 : par SIREN
         if not pappers_data and siren:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -71,24 +94,34 @@ async def enrich_one(request: Request):
                         params={"api_token": PAPPERS_KEY, "siren": siren})
                     if r.status_code == 200:
                         pappers_data = r.json()
+                        print(f"[PAPPERS] Trouvé par SIREN : {siren}")
             except Exception as e:
                 print(f"[PAPPERS ERROR siren] {e}")
 
         if pappers_data:
             if not siren:
                 siren = pappers_data.get("siren", "")
+            # Récupérer le vrai domaine si manquant
+            if not domaine:
+                domaine = pappers_data.get("domaine_url", "") or pappers_data.get("site_web", "")
+
             for rep in pappers_data.get("representants", []):
                 if rep.get("personne_morale"):
+                    continue
+                titre = rep.get("qualite", "Représentant légal")
+                # AMÉLIORATION 1 : filtrer les anciens dirigeants
+                if est_ancien_dirigeant(titre):
+                    print(f"[FILTRE] Ancien dirigeant ignoré : {rep.get('prenom','')} {rep.get('nom','')} ({titre})")
                     continue
                 pappers_contacts.append({
                     "prenom": rep.get("prenom", ""),
                     "nom":    rep.get("nom", ""),
-                    "titre":  rep.get("qualite", "Représentant légal"),
+                    "titre":  titre,
                     "email":  "",
                     "confiance": "",
                     "source": "Pappers"
                 })
-            print(f"[PAPPERS] {len(pappers_contacts)} représentants | SIREN={siren}")
+            print(f"[PAPPERS] {len(pappers_contacts)} représentants actifs | SIREN={siren}")
 
     # ÉTAPE 2 : Claude + web_search
     claude_contacts = []
@@ -97,12 +130,17 @@ async def enrich_one(request: Request):
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
         exclusion = f"\nNe pas inclure : {', '.join(noms_deja)}" if noms_deja else ""
 
-        prompt = f"""Recherche sur le web les dirigeants et leurs emails professionnels pour cette société française :
+        prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails professionnels pour cette société française :
 Nom: {nom}{chr(10)+"SIREN: "+siren if siren else ""}{chr(10)+"Site: "+domaine if domaine else ""}{exclusion}
 
 Cherche sur LinkedIn, le site officiel, Societe.com :
 CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
-Emails professionnels uniquement (pas gmail/hotmail/yahoo).
+
+IMPORTANT :
+- Inclure UNIQUEMENT les dirigeants encore en poste actuellement
+- Exclure toute personne avec "ancien", "ex-", "démissionnaire" dans son titre
+- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
+- Si tu n'es pas certain, ne pas inclure
 
 Réponds UNIQUEMENT avec ce JSON :
 {{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
@@ -133,12 +171,18 @@ Réponds UNIQUEMENT avec ce JSON :
                             parsed = json.loads(m.group())
                             for ct in parsed.get("contacts", []):
                                 ct["source"] = "Claude+web"
+                                # Filtrer emails perso
                                 email = ct.get("email", "") or ""
                                 if any(x in email for x in ["gmail","hotmail","yahoo","outlook.com"]):
                                     ct["email"] = ""
                                     ct["confiance_email"] = "faible"
-                            claude_contacts = parsed.get("contacts", [])
-                            print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
+                                # AMÉLIORATION 1 : filtrer anciens dirigeants retournés par Claude
+                                titre = ct.get("titre", "")
+                                if est_ancien_dirigeant(titre):
+                                    print(f"[FILTRE] Ancien ignoré (Claude) : {ct.get('prenom','')} {ct.get('nom','')} ({titre})")
+                                    ct["_skip"] = True
+                            claude_contacts = [ct for ct in parsed.get("contacts", []) if not ct.get("_skip")]
+                            print(f"[CLAUDE OK] {len(claude_contacts)} contacts actifs pour {nom}")
                         break
                     else:
                         break
@@ -166,24 +210,23 @@ Réponds UNIQUEMENT avec ce JSON :
             "source":    ct.get("source",""),
         })
 
-    print(f"[DONE] {nom} → {len(results)} contacts")
+    print(f"[DONE] {nom} → {len(results)} contacts actifs")
     return {"results": results}
 
 
 # -------------------------------------------------------
-# ROUTE PASSE 2 : Fullenrich batch sur tous les contacts
+# ROUTE PASSE 2 : Fullenrich batch
 # -------------------------------------------------------
 @app.post("/enrich_emails")
 async def enrich_emails(request: Request):
     data = await request.json()
-    contacts = data.get("contacts", [])  # [{prenom, nom, domaine, idx}]
+    contacts = data.get("contacts", [])
 
     if not FULLENRICH_KEY:
         return {"error": "Clé Fullenrich manquante"}
     if not contacts:
         return {"emails": {}}
 
-    # Filtrer : seulement ceux sans email ou confiance faible
     to_enrich = []
     for ct in contacts:
         email = ct.get("email", "")
@@ -193,9 +236,10 @@ async def enrich_emails(request: Request):
         if not ct.get("prenom") or not ct.get("nom"):
             continue
         to_enrich.append({
-            "firstname": ct["prenom"],
-            "lastname":  ct["nom"],
-            "domain":    ct.get("domaine", ""),
+            "firstname":    ct["prenom"],
+            "lastname":     ct["nom"],
+            "domain":       ct.get("domaine", ""),
+            # AMÉLIORATION 3 : passer aussi le nom de société
             "company_name": ct.get("societe", ""),
             "enrich_fields": ["contact.emails"],
             "custom": {"idx": str(ct.get("idx", 0))}
@@ -224,7 +268,6 @@ async def enrich_emails(request: Request):
 
             print(f"[FULLENRICH] enrichment_id={enrichment_id}")
 
-            # Polling toutes les 5s, max 3 minutes
             for attempt in range(36):
                 await asyncio.sleep(5)
                 r2 = await c.get(
