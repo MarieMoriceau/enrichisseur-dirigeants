@@ -47,7 +47,7 @@ tr:hover td { background: #f8fafc; }
 <body>
 <div class="header">
   <h1>🔍 Enrichisseur Dirigeants</h1>
-  <p>Pappers + Claude AI + Fullenrich — Dirigeants &amp; Emails</p>
+  <p>Pappers + Claude AI + Fullenrich — Dirigeants actifs &amp; Emails</p>
 </div>
 <div class="container">
 
@@ -160,27 +160,7 @@ function onRowsParsed() {
   document.getElementById('statLabel').textContent = `${rows.length} sociétés à enrichir`;
 }
 
-async function waitWithCountdown(seconds) {
-  return new Promise(resolve => {
-    let remaining = seconds;
-    const el = document.getElementById('countdown');
-    el.textContent = `⏳ Pause ${remaining}s…`;
-    countdownInterval = setInterval(() => {
-      remaining--;
-      if (remaining <= 0) {
-        clearInterval(countdownInterval);
-        el.textContent = '';
-        resolve();
-      } else {
-        el.textContent = `⏳ Pause ${remaining}s…`;
-      }
-    }, 1000);
-  });
-}
-
-// -------------------------------------------------------
 // PASSE 1 : Pappers + Claude
-// -------------------------------------------------------
 async function startEnrichment() {
   if (running) return;
   running = true; stopFlag = false; results = [];
@@ -208,27 +188,21 @@ async function startEnrichment() {
       results.push({ societe: rows[i].nom, siren:'', prenom:'', nom_dg:'', titre:'', email:'', confiance:'', source:'' });
       renderResults();
     }
-
-    // Pas de pause artificielle — le temps de traitement Claude (~15-20s) suffit
   }
 
   document.getElementById('progressFill').style.width = '100%';
   document.getElementById('progressLabel').textContent = `${stopFlag?'Arrêté':'Terminé'} — ${results.length} contacts`;
   document.getElementById('statLabel').textContent = stopFlag ? '⏹ Arrêté' : '✅ Passe 1 terminée !';
-  document.getElementById('countdown').textContent = '';
   document.getElementById('btnStop').style.display = 'none';
   document.getElementById('btnStart').disabled = false;
   document.getElementById('btnExport').style.display = 'inline-block';
-  // Afficher le bouton Passe 2 si on a des contacts
   if (results.filter(r => r.nom_dg).length > 0) {
     document.getElementById('btnEmail').style.display = 'inline-block';
   }
   running = false;
 }
 
-// -------------------------------------------------------
 // PASSE 2 : Fullenrich batch
-// -------------------------------------------------------
 async function startEmailEnrichment() {
   const btn = document.getElementById('btnEmail');
   btn.disabled = true;
@@ -236,7 +210,6 @@ async function startEmailEnrichment() {
   document.getElementById('statLabel').textContent = '⏳ Enrichissement emails en cours (1-3 min)…';
   document.getElementById('progressFill').style.width = '30%';
 
-  // Préparer la liste des contacts à enrichir
   const toEnrich = results
     .map((r, idx) => ({ ...r, idx }))
     .filter(r => r.nom_dg && (!r.email || r.confiance === 'faible'));
@@ -251,26 +224,26 @@ async function startEmailEnrichment() {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ contacts: toEnrich.map(r => ({
-        idx: r.idx,
-        prenom: r.prenom,
-        nom: r.nom_dg,
-        domaine: r.domaine,
-        societe: r.societe,
-        email: r.email,
+        idx:      r.idx,
+        prenom:   r.prenom,
+        nom:      r.nom_dg,
+        domaine:  r.domaine,
+        societe:  r.societe,
+        email:    r.email,
         confiance: r.confiance
       }))})
     });
     const data = await resp.json();
     const emails = data.emails || {};
 
-    // Mettre à jour les résultats
     let found = 0;
     for (const [idxStr, email] of Object.entries(emails)) {
       const idx = parseInt(idxStr);
       if (idx >= 0 && idx < results.length) {
         results[idx].email = email;
         results[idx].confiance = 'haute';
-        results[idx].source = (results[idx].source || '') + '+Fullenrich';
+        const src = results[idx].source || '';
+        if (!src.includes('Fullenrich')) results[idx].source = src + '+Fullenrich';
         found++;
       }
     }
@@ -302,7 +275,7 @@ function renderResults() {
     const conf = r.confiance || '';
     let srcClass = 'src-claude';
     if ((r.source||'').includes('Fullenrich')) srcClass = 'src-fullenrich';
-    else if ((r.source||'').includes('Pappers')) srcClass = 'src-pappers';
+    else if ((r.source||'').includes('Pappers') && !(r.source||'').includes('Claude')) srcClass = 'src-pappers';
     return `<tr>
       <td><strong>${r.societe||'—'}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${r.org_id}</span>`:''}</td>
       <td>${r.prenom||'—'}</td>
