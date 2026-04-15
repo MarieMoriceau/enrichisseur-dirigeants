@@ -23,95 +23,9 @@ async def health():
         "fullenrich_key": bool(FULLENRICH_KEY),
     }
 
-async def fullenrich_emails(contacts, domaine, nom_societe):
-    if not FULLENRICH_KEY or not contacts:
-        return {}
-
-    to_enrich = []
-    for i, ct in enumerate(contacts):
-        email_actuel = ct.get("email", "")
-        confiance = ct.get("confiance_email", ct.get("confiance", ""))
-        prenom = ct.get("prenom", "")
-        nom = ct.get("nom", "")
-        if not prenom or not nom:
-            continue
-        if email_actuel and confiance not in ("faible", ""):
-            continue
-        to_enrich.append({
-            "firstname": prenom,
-            "lastname": nom,
-            "domain": domaine,
-            "company_name": nom_societe,
-            "enrich_fields": ["contact.emails"],
-            "custom": {"idx": str(i)}
-        })
-
-    if not to_enrich:
-        return {}
-
-    print(f"[FULLENRICH] Envoi de {len(to_enrich)} contacts pour {nom_societe}")
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            # Étape 1 : lancer l'enrichissement
-            r = await c.post(
-                "https://app.fullenrich.com/api/v1/contact/enrich/bulk",
-                headers={
-                    "Authorization": f"Bearer {FULLENRICH_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "name": f"Enrichissement {nom_societe}",
-                    "datas": to_enrich
-                }
-            )
-            print(f"[FULLENRICH] Status lancement : {r.status_code}")
-            if r.status_code not in (200, 201):
-                print(f"[FULLENRICH ERROR] {r.text[:200]}")
-                return {}
-
-            enrichment_id = r.json().get("enrichment_id") or r.json().get("id")
-            if not enrichment_id:
-                print(f"[FULLENRICH] Pas d'enrichment_id dans : {r.text[:200]}")
-                return {}
-
-            print(f"[FULLENRICH] enrichment_id={enrichment_id}")
-
-            # Étape 2 : polling toutes les 5s, max 180s
-            for attempt in range(36):
-                await asyncio.sleep(5)
-                r2 = await c.get(
-                    f"https://app.fullenrich.com/api/v1/contact/enrich/bulk/{enrichment_id}",
-                    headers={"Authorization": f"Bearer {FULLENRICH_KEY}"}
-                )
-                if r2.status_code != 200:
-                    continue
-                result = r2.json()
-                status = result.get("status", "")
-                print(f"[FULLENRICH] Polling {attempt+1}/36 — status={status}")
-
-                if status == "FINISHED":
-                    emails_par_idx = {}
-                    for contact_result in result.get("datas", []):
-                        idx = int(contact_result.get("custom", {}).get("idx", -1))
-                        emails = contact_result.get("contact", {}).get("emails", [])
-                        if idx >= 0 and emails:
-                            for e in emails:
-                                val = e.get("value") or e.get("email") or ""
-                                if val and "@" in val:
-                                    emails_par_idx[idx] = val
-                                    break
-                    print(f"[FULLENRICH] {len(emails_par_idx)} emails trouvés")
-                    return emails_par_idx
-
-            print(f"[FULLENRICH] Timeout — pas de résultat après 180s")
-            return {}
-
-    except Exception as e:
-        print(f"[FULLENRICH EXCEPTION] {e}")
-        return {}
-
-
+# -------------------------------------------------------
+# ROUTE PASSE 1 : Pappers + Claude (rapide, sans email)
+# -------------------------------------------------------
 @app.post("/enrich_one")
 async def enrich_one(request: Request):
     data = await request.json()
@@ -124,22 +38,19 @@ async def enrich_one(request: Request):
 
     pappers_contacts = []
 
-    # -------------------------------------------------------
-    # ÉTAPE 1 : Pappers → SIREN + représentants légaux
-    # -------------------------------------------------------
+    # ÉTAPE 1 : Pappers
     if PAPPERS_KEY:
         pappers_data = None
 
         if domaine:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
-                    print(f"[PAPPERS] Recherche par domaine : {domaine}")
                     r = await c.get("https://api.pappers.fr/v2/entreprise",
                         params={"api_token": PAPPERS_KEY, "site_internet": domaine})
                     if r.status_code == 200:
                         pappers_data = r.json()
             except Exception as e:
-                print(f"[PAPPERS ERROR domaine] {e}")
+                print(f"[PAPPERS ERROR] {e}")
 
         if not pappers_data and not siren:
             try:
@@ -179,22 +90,19 @@ async def enrich_one(request: Request):
                 })
             print(f"[PAPPERS] {len(pappers_contacts)} représentants | SIREN={siren}")
 
-    # -------------------------------------------------------
-    # ÉTAPE 2 : Claude + web_search → dirigeants + emails
-    # -------------------------------------------------------
+    # ÉTAPE 2 : Claude + web_search
     claude_contacts = []
 
     if ANTHROPIC_KEY:
-        noms_deja_trouves = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
-        exclusion = f"\nNe pas inclure (déjà connus) : {', '.join(noms_deja_trouves)}" if noms_deja_trouves else ""
+        noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
+        exclusion = f"\nNe pas inclure : {', '.join(noms_deja)}" if noms_deja else ""
 
         prompt = f"""Recherche sur le web les dirigeants et leurs emails professionnels pour cette société française :
 Nom: {nom}{chr(10)+"SIREN: "+siren if siren else ""}{chr(10)+"Site: "+domaine if domaine else ""}{exclusion}
 
 Cherche sur LinkedIn, le site officiel, Societe.com :
 CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
-Inclure uniquement des emails professionnels (pas gmail/hotmail/yahoo).
-Si tu n'es pas certain d'un nom, ne l'inclus pas.
+Emails professionnels uniquement (pas gmail/hotmail/yahoo).
 
 Réponds UNIQUEMENT avec ce JSON :
 {{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
@@ -206,11 +114,7 @@ Réponds UNIQUEMENT avec ce JSON :
                     print(f"[CLAUDE] Tentative {attempt+1}/3 pour {nom}")
                     r = await c.post(
                         "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "x-api-key": ANTHROPIC_KEY,
-                            "anthropic-version": "2023-06-01",
-                            "content-type": "application/json"
-                        },
+                        headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                         json={
                             "model": "claude-sonnet-4-20250514",
                             "max_tokens": 1000,
@@ -219,11 +123,9 @@ Réponds UNIQUEMENT avec ce JSON :
                         }
                     )
                     print(f"[CLAUDE] Status {r.status_code} pour {nom}")
-
                     if r.status_code in (429, 529):
                         await asyncio.sleep(delays[attempt])
                         continue
-
                     if r.status_code == 200:
                         all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
                         m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
@@ -232,7 +134,7 @@ Réponds UNIQUEMENT avec ce JSON :
                             for ct in parsed.get("contacts", []):
                                 ct["source"] = "Claude+web"
                                 email = ct.get("email", "") or ""
-                                if any(x in email for x in ["gmail", "hotmail", "yahoo", "outlook.com"]):
+                                if any(x in email for x in ["gmail","hotmail","yahoo","outlook.com"]):
                                     ct["email"] = ""
                                     ct["confiance_email"] = "faible"
                             claude_contacts = parsed.get("contacts", [])
@@ -240,29 +142,14 @@ Réponds UNIQUEMENT avec ce JSON :
                         break
                     else:
                         break
-
             except Exception as e:
                 print(f"[CLAUDE EXCEPTION] {e}")
                 if attempt < 2:
                     await asyncio.sleep(delays[attempt])
 
-    # -------------------------------------------------------
-    # ÉTAPE 3 : Fullenrich → compléter les emails manquants
-    # -------------------------------------------------------
     tous_contacts = pappers_contacts + claude_contacts
-
-    if FULLENRICH_KEY and domaine and tous_contacts:
-        emails_trouves = await fullenrich_emails(tous_contacts, domaine, nom)
-        for idx, email in emails_trouves.items():
-            if idx < len(tous_contacts):
-                tous_contacts[idx]["email"] = email
-                tous_contacts[idx]["confiance_email"] = "haute"
-                source = tous_contacts[idx].get("source", "")
-                if "Fullenrich" not in source:
-                    tous_contacts[idx]["source"] = source + "+Fullenrich"
-
     if not tous_contacts:
-        tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance_email":"","source":""}]
+        tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
 
     results = []
     for ct in tous_contacts:
@@ -279,5 +166,94 @@ Réponds UNIQUEMENT avec ce JSON :
             "source":    ct.get("source",""),
         })
 
-    print(f"[DONE] {nom} → {len(results)} contacts au total")
+    print(f"[DONE] {nom} → {len(results)} contacts")
     return {"results": results}
+
+
+# -------------------------------------------------------
+# ROUTE PASSE 2 : Fullenrich batch sur tous les contacts
+# -------------------------------------------------------
+@app.post("/enrich_emails")
+async def enrich_emails(request: Request):
+    data = await request.json()
+    contacts = data.get("contacts", [])  # [{prenom, nom, domaine, idx}]
+
+    if not FULLENRICH_KEY:
+        return {"error": "Clé Fullenrich manquante"}
+    if not contacts:
+        return {"emails": {}}
+
+    # Filtrer : seulement ceux sans email ou confiance faible
+    to_enrich = []
+    for ct in contacts:
+        email = ct.get("email", "")
+        confiance = ct.get("confiance", "")
+        if email and confiance not in ("faible", ""):
+            continue
+        if not ct.get("prenom") or not ct.get("nom"):
+            continue
+        to_enrich.append({
+            "firstname": ct["prenom"],
+            "lastname":  ct["nom"],
+            "domain":    ct.get("domaine", ""),
+            "company_name": ct.get("societe", ""),
+            "enrich_fields": ["contact.emails"],
+            "custom": {"idx": str(ct.get("idx", 0))}
+        })
+
+    if not to_enrich:
+        return {"emails": {}}
+
+    print(f"[FULLENRICH BATCH] {len(to_enrich)} contacts envoyés")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(
+                "https://app.fullenrich.com/api/v1/contact/enrich/bulk",
+                headers={"Authorization": f"Bearer {FULLENRICH_KEY}", "Content-Type": "application/json"},
+                json={"name": "Enrichissement batch", "datas": to_enrich}
+            )
+            print(f"[FULLENRICH] Status lancement : {r.status_code}")
+            if r.status_code not in (200, 201):
+                print(f"[FULLENRICH ERROR] {r.text[:200]}")
+                return {"emails": {}}
+
+            enrichment_id = r.json().get("enrichment_id") or r.json().get("id")
+            if not enrichment_id:
+                return {"emails": {}}
+
+            print(f"[FULLENRICH] enrichment_id={enrichment_id}")
+
+            # Polling toutes les 5s, max 3 minutes
+            for attempt in range(36):
+                await asyncio.sleep(5)
+                r2 = await c.get(
+                    f"https://app.fullenrich.com/api/v1/contact/enrich/bulk/{enrichment_id}",
+                    headers={"Authorization": f"Bearer {FULLENRICH_KEY}"}
+                )
+                if r2.status_code != 200:
+                    continue
+                result = r2.json()
+                status = result.get("status", "")
+                print(f"[FULLENRICH] Polling {attempt+1}/36 — status={status}")
+
+                if status == "FINISHED":
+                    emails_par_idx = {}
+                    for ct_result in result.get("datas", []):
+                        idx = ct_result.get("custom", {}).get("idx", "-1")
+                        emails = ct_result.get("contact", {}).get("emails", [])
+                        if emails:
+                            for e in emails:
+                                val = e.get("value") or e.get("email") or ""
+                                if val and "@" in val:
+                                    emails_par_idx[idx] = val
+                                    break
+                    print(f"[FULLENRICH] {len(emails_par_idx)} emails trouvés")
+                    return {"emails": emails_par_idx}
+
+            print(f"[FULLENRICH] Timeout 180s")
+            return {"emails": {}}
+
+    except Exception as e:
+        print(f"[FULLENRICH EXCEPTION] {e}")
+        return {"emails": {}}
