@@ -235,7 +235,61 @@ async function runPhase1() {
   ['btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
 }
 
-// ── PHASE 2 : Pipedrive ────────────────────────────────────────
+// ── PHASE 2 : Claude+web ─────────────────────────────────────
+async function runPhase2() {
+  if (running || !results.length) return;
+  setRunning(true);
+  stopFlag = false;
+  setStatus(2, 'running', '2. Claude ⏳');
+
+  const societes = [...new Set(results.map(r => r.societe))];
+  let totalFound = 0;
+
+  for (let i = 0; i < societes.length; i++) {
+    if (stopFlag) break;
+    const nomSociete = societes[i];
+    const row = rows.find(r => r.nom === nomSociete) || {nom: nomSociete, domaine:'', siren:'', fondateurs:''};
+    const existing = results.find(r => r.societe === nomSociete);
+    if (existing) { row.siren = existing.siren || row.siren; row.domaine = existing.domaine || row.domaine; }
+
+    document.getElementById('progressFill').style.width = Math.round(i/societes.length*100) + '%';
+    document.getElementById('progressLabel').textContent = `${i+1}/${societes.length} — ${nomSociete}`;
+    document.getElementById('statLabel').textContent = `⏳ Claude — ${nomSociete}`;
+
+    try {
+      const resp = await fetch('/enrich_claude', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(row)
+      });
+      const data = await resp.json();
+      if (data.contacts && data.contacts.length > 0) {
+        const noms_existants = results.filter(r => r.societe === nomSociete).map(r => `${r.prenom} ${r.nom_dg}`.toLowerCase().trim());
+        for (const ct of data.contacts) {
+          const key = `${ct.prenom} ${ct.nom}`.toLowerCase().trim();
+          if (!noms_existants.includes(key)) {
+            results.push({
+              org_id: row.org_id||'', societe: nomSociete,
+              siren: row.siren||'', domaine: row.domaine||'',
+              prenom: ct.prenom, nom_dg: ct.nom, titre: ct.titre,
+              email: ct.email||'', confiance: ct.confiance_email||'faible',
+              source: 'Claude+web', linkedin: ''
+            });
+            totalFound++;
+          }
+        }
+        renderResults();
+      }
+    } catch(e) { console.error('Claude error:', e); }
+    if (i < societes.length - 1 && !stopFlag) await sleep(8000);
+  }
+
+  document.getElementById('progressFill').style.width = '100%';
+  setStatus(2, 'done', `2. Claude ✅ (${totalFound} nouveaux)`);
+  document.getElementById('statLabel').textContent = `✅ Claude : ${totalFound} contacts ajoutés`;
+  setRunning(false);
+}
+
+// ── PHASE 3 : Pipedrive ──────────────────────────────────────
 async function runPhase3() {
   if (running || !results.length) return;
   setRunning(true);
