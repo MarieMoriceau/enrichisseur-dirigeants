@@ -16,13 +16,26 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f1f5f9; min-
 .zone { border: 2px dashed #cbd5e1; border-radius: 10px; padding: 36px; text-align: center; cursor: pointer; color: #64748b; transition: all 0.2s; }
 .zone:hover { border-color: #2563eb; background: #eff6ff; color: #2563eb; }
 .zone input { display: none; }
-.btn { border: none; border-radius: 8px; padding: 10px 22px; font-size: 13px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
-.btn-primary { background: linear-gradient(135deg, #2563eb, #7c3aed); color: white; }
-.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-stop { background: #ef4444; color: white; display: none; }
-.btn-export { background: #059669; color: white; display: none; }
+.btn { border: none; border-radius: 8px; padding: 10px 18px; font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-pappers  { background: #2563eb; color: white; }
+.btn-claude   { background: #7c3aed; color: white; }
+.btn-pipedrive{ background: #f59e0b; color: white; }
+.btn-kaspr    { background: #0891b2; color: white; }
+.btn-fullenrich{ background: #059669; color: white; }
+.btn-all      { background: linear-gradient(135deg, #1e3a5f, #7c3aed); color: white; padding: 10px 22px; font-size: 13px; }
+.btn-stop     { background: #ef4444; color: white; display: none; }
+.btn-export   { background: #059669; color: white; display: none; }
+.phases { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
+.phase-divider { color: #94a3b8; font-size: 14px; }
 .progress-bar { height: 6px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin-top: 12px; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, #2563eb, #7c3aed); border-radius: 99px; transition: width 0.3s; width: 0%; }
+.status-bar { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
+.phase-status { font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
+.phase-idle    { background: #f1f5f9; color: #64748b; }
+.phase-running { background: #fef9c3; color: #854d0e; }
+.phase-done    { background: #dcfce7; color: #166534; }
+.phase-error   { background: #fee2e2; color: #991b1b; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { background: #f8fafc; color: #475569; font-weight: 700; padding: 10px 12px; text-align: left; border-bottom: 2px solid #e2e8f0; }
 td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
@@ -33,24 +46,24 @@ tr:hover td { background: #f8fafc; }
 .haute { background: #dcfce7; color: #166534; }
 .moyenne { background: #fef9c3; color: #854d0e; }
 .faible { background: #fee2e2; color: #991b1b; }
-.src-pappers { background: #eff6ff; color: #2563eb; }
-.src-claude { background: #f5f3ff; color: #7c3aed; }
-.src-fullenrich { background: #dcfce7; color: #166534; }
-.src-pipedrive { background: #fef9c3; color: #854d0e; }
+.src-pappers   { background: #eff6ff; color: #2563eb; }
+.src-claude    { background: #f5f3ff; color: #7c3aed; }
+.src-pipedrive { background: #fef3c7; color: #92400e; }
+.src-kaspr     { background: #e0f2fe; color: #0369a1; }
+.src-fullenrich{ background: #dcfce7; color: #166534; }
 .info { font-size: 12px; color: #059669; font-weight: 600; margin-top: 8px; }
-.row-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
 .stat { font-size: 12px; color: #64748b; }
-.countdown { font-size: 11px; color: #7c3aed; font-weight: 600; margin-top: 4px; height: 16px; }
 </style>
 </head>
 <body>
 <div class="header">
   <h1>🔍 Enrichisseur Dirigeants</h1>
-  <p>Pappers + Claude AI + Pipedrive + Fullenrich — Startups &amp; Levées de fonds</p>
+  <p>Pappers → Claude → Pipedrive → Kaspr → Fullenrich</p>
 </div>
 <div class="container">
+
   <div class="card">
-    <h2>📋 Importer vos sociétés (CSV ou Excel)</h2>
+    <h2>📋 Importer vos sociétés</h2>
     <div class="zone" id="zone" onclick="document.getElementById('fileInput').click()"
          ondragover="event.preventDefault();this.style.borderColor='#2563eb'"
          ondragleave="this.style.borderColor=''"
@@ -58,18 +71,34 @@ tr:hover td { background: #f8fafc; }
       <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" onchange="handleFile(this.files[0])">
       <div style="font-size:28px;margin-bottom:8px">📂</div>
       <div style="font-weight:700">Glissez votre fichier ici ou cliquez</div>
-      <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV levées de fonds ou standard — colonnes : Nom, Site web, Fondateurs, siren, domaine</div>
+      <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV — colonnes : Nom, Site web, Fondateurs, siren, domaine</div>
     </div>
     <div class="info" id="fileInfo"></div>
-    <div class="row-btns">
-      <button class="btn btn-primary" id="btnStart" onclick="startEnrichment()" disabled>⚡ Lancer l'enrichissement complet</button>
-      <button class="btn btn-stop" id="btnStop" onclick="stopEnrichment()">⏹ Arrêter</button>
-      <button class="btn btn-export" id="btnExport" onclick="exportCSV()">⬇️ Export CSV</button>
+
+    <div class="phases">
+      <button class="btn btn-all" id="btnAll" onclick="runAll()" disabled>⚡ Tout lancer</button>
+      <div class="phase-divider">ou étape par étape →</div>
+      <button class="btn btn-pappers"   id="btn1" onclick="runPhase1()" disabled>1. Pappers</button>
+      <button class="btn btn-claude"    id="btn2" onclick="runPhase2()" disabled>2. Claude+web</button>
+      <button class="btn btn-pipedrive" id="btn3" onclick="runPhase3()" disabled>3. Pipedrive</button>
+      <button class="btn btn-kaspr"     id="btn4" onclick="runPhase4()" disabled>4. Kaspr</button>
+      <button class="btn btn-fullenrich"id="btn5" onclick="runPhase5()" disabled>5. Fullenrich</button>
+      <div class="phase-divider">|</div>
+      <button class="btn btn-stop"   id="btnStop"   onclick="stopAll()">⏹ Stop</button>
+      <button class="btn btn-export" id="btnExport" onclick="exportCSV()">⬇️ CSV</button>
       <span class="stat" id="statLabel"></span>
     </div>
+
+    <div class="status-bar" id="statusBar">
+      <span class="phase-status phase-idle" id="s1">1. Pappers</span>
+      <span class="phase-status phase-idle" id="s2">2. Claude</span>
+      <span class="phase-status phase-idle" id="s3">3. Pipedrive</span>
+      <span class="phase-status phase-idle" id="s4">4. Kaspr</span>
+      <span class="phase-status phase-idle" id="s5">5. Fullenrich</span>
+    </div>
+
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <div style="font-size:11px;color:#94a3b8;margin-top:6px" id="progressLabel"></div>
-    <div class="countdown" id="countdown"></div>
   </div>
 
   <div class="card">
@@ -84,14 +113,14 @@ tr:hover td { background: #f8fafc; }
 </div>
 
 <script>
-let rows = [], results = [], running = false, stopFlag = false, countdownInterval = null;
+let rows = [], results = [], running = false, stopFlag = false;
 
+// ── File handling ──────────────────────────────────────────────
 function handleDrop(e) {
   e.preventDefault();
   document.getElementById('zone').style.borderColor = '';
   if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 }
-
 function handleFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext === 'csv') {
@@ -103,9 +132,8 @@ function handleFile(file) {
     reader.onload = e => parseXLSX(e.target.result);
     reader.readAsArrayBuffer(file);
   }
-  document.getElementById('fileInfo').textContent = `✅ Fichier chargé : ${file.name}`;
+  document.getElementById('fileInfo').textContent = `✅ ${file.name}`;
 }
-
 function parseCSV(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const sep = text.split('\n')[0].split(';').length > text.split('\n')[0].split(',').length ? ';' : ',';
@@ -119,7 +147,6 @@ function parseCSV(text) {
   }).filter(r => r.nom);
   onRowsParsed();
 }
-
 function parseXLSX(buffer) {
   if (!window.XLSX) {
     const s = document.createElement('script');
@@ -128,7 +155,6 @@ function parseXLSX(buffer) {
     document.head.appendChild(s);
   } else doParseXLSX(buffer);
 }
-
 function doParseXLSX(buffer) {
   const wb = window.XLSX.read(buffer, {type:'array'});
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -140,140 +166,205 @@ function doParseXLSX(buffer) {
   }).filter(r => r.nom);
   onRowsParsed();
 }
-
 function cleanDomain(url) {
   if (!url) return '';
-  return url.toLowerCase()
-    .replace('https://','').replace('http://','').replace('www.','')
-    .split('/')[0].trim();
+  return url.toLowerCase().replace('https://','').replace('http://','').replace('www.','').split('/')[0].trim();
 }
-
 function normalizeRow(r) {
   const get = (...keys) => { for (const k of keys) { if (r[k] && r[k] !== '—') return r[k]; } return ''; };
-  // Supporte les 2 formats : levées de fonds ET format standard
-  const rawDomaine = get('site web','domaine','domain','website','site','url');
   return {
     nom:        get('nom','name','organisation','société','societe','company','entreprise'),
     siren:      get('siren','siret'),
-    domaine:    cleanDomain(rawDomaine),
+    domaine:    cleanDomain(get('site web','domaine','domain','website','site','url')),
     org_id:     get('org id','org_id','id'),
     fondateurs: get('fondateurs','founders','fondateur'),
   };
 }
-
 function onRowsParsed() {
-  document.getElementById('fileInfo').textContent += ` — ${rows.length} société(s) détectée(s)`;
-  document.getElementById('btnStart').disabled = false;
-  document.getElementById('statLabel').textContent = `${rows.length} sociétés à enrichir`;
+  document.getElementById('fileInfo').textContent += ` — ${rows.length} société(s)`;
+  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
+  document.getElementById('statLabel').textContent = `${rows.length} sociétés`;
 }
 
-async function startEnrichment() {
-  if (running) return;
-  running = true; stopFlag = false; results = [];
-  document.getElementById('btnStart').disabled = true;
-  document.getElementById('btnStop').style.display = 'inline-block';
-  document.getElementById('btnExport').style.display = 'none';
-  document.getElementById('tbody').innerHTML = '';
+// ── Status helpers ─────────────────────────────────────────────
+function setStatus(n, state, label) {
+  const el = document.getElementById(`s${n}`);
+  el.className = `phase-status phase-${state}`;
+  el.textContent = label || el.textContent;
+}
+function setRunning(on) {
+  running = on;
+  document.getElementById('btnStop').style.display = on ? 'inline-block' : 'none';
+  document.getElementById('btnExport').style.display = on ? 'none' : 'inline-block';
+  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = on);
+}
 
-  // PASSE 1 : Pappers + Claude + Pipedrive
+// ── PHASE 1 : Pappers + Claude ─────────────────────────────────
+async function runPhase1() {
+  if (running) return;
+  setRunning(true);
+  stopFlag = false;
+  results = [];
+  document.getElementById('tbody').innerHTML = '';
+  setStatus(1, 'running', '1. Pappers ⏳');
+
   for (let i = 0; i < rows.length; i++) {
     if (stopFlag) break;
     document.getElementById('progressFill').style.width = Math.round(i/rows.length*100) + '%';
-    document.getElementById('progressLabel').textContent = `Passe 1 — ${i}/${rows.length} enrichis`;
-    document.getElementById('statLabel').textContent = `⏳ ${rows[i].nom}…`;
-
+    document.getElementById('progressLabel').textContent = `${i+1}/${rows.length} — ${rows[i].nom}`;
+    document.getElementById('statLabel').textContent = `⏳ ${rows[i].nom}`;
     try {
       const resp = await fetch('/enrich_one', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify(rows[i])
       });
       const data = await resp.json();
       if (data.results) { results.push(...data.results); renderResults(); }
     } catch(e) {
-      results.push({ societe: rows[i].nom, siren:'', prenom:'', nom_dg:'', titre:'', email:'', confiance:'', source:'' });
-      renderResults();
+      results.push({societe:rows[i].nom,siren:'',prenom:'',nom_dg:'',titre:'',email:'',confiance:'',source:''});
     }
-
-    if (i < rows.length - 1 && !stopFlag) {
-      await new Promise(r => setTimeout(r, 8000));
-    }
-  }
-
-  // PASSE 2 : Fullenrich batch automatique
-  const aEnricher = results.filter(r => r.nom_dg && (!r.email || r.confiance === 'faible'));
-  if (!stopFlag && aEnricher.length > 0) {
-    document.getElementById('statLabel').textContent = `⏳ Fullenrich — ${aEnricher.length} contacts à enrichir…`;
-    document.getElementById('progressLabel').textContent = 'Passe 2 — Fullenrich en cours…';
-    document.getElementById('progressFill').style.width = '80%';
-
-    try {
-      const resp = await fetch('/enrich_emails', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ contacts: aEnricher.map(r => ({
-          idx:      results.indexOf(r),
-          prenom:   r.prenom,
-          nom:      r.nom_dg,
-          domaine:  r.domaine,
-          societe:  r.societe,
-          siren:    r.siren,
-          email:    r.email,
-          confiance: r.confiance
-        }))})
-      });
-      const data = await resp.json();
-      const emails = data.emails || {};
-      let found = 0;
-      for (const [idxStr, val] of Object.entries(emails)) {
-        const idx = parseInt(idxStr);
-        if (idx >= 0 && idx < results.length) {
-          const email = typeof val === 'string' ? val : (val && val.email ? val.email : '');
-          const linkedin = val && val.linkedin ? val.linkedin : '';
-          const srcTag = val && val.source ? val.source : '+Fullenrich';
-          if (email && email.includes('@')) {
-            results[idx].email = email;
-            results[idx].confiance = 'haute';
-            if (linkedin) results[idx].linkedin = linkedin;
-            const src = results[idx].source || '';
-            if (!src.includes(srcTag.replace('+',''))) results[idx].source = src + srcTag;
-            found++;
-          }
-        }
-      }
-      renderResults();
-      document.getElementById('statLabel').textContent = `✅ Terminé — ${found} emails Fullenrich ajoutés !`;
-    } catch(e) {
-      document.getElementById('statLabel').textContent = '⚠️ Passe 1 OK — erreur Fullenrich';
-    }
-  } else if (!stopFlag) {
-    document.getElementById('statLabel').textContent = '✅ Terminé !';
+    if (i < rows.length - 1 && !stopFlag) await sleep(8000);
   }
 
   document.getElementById('progressFill').style.width = '100%';
-  document.getElementById('progressLabel').textContent = `Terminé — ${results.length} contacts trouvés`;
-  document.getElementById('btnStop').style.display = 'none';
-  document.getElementById('btnStart').disabled = false;
-  document.getElementById('btnExport').style.display = 'inline-block';
-  running = false;
+  setStatus(1, 'done', `1. Pappers ✅ (${results.filter(r=>r.nom_dg).length} dirigeants)`);
+  document.getElementById('statLabel').textContent = `✅ ${results.filter(r=>r.nom_dg).length} dirigeants trouvés`;
+  document.getElementById('progressLabel').textContent = `${results.length} contacts`;
+  setRunning(false);
+  // Activer phases suivantes
+  ['btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
 }
 
-function stopEnrichment() {
+// ── PHASE 2 : Pipedrive ────────────────────────────────────────
+async function runPhase3() {
+  if (running || !results.length) return;
+  setRunning(true);
+  setStatus(3, 'running', '3. Pipedrive ⏳');
+  const sans = results.filter(r => r.nom_dg && !r.email);
+  document.getElementById('statLabel').textContent = `⏳ Pipedrive — ${sans.length} contacts à vérifier`;
+  // Pipedrive est appelé dans enrich_one, pas en batch
+  // On relance enrich_one uniquement pour les contacts sans email
+  let found = 0;
+  for (const r of sans) {
+    if (stopFlag) break;
+    try {
+      const resp = await fetch('/check_pipedrive', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({prenom: r.prenom, nom: r.nom_dg})
+      });
+      const data = await resp.json();
+      if (data.email) {
+        const idx = results.indexOf(r);
+        results[idx].email = data.email;
+        results[idx].confiance = 'haute';
+        results[idx].source = (results[idx].source||'') + '+Pipedrive';
+        found++;
+        renderResults();
+      }
+    } catch(e) {}
+  }
+  setStatus(3, 'done', `3. Pipedrive ✅ (${found} emails)`);
+  document.getElementById('statLabel').textContent = `✅ Pipedrive : ${found} emails`;
+  setRunning(false);
+}
+
+// ── PHASE 3 : Kaspr ────────────────────────────────────────────
+async function runPhase4() {
+  if (running || !results.length) return;
+  setRunning(true);
+  setStatus(4, 'running', '4. Kaspr ⏳');
+  await runEmailBatch('kaspr');
+  setRunning(false);
+}
+
+// ── PHASE 4 : Fullenrich ───────────────────────────────────────
+async function runPhase5() {
+  if (running || !results.length) return;
+  setRunning(true);
+  setStatus(5, 'running', '5. Fullenrich ⏳');
+  await runEmailBatch('fullenrich');
+  setRunning(false);
+}
+
+// ── Batch email enrichment (Kaspr + Fullenrich) ────────────────
+async function runEmailBatch(phase) {
+  const toEnrich = results
+    .map((r, idx) => ({...r, idx}))
+    .filter(r => r.nom_dg && (!r.email || r.confiance === 'faible'));
+
+  if (!toEnrich.length) {
+    if (phase === 'kaspr') setStatus(4, 'done', '4. Kaspr ✅ (rien à faire)');
+    else setStatus(5, 'done', '5. Fullenrich ✅ (rien à faire)');
+    document.getElementById('statLabel').textContent = '✅ Tous les emails déjà trouvés';
+    return;
+  }
+
+  document.getElementById('statLabel').textContent = `⏳ ${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'} — ${toEnrich.length} contacts…`;
+
+  try {
+    const resp = await fetch('/enrich_emails', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ contacts: toEnrich.map(r => ({
+        idx: r.idx, prenom: r.prenom, nom: r.nom_dg,
+        domaine: r.domaine, societe: r.societe, siren: r.siren,
+        email: r.email, confiance: r.confiance
+      })), phase })
+    });
+    const data = await resp.json();
+    const emails = data.emails || {};
+    let found = 0;
+    for (const [idxStr, val] of Object.entries(emails)) {
+      const idx = parseInt(idxStr);
+      if (idx >= 0 && idx < results.length) {
+        const email   = typeof val === 'string' ? val : (val && val.email ? val.email : '');
+        const linkedin = val && val.linkedin ? val.linkedin : '';
+        const srcTag  = val && val.source ? val.source : `+${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'}`;
+        if (email && email.includes('@')) {
+          results[idx].email = email;
+          results[idx].confiance = 'haute';
+          if (linkedin) results[idx].linkedin = linkedin;
+          const src = results[idx].source || '';
+          const tag = srcTag.replace('+','');
+          if (!src.includes(tag)) results[idx].source = src + srcTag;
+          found++;
+        }
+      }
+    }
+    renderResults();
+    if (phase === 'kaspr') setStatus(4, 'done', `4. Kaspr ✅ (${found} emails)`);
+    else setStatus(5, 'done', `5. Fullenrich ✅ (${found} emails)`);
+    document.getElementById('statLabel').textContent = `✅ ${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'} : ${found} emails`;
+  } catch(e) {
+    if (phase === 'kaspr') setStatus(4, 'error', '4. Kaspr ❌');
+    else setStatus(5, 'error', '5. Fullenrich ❌');
+    document.getElementById('statLabel').textContent = `❌ Erreur ${phase}`;
+  }
+}
+
+// ── TOUT LANCER ────────────────────────────────────────────────
+async function runAll() {
+  if (running) return;
+  stopFlag = false;
+  await runPhase1();
+  if (!stopFlag) await runPhase5(); // Kaspr + Fullenrich batch ensemble
+}
+
+function stopAll() {
   stopFlag = true;
-  if (countdownInterval) clearInterval(countdownInterval);
-  document.getElementById('countdown').textContent = '';
   document.getElementById('btnStop').style.display = 'none';
-  document.getElementById('btnExport').style.display = 'inline-block';
 }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// ── Render ─────────────────────────────────────────────────────
 function renderResults() {
   const withEmail = results.filter(r => r.email).length;
   document.getElementById('statLabel').textContent = `✉️ ${withEmail} emails | 👤 ${results.filter(r=>r.nom_dg).length} dirigeants`;
   document.getElementById('tbody').innerHTML = results.map(r => {
     const conf = r.confiance || '';
-    const src = r.source || '';
+    const src  = r.source || '';
     let srcClass = 'src-claude';
     if (src.includes('Fullenrich')) srcClass = 'src-fullenrich';
+    else if (src.includes('Kaspr'))     srcClass = 'src-kaspr';
     else if (src.includes('Pipedrive')) srcClass = 'src-pipedrive';
     else if (src.includes('Pappers') && !src.includes('Claude')) srcClass = 'src-pappers';
     return `<tr>
@@ -282,13 +373,14 @@ function renderResults() {
       <td>${r.nom_dg||'—'}</td>
       <td>${r.titre||'—'}</td>
       <td>${r.email?`<span class="email-ok">${r.email}</span>`:`<span class="no-email">—</span>`}</td>
-      <td>${r.linkedin?`<a href="${r.linkedin}" target="_blank" style="color:#0077b5;font-size:11px">🔗 LinkedIn</a>`:'—'}</td>
+      <td>${r.linkedin?`<a href="${r.linkedin}" target="_blank" style="color:#0077b5;font-size:11px">🔗</a>`:'—'}</td>
       <td>${conf?`<span class="badge ${conf}">${conf}</span>`:'—'}</td>
       <td>${src?`<span class="badge ${srcClass}">${src}</span>`:'—'}</td>
     </tr>`;
   }).join('');
 }
 
+// ── Export CSV ─────────────────────────────────────────────────
 function exportCSV() {
   const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','email','linkedin','confiance','source'];
   const lines = [headers.join(';')];
