@@ -196,7 +196,7 @@ async function startEnrichment() {
     }
 
     if (i < rows.length - 1 && !stopFlag) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 8000));
     }
   }
 
@@ -225,14 +225,19 @@ async function startEnrichment() {
       const data = await resp.json();
       const emails = data.emails || {};
       let found = 0;
-      for (const [idxStr, email] of Object.entries(emails)) {
+      for (const [idxStr, val] of Object.entries(emails)) {
         const idx = parseInt(idxStr);
         if (idx >= 0 && idx < results.length) {
-          results[idx].email = email;
-          results[idx].confiance = 'haute';
-          const src = results[idx].source || '';
-          if (!src.includes('Fullenrich')) results[idx].source = src + '+Fullenrich';
-          found++;
+          const email = typeof val === 'string' ? val : (val && val.email ? val.email : '');
+          const linkedin = val && val.linkedin ? val.linkedin : '';
+          const srcTag = val && val.source ? val.source : '+Fullenrich';
+          if (email && email.includes('@')) {
+            results[idx].email = email;
+            results[idx].confiance = 'haute';
+            if (linkedin) results[idx].linkedin = linkedin;
+            const src = results[idx].source || '';
+            if (!src.includes(srcTag.replace('+',''))) results[idx].source = src + srcTag;
+            found++;
         }
       }
       renderResults();
