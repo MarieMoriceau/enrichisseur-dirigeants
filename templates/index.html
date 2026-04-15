@@ -404,15 +404,19 @@ async function runAll() {
   // Phase 1 : Pappers
   await runPhase1();
   if (stopFlag) return;
+  await sleep(500); // laisse results se stabiliser avant Phase 2
   // Phase 2 : Claude+web (ajoute les dirigeants non légaux)
   await runPhase2();
   if (stopFlag) return;
+  await sleep(500); // laisse results se stabiliser avant Phase 3
   // Phase 3 : Pipedrive check
   await runPhase3();
   if (stopFlag) return;
+  await sleep(500); // laisse results se stabiliser avant Phase 4
   // Phase 4 : Kaspr — fromRunAll=true pour bypasser le race condition sur "running"
   await runPhase4(true);
   if (stopFlag) return;
+  await sleep(500); // laisse results se stabiliser avant Phase 5
   // Phase 5 : Fullenrich — fromRunAll=true pour bypasser le race condition sur "running"
   await runPhase5(true);
 }
