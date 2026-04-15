@@ -64,9 +64,9 @@ tr:hover td { background: #f8fafc; }
     </div>
     <div class="info" id="fileInfo"></div>
     <div class="row-btns">
-      <button class="btn btn-primary" id="btnStart" onclick="startEnrichment()" disabled>⚡ Passe 1 — Dirigeants</button>
+      <button class="btn btn-primary" id="btnStart" onclick="startEnrichment()" disabled>⚡ Lancer l'enrichissement complet</button>
       <button class="btn btn-stop" id="btnStop" onclick="stopEnrichment()">⏹ Arrêter</button>
-      <button class="btn btn-email" id="btnEmail" onclick="startEmailEnrichment()">✉️ Passe 2 — Emails via Fullenrich</button>
+      <button class="btn btn-email" id="btnEmail" onclick="startEmailEnrichment()" style="display:none">✉️ Passe 2 — Emails via Fullenrich</button>
       <button class="btn btn-export" id="btnExport" onclick="exportCSV()">⬇️ Export CSV</button>
       <span class="stat" id="statLabel"></span>
     </div>
@@ -196,8 +196,11 @@ async function startEnrichment() {
   document.getElementById('btnStop').style.display = 'none';
   document.getElementById('btnStart').disabled = false;
   document.getElementById('btnExport').style.display = 'inline-block';
-  if (results.filter(r => r.nom_dg).length > 0) {
-    document.getElementById('btnEmail').style.display = 'inline-block';
+  // Lancement automatique de la Passe 2 si des contacts sans email existent
+  if (results.filter(r => r.nom_dg && !r.email).length > 0) {
+    await startEmailEnrichment();
+  } else {
+    document.getElementById('statLabel').textContent = '✅ Terminé — tous les emails déjà trouvés !';
   }
   running = false;
 }
