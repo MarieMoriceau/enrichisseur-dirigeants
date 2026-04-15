@@ -209,7 +209,7 @@ async function startEnrichment() {
       renderResults();
     }
 
-    if (i < rows.length - 1 && !stopFlag) await waitWithCountdown(20);
+    // Pas de pause artificielle — le temps de traitement Claude (~15-20s) suffit
   }
 
   document.getElementById('progressFill').style.width = '100%';
