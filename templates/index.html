@@ -188,6 +188,11 @@ async function startEnrichment() {
       results.push({ societe: rows[i].nom, siren:'', prenom:'', nom_dg:'', titre:'', email:'', confiance:'', source:'' });
       renderResults();
     }
+
+    // Petite pause pour éviter le rate limit Claude
+    if (i < rows.length - 1 && !stopFlag) {
+      await new Promise(r => setTimeout(r, 3000));
+    }
   }
 
   document.getElementById('progressFill').style.width = '100%';
@@ -232,6 +237,7 @@ async function startEmailEnrichment() {
         nom:      r.nom_dg,
         domaine:  r.domaine,
         societe:  r.societe,
+        siren:    r.siren,
         email:    r.email,
         confiance: r.confiance
       }))})
