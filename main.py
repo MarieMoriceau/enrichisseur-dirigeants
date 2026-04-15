@@ -125,10 +125,10 @@ Si tu n'es pas certain, réponds: NON"""
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
                 "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                 json={
                     "model": "claude-sonnet-4-6",
-                    "max_tokens": 100,
+                    "max_tokens": 500,
                     "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                     "messages": [{"role": "user", "content": prompt}]
                 }
@@ -207,7 +207,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
                     "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 50,
@@ -349,7 +349,7 @@ Réponds UNIQUEMENT avec ce JSON :
                     print(f"[CLAUDE] Tentative {attempt+1}/3 pour {nom}")
                     r = await c.post(
                         "https://api.anthropic.com/v1/messages",
-                        headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                        headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                         json={
                             "model": "claude-sonnet-4-6",
                             "max_tokens": 1000,
@@ -378,6 +378,7 @@ Réponds UNIQUEMENT avec ce JSON :
                             print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
                         break
                     else:
+                        print(f"[CLAUDE ERROR DETAIL] {r.status_code}: {r.text[:300]}")
                         break
             except Exception as e:
                 print(f"[CLAUDE EXCEPTION] {e}")
