@@ -24,16 +24,10 @@ async def health():
     }
 
 async def fullenrich_emails(contacts, domaine, nom_societe):
-    """
-    Envoie une liste de contacts à Fullenrich et attend le résultat.
-    Retourne un dict {index: email} pour les emails trouvés.
-    """
     if not FULLENRICH_KEY or not contacts:
         return {}
 
-    # On prépare uniquement les contacts sans email ou confiance faible
     to_enrich = []
-    indices = []
     for i, ct in enumerate(contacts):
         email_actuel = ct.get("email", "")
         confiance = ct.get("confiance_email", ct.get("confiance", ""))
@@ -51,7 +45,6 @@ async def fullenrich_emails(contacts, domaine, nom_societe):
             "enrich_fields": ["contact.emails"],
             "custom": {"idx": str(i)}
         })
-        indices.append(i)
 
     if not to_enrich:
         return {}
@@ -84,8 +77,8 @@ async def fullenrich_emails(contacts, domaine, nom_societe):
 
             print(f"[FULLENRICH] enrichment_id={enrichment_id}")
 
-            # Étape 2 : polling jusqu'à FINISHED (max 60s)
-            for attempt in range(12):
+            # Étape 2 : polling toutes les 5s, max 180s
+            for attempt in range(36):
                 await asyncio.sleep(5)
                 r2 = await c.get(
                     f"https://app.fullenrich.com/api/v1/contact/enrich/bulk/{enrichment_id}",
@@ -95,16 +88,14 @@ async def fullenrich_emails(contacts, domaine, nom_societe):
                     continue
                 result = r2.json()
                 status = result.get("status", "")
-                print(f"[FULLENRICH] Polling {attempt+1}/12 — status={status}")
+                print(f"[FULLENRICH] Polling {attempt+1}/36 — status={status}")
 
                 if status == "FINISHED":
-                    # Extraire les emails trouvés
                     emails_par_idx = {}
                     for contact_result in result.get("datas", []):
                         idx = int(contact_result.get("custom", {}).get("idx", -1))
                         emails = contact_result.get("contact", {}).get("emails", [])
                         if idx >= 0 and emails:
-                            # Prendre le premier email valide
                             for e in emails:
                                 val = e.get("value") or e.get("email") or ""
                                 if val and "@" in val:
@@ -113,7 +104,7 @@ async def fullenrich_emails(contacts, domaine, nom_societe):
                     print(f"[FULLENRICH] {len(emails_par_idx)} emails trouvés")
                     return emails_par_idx
 
-            print(f"[FULLENRICH] Timeout — pas de résultat après 60s")
+            print(f"[FULLENRICH] Timeout — pas de résultat après 180s")
             return {}
 
     except Exception as e:
@@ -240,7 +231,6 @@ Réponds UNIQUEMENT avec ce JSON :
                             parsed = json.loads(m.group())
                             for ct in parsed.get("contacts", []):
                                 ct["source"] = "Claude+web"
-                                # Filtrer les emails perso
                                 email = ct.get("email", "") or ""
                                 if any(x in email for x in ["gmail", "hotmail", "yahoo", "outlook.com"]):
                                     ct["email"] = ""
