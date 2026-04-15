@@ -16,9 +16,34 @@ ANCIENS_KEYWORDS = [
     "jusqu'au", "jusqu au", "sortant"
 ]
 
+# Titres à exclure car pas des dirigeants opérationnels
+TITRES_EXCLUS = [
+    "commissaire aux comptes", "commissaire", "conseil de surveillance",
+    "membre du conseil", "membre du directoire observateur",
+    "censeur", "observateur", "représentant permanent",
+    "liquidateur", "mandataire", "administrateur judiciaire",
+]
+
 def est_ancien_dirigeant(titre: str) -> bool:
     titre_lower = titre.lower()
     return any(kw in titre_lower for kw in ANCIENS_KEYWORDS)
+
+def est_titre_exclu(titre: str) -> bool:
+    titre_lower = titre.lower()
+    return any(kw in titre_lower for kw in TITRES_EXCLUS)
+
+def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
+    """Vérifie que le nom trouvé par Pappers correspond bien à la société du CSV."""
+    a = nom_csv.lower().strip()
+    b = nom_pappers.lower().strip()
+    # Extraire les mots significatifs (> 3 chars)
+    mots_a = set(w for w in a.split() if len(w) > 3)
+    mots_b = set(w for w in b.split() if len(w) > 3)
+    if not mots_a:
+        return True  # nom trop court, on accepte
+    # Au moins 1 mot en commun
+    communs = mots_a & mots_b
+    return len(communs) > 0
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -133,6 +158,15 @@ async def enrich_one(request: Request):
             if not domaine:
                 domaine = pappers_data.get("domaine_url", "") or pappers_data.get("site_web", "")
 
+            # Vérifier que Pappers a bien trouvé la bonne société
+            nom_pappers = pappers_data.get("nom_entreprise", "") or pappers_data.get("denomination", "")
+            if nom_pappers and not noms_similaires(nom, nom_pappers):
+                print(f"[PAPPERS] ⚠️ Mauvaise société trouvée : '{nom_pappers}' pour '{nom}' — ignoré")
+                pappers_data = None
+                siren = ""
+                domaine = data.get("domaine", "")  # remettre le domaine original
+
+        if pappers_data:
             # Vérifier si la société est radiée
             entreprise_cessee = pappers_data.get("entreprise_cessee", False)
             statut_rcs = pappers_data.get("statut_rcs", "").lower()
@@ -149,7 +183,9 @@ async def enrich_one(request: Request):
                 if rep.get("personne_morale"):
                     continue
                 titre = rep.get("qualite", "Représentant légal")
-                if est_ancien_dirigeant(titre):
+                # Filtrer anciens dirigeants et titres non opérationnels
+                if est_ancien_dirigeant(titre) or est_titre_exclu(titre):
+                    print(f"[FILTRE] Ignoré : {rep.get('prenom','')} {rep.get('nom','')} ({titre})")
                     continue
                 pappers_contacts.append({
                     "prenom": rep.get("prenom", ""),
