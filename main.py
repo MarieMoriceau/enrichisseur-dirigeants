@@ -119,7 +119,7 @@ Si tu n'es pas certain, réponds: NON"""
             if r.status_code == 200:
                 all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
                 # Extraire l'URL LinkedIn
-                m = re.search(r'https?://(?:www\.)?linkedin\.com/in/[^\s\)"']+', all_text)
+                m = re.search(r'https?://(?:www\.)?linkedin\.com/in/[^\s\)\"\'\]]+', all_text)
                 if m:
                     url = m.group().rstrip('/')
                     print(f"[LINKEDIN] ✅ {prenom} {nom} → {url}")
