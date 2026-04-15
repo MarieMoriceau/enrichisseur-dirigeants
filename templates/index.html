@@ -296,8 +296,6 @@ async function runPhase3() {
   setStatus(3, 'running', '3. Pipedrive ⏳');
   const sans = results.filter(r => r.nom_dg && !r.email);
   document.getElementById('statLabel').textContent = `⏳ Pipedrive — ${sans.length} contacts à vérifier`;
-  // Pipedrive est appelé dans enrich_one, pas en batch
-  // On relance enrich_one uniquement pour les contacts sans email
   let found = 0;
   for (const r of sans) {
     if (stopFlag) break;
@@ -322,18 +320,22 @@ async function runPhase3() {
   setRunning(false);
 }
 
-// ── PHASE 3 : Kaspr ────────────────────────────────────────────
-async function runPhase4() {
-  if (running || !results.length) return;
+// ── PHASE 4 : Kaspr ────────────────────────────────────────────
+// FIX : fromRunAll bypass le guard "running" pour éviter le race condition
+async function runPhase4(fromRunAll = false) {
+  if (running && !fromRunAll) return;
+  if (!results.length) return;
   setRunning(true);
   setStatus(4, 'running', '4. Kaspr ⏳');
   await runEmailBatch('kaspr');
   setRunning(false);
 }
 
-// ── PHASE 4 : Fullenrich ───────────────────────────────────────
-async function runPhase5() {
-  if (running || !results.length) return;
+// ── PHASE 5 : Fullenrich ───────────────────────────────────────
+// FIX : fromRunAll bypass le guard "running" pour éviter le race condition
+async function runPhase5(fromRunAll = false) {
+  if (running && !fromRunAll) return;
+  if (!results.length) return;
   setRunning(true);
   setStatus(5, 'running', '5. Fullenrich ⏳');
   await runEmailBatch('fullenrich');
@@ -408,11 +410,11 @@ async function runAll() {
   // Phase 3 : Pipedrive check
   await runPhase3();
   if (stopFlag) return;
-  // Phase 4 : Kaspr
-  await runPhase4();
+  // Phase 4 : Kaspr — fromRunAll=true pour bypasser le race condition sur "running"
+  await runPhase4(true);
   if (stopFlag) return;
-  // Phase 5 : Fullenrich
-  await runPhase5();
+  // Phase 5 : Fullenrich — fromRunAll=true pour bypasser le race condition sur "running"
+  await runPhase5(true);
 }
 
 function stopAll() {
