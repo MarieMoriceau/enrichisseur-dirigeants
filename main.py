@@ -434,6 +434,74 @@ Réponds UNIQUEMENT avec ce JSON :
 
 
 # -------------------------------------------------------
+# ROUTE CLAUDE ONLY (Phase 2 standalone)
+# -------------------------------------------------------
+@app.post("/enrich_claude")
+async def enrich_claude(request: Request):
+    data = await request.json()
+    nom        = data.get("nom", "")
+    siren      = data.get("siren", "")
+    domaine    = nettoyer_domaine(data.get("domaine", ""))
+    fondateurs = data.get("fondateurs", "")
+
+    if not ANTHROPIC_KEY:
+        return {"contacts": []}
+
+    contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
+    prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
+Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}
+
+Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
+- Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
+- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
+
+Réponds UNIQUEMENT avec ce JSON :
+{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
+
+    delays = [10, 25, 45]
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=90) as c:
+                print(f"[CLAUDE PHASE2] Tentative {attempt+1}/3 pour {nom}")
+                r = await c.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
+                    json={
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 1000,
+                        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                        "messages": [{"role": "user", "content": prompt}]
+                    }
+                )
+                print(f"[CLAUDE PHASE2] Status {r.status_code} pour {nom}")
+                if r.status_code in (429, 529):
+                    await asyncio.sleep(delays[attempt])
+                    continue
+                if r.status_code == 200:
+                    all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
+                    m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
+                    if m:
+                        parsed = json.loads(m.group())
+                        contacts = []
+                        for ct in parsed.get("contacts",[]):
+                            email = ct.get("email","") or ""
+                            if any(x in email for x in ["gmail","hotmail","yahoo","outlook.com"]):
+                                ct["email"] = ""
+                                ct["confiance_email"] = "faible"
+                            if not est_ancien_dirigeant(ct.get("titre","")) and not est_titre_exclu(ct.get("titre","")):
+                                contacts.append(ct)
+                        print(f"[CLAUDE PHASE2 OK] {len(contacts)} contacts pour {nom}")
+                        return {"contacts": contacts}
+                else:
+                    print(f"[CLAUDE PHASE2 ERROR] {r.status_code}: {r.text[:200]}")
+                break
+        except Exception as e:
+            print(f"[CLAUDE PHASE2 EXCEPTION] {e}")
+            if attempt < 2:
+                await asyncio.sleep(delays[attempt])
+    return {"contacts": []}
+
+# -------------------------------------------------------
 # ROUTE PIPEDRIVE CHECK standalone
 # -------------------------------------------------------
 @app.post("/check_pipedrive")
