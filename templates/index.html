@@ -399,8 +399,20 @@ async function runEmailBatch(phase) {
 async function runAll() {
   if (running) return;
   stopFlag = false;
+  // Phase 1 : Pappers
   await runPhase1();
-  if (!stopFlag) await runPhase5(); // Kaspr + Fullenrich batch ensemble
+  if (stopFlag) return;
+  // Phase 2 : Claude+web (ajoute les dirigeants non légaux)
+  await runPhase2();
+  if (stopFlag) return;
+  // Phase 3 : Pipedrive check
+  await runPhase3();
+  if (stopFlag) return;
+  // Phase 4 : Kaspr
+  await runPhase4();
+  if (stopFlag) return;
+  // Phase 5 : Fullenrich
+  await runPhase5();
 }
 
 function stopAll() {
