@@ -434,6 +434,17 @@ Réponds UNIQUEMENT avec ce JSON :
 
 
 # -------------------------------------------------------
+# ROUTE PIPEDRIVE CHECK standalone
+# -------------------------------------------------------
+@app.post("/check_pipedrive")
+async def check_pipedrive_route(request: Request):
+    data = await request.json()
+    prenom = data.get("prenom","")
+    nom    = data.get("nom","")
+    email  = await check_pipedrive(prenom, nom)
+    return {"email": email}
+
+# -------------------------------------------------------
 # ROUTE PASSE 2 : Kaspr + LinkedIn + Fullenrich batch
 # -------------------------------------------------------
 @app.post("/enrich_emails")
