@@ -238,6 +238,7 @@ async function startEnrichment() {
             const src = results[idx].source || '';
             if (!src.includes(srcTag.replace('+',''))) results[idx].source = src + srcTag;
             found++;
+          }
         }
       }
       renderResults();
