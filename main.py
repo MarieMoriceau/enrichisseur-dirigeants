@@ -110,6 +110,10 @@ async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
     """Cherche l'URL LinkedIn du dirigeant via Claude+web."""
     if not ANTHROPIC_KEY:
         return ""
+    # Nettoyer les prénoms composés Pappers ex: "Emmanuel, Roger" → "Emmanuel"
+    prenom = prenom.split(",")[0].strip()
+    if not prenom or not nom:
+        return ""
     try:
         prompt = f"""Trouve l'URL LinkedIn exacte de cette personne :
 Prénom: {prenom}
@@ -123,7 +127,7 @@ Si tu n'es pas certain, réponds: NON"""
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                 json={
-                    "model": "claude-sonnet-4-20250514",
+                    "model": "claude-sonnet-4-6",
                     "max_tokens": 100,
                     "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                     "messages": [{"role": "user", "content": prompt}]
@@ -205,7 +209,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                     json={
-                        "model": "claude-sonnet-4-20250514",
+                        "model": "claude-sonnet-4-6",
                         "max_tokens": 50,
                         "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                         "messages": [{"role": "user", "content": prompt}]
@@ -347,7 +351,7 @@ Réponds UNIQUEMENT avec ce JSON :
                         "https://api.anthropic.com/v1/messages",
                         headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                         json={
-                            "model": "claude-sonnet-4-20250514",
+                            "model": "claude-sonnet-4-6",
                             "max_tokens": 1000,
                             "tools": [{"type": "web_search_20250305", "name": "web_search"}],
                             "messages": [{"role": "user", "content": prompt}]
@@ -449,7 +453,8 @@ async def enrich_emails(request: Request):
             email = ct.get("email","")
             if email and "*" not in email:
                 continue
-            prenom = ct.get("prenom","")
+            # Nettoyer prénom composé Pappers ex: "Emmanuel, Roger" → "Emmanuel"
+            prenom = ct.get("prenom","").split(",")[0].strip()
             nom_ct = ct.get("nom","")
             societe_ct = ct.get("societe","")
             idx = str(ct.get("idx",0))
