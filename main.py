@@ -245,6 +245,30 @@ async def enrich_one(request: Request):
 
     print(f"[START] {nom} | domaine={domaine} | siren={siren}")
 
+    # ── CHECK PIPEDRIVE ORGANISATION (avant tout le process) ──────
+    if PIPEDRIVE_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=8) as c:
+                r = await c.get(
+                    "https://api.pipedrive.com/v1/organizations/search",
+                    params={"term": nom, "exact_match": "false", "limit": 5, "api_token": PIPEDRIVE_KEY}
+                )
+                if r.status_code == 200:
+                    items = r.json().get("data", {}).get("items", [])
+                    for item in items:
+                        org_name = item.get("item", {}).get("name", "")
+                        if noms_similaires(nom, org_name):
+                            print(f"[PIPEDRIVE ORG] ✅ '{nom}' déjà dans Pipedrive → stop")
+                            return {"results": [{
+                                "org_id": org_id, "societe": nom, "siren": siren,
+                                "domaine": domaine, "prenom": "", "nom_dg": "",
+                                "titre": "", "email": "", "linkedin": "",
+                                "confiance": "", "source": "",
+                                "dans_pipedrive": "oui — société déjà dans Pipedrive"
+                            }]}
+        except Exception as e:
+            print(f"[PIPEDRIVE ORG ERROR] {e}")
+
     pappers_contacts = []
     pappers_data = None
 
