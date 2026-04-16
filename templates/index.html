@@ -130,8 +130,19 @@ function handleDrop(e) {
 function handleFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext === 'csv') {
+    // Essai UTF-8 d'abord, puis latin-1 si caractères corrompus
     const reader = new FileReader();
-    reader.onload = e => parseCSV(e.target.result);
+    reader.onload = e => {
+      let text = e.target.result;
+      // Détecter si le texte semble corrompu (caractères latin-1 mal décodés)
+      if (text.includes('Ã©') || text.includes('Ã¨') || text.includes('Ã ')) {
+        const reader2 = new FileReader();
+        reader2.onload = e2 => parseCSV(e2.target.result);
+        reader2.readAsText(file, 'latin-1');
+      } else {
+        parseCSV(text);
+      }
+    };
     reader.readAsText(file, 'UTF-8');
   } else {
     const reader = new FileReader();
@@ -140,11 +151,16 @@ function handleFile(file) {
   }
   document.getElementById('fileInfo').textContent = `✅ ${file.name}`;
 }
+function normalizeHeader(h) {
+  return h.trim().toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")  // enlève accents
+    .replace(/\s+/g, ' ');
+}
 function parseCSV(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const sep = text.split('\n')[0].split(';').length > text.split('\n')[0].split(',').length ? ';' : ',';
   const lines = text.trim().split('\n');
-  const headers = lines[0].split(sep).map(h => h.trim().toLowerCase());
+  const headers = lines[0].split(sep).map(h => normalizeHeader(h));
   rows = lines.slice(1).filter(l => l.trim()).map(line => {
     const vals = line.split(sep);
     const row = {};
@@ -184,18 +200,17 @@ function cleanSiren(val) {
 function normalizeRow(r) {
   const get = (...keys) => { for (const k of keys) { if (r[k] && r[k] !== '—' && r[k] !== 'nan') return r[k]; } return ''; };
   return {
-    nom:            get('nom','name','organisation','société','societe','company','entreprise'),
+    nom:            get('nom','name','organisation','societe','societe','company','entreprise'),
     siren:          cleanSiren(get('siret/siren','siren','siret')),
     domaine:        cleanDomain(get('site web','domaine','domain','website','site','url')),
     org_id:         get('org id','org_id','id'),
     fondateurs:     get('fondateurs','founders','fondateur'),
-    // Nouvelles colonnes fichier occupants
-    contact_prenom: get('contact prénom','contact prenom','prenom contact'),
+    contact_prenom: get('contact prenom','prenom contact'),
     contact_nom:    get('contact nom','nom contact'),
     contact_titre:  get('fonction','titre','poste'),
     code_postal:    get('code postal','cp','code_postal'),
     ville:          get('ville','city'),
-    adresse:        get('adresse complète','adresse complete','rue','adresse'),
+    adresse:        get('adresse complete','adresse','rue'),
   };
 }
 function onRowsParsed() {
