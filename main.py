@@ -148,7 +148,7 @@ Si tu n'es pas certain à 100%, réponds: NON"""
 
 
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
-    """Récupère l'email via Kaspr avec une URL LinkedIn."""
+    """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement (illimité)."""
     if not KASPR_KEY or not linkedin_url:
         return ""
     try:
@@ -156,20 +156,26 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
             print(f"[KASPR] Appel pour {prenom} {nom} — {linkedin_url}")
             r = await c.post(
                 "https://api.developers.kaspr.io/profile/linkedin",
-                headers={"Authorization": f"Bearer {KASPR_KEY}", "Content-Type": "application/json"},
-                json={"name": f"{prenom} {nom}", "id": linkedin_url}
+                headers={
+                    "Authorization": f"Bearer {KASPR_KEY}",
+                    "Content-Type": "application/json",
+                    "accept-version": "v2.0"
+                },
+                json={
+                    "name": f"{prenom} {nom}",
+                    "id": linkedin_url,
+                    "dataToGet": ["workEmail"]  # B2B uniquement = crédits illimités
+                }
             )
             print(f"[KASPR] Status {r.status_code} pour {prenom} {nom}")
             if r.status_code == 200:
                 d = r.json()
-                # Chercher l'email dans la réponse
                 emails = d.get("emails", []) or d.get("workEmails", []) or d.get("work_emails", [])
                 if isinstance(emails, list) and emails:
                     email = emails[0] if isinstance(emails[0], str) else emails[0].get("value","")
                     if email and "@" in email:
                         print(f"[KASPR] ✅ Email trouvé : {email}")
                         return email
-                # Format alternatif
                 email = d.get("email","") or d.get("workEmail","") or d.get("work_email","")
                 if email and "@" in email:
                     print(f"[KASPR] ✅ Email trouvé : {email}")
