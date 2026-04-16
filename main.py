@@ -217,7 +217,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 50,
-                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
                         "messages": [{"role": "user", "content": prompt}]
                     }
                 )
@@ -359,7 +359,7 @@ Réponds UNIQUEMENT avec ce JSON :
                         json={
                             "model": "claude-sonnet-4-6",
                             "max_tokens": 1000,
-                            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+                            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
                             "messages": [{"role": "user", "content": prompt}]
                         }
                     )
@@ -477,7 +477,7 @@ Réponds UNIQUEMENT avec ce JSON :
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 1000,
-                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
                         "messages": [{"role": "user", "content": prompt}]
                     }
                 )
