@@ -130,20 +130,18 @@ function handleDrop(e) {
 function handleFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext === 'csv') {
-    // Essai UTF-8 d'abord, puis latin-1 si caractères corrompus
-    const reader = new FileReader();
-    reader.onload = e => {
-      let text = e.target.result;
-      // Détecter si le texte semble corrompu (caractères latin-1 mal décodés)
-      if (text.includes('Ã©') || text.includes('Ã¨') || text.includes('Ã ')) {
-        const reader2 = new FileReader();
-        reader2.onload = e2 => parseCSV(e2.target.result);
-        reader2.readAsText(file, 'latin-1');
-      } else {
-        parseCSV(text);
-      }
+    // Lire en binaire pour détecter l'encoding
+    const sniffer = new FileReader();
+    sniffer.onload = e => {
+      const bytes = new Uint8Array(e.target.result.slice(0, 3));
+      // BOM UTF-8 = EF BB BF
+      const isUtf8Bom = bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF;
+      const encoding = isUtf8Bom ? 'UTF-8' : 'windows-1252';
+      const reader = new FileReader();
+      reader.onload = e2 => parseCSV(e2.target.result);
+      reader.readAsText(file, encoding);
     };
-    reader.readAsText(file, 'UTF-8');
+    sniffer.readAsArrayBuffer(file.slice(0, 3));
   } else {
     const reader = new FileReader();
     reader.onload = e => parseXLSX(e.target.result);
