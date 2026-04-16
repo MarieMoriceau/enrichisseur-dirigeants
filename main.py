@@ -1,10 +1,11 @@
 import os, json, asyncio, httpx, re, smtplib, csv, io
+from io import BytesIO
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 app = FastAPI()
@@ -697,6 +698,117 @@ async def enrich_emails(request: Request):
         return {"emails": emails_result}
 
 # -------------------------------------------------------
+# HELPER : Génère un Excel mis en forme en mémoire
+# -------------------------------------------------------
+def generer_excel(rows: list) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Dirigeants enrichis"
+
+    headers  = ['Organisation','Prénom','Nom','Titre','Email','LinkedIn','Confiance','Source','Dans Pipedrive']
+    col_map  = ['societe','prenom','nom_dg','titre','email','linkedin','confiance','source','dans_pipedrive']
+    thin     = Side(style='thin', color="e2e8f0")
+    border   = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Titre
+    ws.merge_cells('A1:I1')
+    c = ws['A1']
+    c.value = "Enrichissement Dirigeants"
+    c.font  = Font(name='Arial', bold=True, size=14, color="FFFFFF")
+    c.fill  = PatternFill('solid', start_color="1e3a5f")
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 32
+
+    # Stats
+    emails_count = len([r for r in rows if r.get('email')])
+    ws.merge_cells('A2:I2')
+    c = ws['A2']
+    c.value = f"{len(rows)} contacts  |  {emails_count} emails trouvés  |  {len(rows)-emails_count} sans email"
+    c.font  = Font(name='Arial', size=10, color="FFFFFF")
+    c.fill  = PatternFill('solid', start_color="2563eb")
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[2].height = 22
+
+    # Headers
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row=3, column=col_idx, value=h)
+        c.font = Font(name='Arial', bold=True, size=10, color="FFFFFF")
+        c.fill = PatternFill('solid', start_color="2563eb")
+        c.alignment = Alignment(horizontal='center', vertical='center')
+        c.border = border
+    ws.row_dimensions[3].height = 28
+
+    src_colors = {'Pappers':'eff6ff','Claude':'f5f3ff','Pipedrive':'fef3c7','Kaspr':'e0f2fe','Fullenrich':'dcfce7'}
+
+    # Tri par organisation + couleurs alternées par orga
+    rows = sorted(rows, key=lambda r: (r.get('societe','') or '').lower())
+    org_list = []
+    for r in rows:
+        s = r.get('societe','')
+        if s not in org_list:
+            org_list.append(s)
+    org_colors = {org: ("f0f7ff" if i % 2 == 0 else "FFFFFF") for i, org in enumerate(org_list)}
+
+    for row_idx, row in enumerate(rows, 4):
+        bg = org_colors.get(row.get('societe',''), "FFFFFF")
+        ws.row_dimensions[row_idx].height = 18
+        for col_idx, key in enumerate(col_map, 1):
+            val = str(row.get(key, '') or '')
+            c = ws.cell(row=row_idx, column=col_idx, value=val)
+            c.font = Font(name='Arial', size=9)
+            c.alignment = Alignment(vertical='center')
+            c.border = border
+            if key == 'email' and val:
+                c.font = Font(name='Arial', size=9, color="2563eb", bold=True)
+                c.fill = PatternFill('solid', start_color=bg)
+            elif key == 'confiance':
+                fills = {'haute':('dcfce7','166534'),'moyenne':('fef9c3','854d0e'),'faible':('fee2e2','991b1b')}
+                if val in fills:
+                    c.fill = PatternFill('solid', start_color=fills[val][0])
+                    c.font = Font(name='Arial', size=9, color=fills[val][1], bold=True)
+                else:
+                    c.fill = PatternFill('solid', start_color=bg)
+            elif key == 'source' and val:
+                color = next((v for k,v in src_colors.items() if k in val), bg)
+                c.fill = PatternFill('solid', start_color=color)
+                c.font = Font(name='Arial', size=9, bold=True)
+            elif key == 'dans_pipedrive' and val:
+                c.fill = PatternFill('solid', start_color="fef3c7")
+                c.font = Font(name='Arial', size=9, color="92400e", bold=True)
+            else:
+                c.fill = PatternFill('solid', start_color=bg)
+
+    for i, w in enumerate([22,14,18,28,32,14,12,22,28], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws.freeze_panes = 'A4'
+    ws.auto_filter.ref = f"A3:I{len(rows)+3}"
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+# -------------------------------------------------------
+# ROUTE EXPORT EXCEL
+# -------------------------------------------------------
+@app.post("/export_excel")
+async def export_excel(request: Request):
+    data = await request.json()
+    rows = data.get("rows", [])
+    if not rows:
+        return {"ok": False}
+    content = generer_excel(rows)
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=enrichissement_dirigeants.xlsx"}
+    )
+
+# -------------------------------------------------------
 # ROUTE ENVOI EMAIL CSV
 # -------------------------------------------------------
 @app.post("/send_csv")
@@ -711,15 +823,8 @@ async def send_csv(request: Request):
         return {"ok": False, "error": "SMTP non configuré"}
 
     try:
-        # Générer le CSV en mémoire
-        headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre',
-                   'email','linkedin','confiance','source','dans_pipedrive']
-        output = io.StringIO()
-        output.write('\ufeff')  # BOM UTF-8 pour Excel
-        writer = csv.DictWriter(output, fieldnames=headers, delimiter=';', extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(rows)
-        csv_content = output.getvalue().encode('utf-8')
+        # Générer l'Excel en mémoire
+        excel_content = generer_excel(rows)
 
         # Construire le mail
         msg = MIMEMultipart()
@@ -727,21 +832,22 @@ async def send_csv(request: Request):
         msg['To']      = email_dest
         msg['Subject'] = f"Enrichissement dirigeants — {len(rows)} contacts"
 
+        emails_count = len([r for r in rows if r.get('email')])
         body = f"""Bonjour,
 
 Votre enrichissement est terminé.
-{len(rows)} contacts exportés dont {len([r for r in rows if r.get('email')])} emails trouvés.
+{len(rows)} contacts exportés dont {emails_count} emails trouvés.
 
-Fichier CSV en pièce jointe.
+Fichier Excel en pièce jointe.
 
 Enrichisseur Dirigeants"""
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
-        # Pièce jointe CSV
+        # Pièce jointe Excel
         part = MIMEBase('application', 'octet-stream')
-        part.set_payload(csv_content)
+        part.set_payload(excel_content)
         encoders.encode_base64(part)
-        part.add_header('Content-Disposition', 'attachment; filename="enrichissement_dirigeants.csv"')
+        part.add_header('Content-Disposition', 'attachment; filename="enrichissement_dirigeants.xlsx"')
         msg.attach(part)
 
         # Envoi SMTP
