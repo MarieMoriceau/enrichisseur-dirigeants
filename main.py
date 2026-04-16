@@ -107,43 +107,46 @@ async def check_pipedrive(prenom: str, nom: str) -> str:
     return ""
 
 async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
-    """Cherche l'URL LinkedIn du dirigeant via Claude+web."""
-    if not ANTHROPIC_KEY:
+    """Cherche l'URL LinkedIn du dirigeant via Fullenrich /v2/people/search (0 crédit Claude)."""
+    if not FULLENRICH_KEY:
         return ""
     # Nettoyer les prénoms composés Pappers ex: "Emmanuel, Roger" → "Emmanuel"
     prenom = prenom.split(",")[0].strip()
     if not prenom or not nom:
         return ""
     try:
-        prompt = f"""Trouve l'URL LinkedIn exacte de cette personne :
-Prénom: {prenom}
-Nom: {nom}
-Société: {societe}
+        payload = {
+            "offset": 0,
+            "limit": 3,
+            "first_names": [{"value": prenom, "exact_match": False}],
+            "last_names":  [{"value": nom,    "exact_match": False}],
+        }
+        if societe:
+            payload["current_company_names"] = [{"value": societe, "exact_match": False, "exclude": False}]
 
-Réponds UNIQUEMENT avec l'URL complète (ex: https://www.linkedin.com/in/prenom-nom-xxxxx/)
-Si tu n'es pas certain, réponds: NON"""
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(timeout=15) as c:
             r = await c.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
-                json={
-                    "model": "claude-sonnet-4-6",
-                    "max_tokens": 500,
-                    "tools": [{"type": "web_search_20250305", "name": "web_search"}],
-                    "messages": [{"role": "user", "content": prompt}]
-                }
+                "https://app.fullenrich.com/api/v2/people/search",
+                headers={"Authorization": f"Bearer {FULLENRICH_KEY}", "Content-Type": "application/json"},
+                json=payload
             )
+            print(f"[LINKEDIN/FE] Status {r.status_code} pour {prenom} {nom}")
             if r.status_code == 200:
-                all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
-                # Extraire l'URL LinkedIn
-                m = re.search(r'https?://(?:www\.)?linkedin\.com/in/[^\s\)\"\'\]]+', all_text)
-                if m:
-                    url = m.group().rstrip('/')
-                    print(f"[LINKEDIN] ✅ {prenom} {nom} → {url}")
-                    return url
+                people = r.json().get("people", [])
+                if people:
+                    linkedin = people[0].get("social_profiles", {}).get("linkedin", {}).get("url", "")
+                    if linkedin:
+                        if not linkedin.startswith("http"):
+                            linkedin = "https://www." + linkedin
+                        print(f"[LINKEDIN/FE] ✅ {prenom} {nom} → {linkedin}")
+                        return linkedin
+            elif r.status_code == 402:
+                print(f"[LINKEDIN/FE] Plus de crédits Fullenrich")
+            else:
+                print(f"[LINKEDIN/FE] Erreur {r.status_code}: {r.text[:100]}")
     except Exception as e:
-        print(f"[LINKEDIN ERROR] {prenom} {nom}: {e}")
-    print(f"[LINKEDIN] ❌ Pas trouvé pour {prenom} {nom}")
+        print(f"[LINKEDIN/FE ERROR] {prenom} {nom}: {e}")
+    print(f"[LINKEDIN/FE] ❌ Pas trouvé pour {prenom} {nom}")
     return ""
 
 
@@ -211,7 +214,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 50,
-                        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
                         "messages": [{"role": "user", "content": prompt}]
                     }
                 )
@@ -353,7 +356,7 @@ Réponds UNIQUEMENT avec ce JSON :
                         json={
                             "model": "claude-sonnet-4-6",
                             "max_tokens": 1000,
-                            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
                             "messages": [{"role": "user", "content": prompt}]
                         }
                     )
@@ -469,7 +472,7 @@ Réponds UNIQUEMENT avec ce JSON :
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 1000,
-                        "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
                         "messages": [{"role": "user", "content": prompt}]
                     }
                 )
