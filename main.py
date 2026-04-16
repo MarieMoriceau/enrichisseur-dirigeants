@@ -107,46 +107,43 @@ async def check_pipedrive(prenom: str, nom: str) -> str:
     return ""
 
 async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
-    """Cherche l'URL LinkedIn du dirigeant via Fullenrich /v2/people/search (0 crédit Claude)."""
-    if not FULLENRICH_KEY:
+    """Cherche l'URL LinkedIn du dirigeant via Claude+web (max_uses:1)."""
+    if not ANTHROPIC_KEY:
         return ""
     # Nettoyer les prénoms composés Pappers ex: "Emmanuel, Roger" → "Emmanuel"
     prenom = prenom.split(",")[0].strip()
     if not prenom or not nom:
         return ""
     try:
-        payload = {
-            "offset": 0,
-            "limit": 3,
-            "first_names": [{"value": prenom, "exact_match": False}],
-            "last_names":  [{"value": nom,    "exact_match": True}],  # strict sur le nom de famille
-        }
-        if societe:
-            payload["current_company_names"] = [{"value": societe, "exact_match": False, "exclude": False}]
+        prompt = f"""Trouve l'URL LinkedIn exacte de cette personne :
+Prénom: {prenom}
+Nom: {nom}
+Société: {societe}
 
-        async with httpx.AsyncClient(timeout=15) as c:
+Réponds UNIQUEMENT avec l'URL complète (ex: https://www.linkedin.com/in/prenom-nom-xxxxx/)
+Si tu n'es pas certain à 100%, réponds: NON"""
+        async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
-                "https://app.fullenrich.com/api/v2/people/search",
-                headers={"Authorization": f"Bearer {FULLENRICH_KEY}", "Content-Type": "application/json"},
-                json=payload
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 200,
+                    "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
+                    "messages": [{"role": "user", "content": prompt}]
+                }
             )
-            print(f"[LINKEDIN/FE] Status {r.status_code} pour {prenom} {nom}")
+            print(f"[LINKEDIN] Status {r.status_code} pour {prenom} {nom}")
             if r.status_code == 200:
-                people = r.json().get("people", [])
-                if people:
-                    linkedin = people[0].get("social_profiles", {}).get("linkedin", {}).get("url", "")
-                    if linkedin:
-                        if not linkedin.startswith("http"):
-                            linkedin = "https://www." + linkedin
-                        print(f"[LINKEDIN/FE] ✅ {prenom} {nom} → {linkedin}")
-                        return linkedin
-            elif r.status_code == 402:
-                print(f"[LINKEDIN/FE] Plus de crédits Fullenrich")
-            else:
-                print(f"[LINKEDIN/FE] Erreur {r.status_code}: {r.text[:100]}")
+                all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
+                m = re.search(r'https?://(?:www\.)?linkedin\.com/in/[^\s\)\"\'\]]+', all_text)
+                if m:
+                    url = m.group().rstrip('/')
+                    print(f"[LINKEDIN] ✅ {prenom} {nom} → {url}")
+                    return url
     except Exception as e:
-        print(f"[LINKEDIN/FE ERROR] {prenom} {nom}: {e}")
-    print(f"[LINKEDIN/FE] ❌ Pas trouvé pour {prenom} {nom}")
+        print(f"[LINKEDIN ERROR] {prenom} {nom}: {e}")
+    print(f"[LINKEDIN] ❌ Pas trouvé pour {prenom} {nom}")
     return ""
 
 
@@ -554,15 +551,17 @@ async def enrich_emails(request: Request):
                     emails_result[idx] = {"email": email_kaspr, "linkedin": linkedin_url, "source": "+Kaspr"}
                     print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
 
-    # Corriger les domaines invalides avant Fullenrich
+    # Corriger les domaines invalides avant Fullenrich (1 seul appel par société)
+    domaines_corriges = {}
     for ct in contacts:
         if not domaine_valide(ct.get("domaine","")):
-            siren = ct.get("siren","")
             societe = ct.get("societe","")
-            print(f"[DOMAINE FIX] Correction pour {societe}...")
-            nouveau = await corriger_domaine(siren, societe)
-            if nouveau:
-                ct["domaine"] = nouveau
+            siren = ct.get("siren","")
+            if societe not in domaines_corriges:
+                print(f"[DOMAINE FIX] Correction pour {societe}...")
+                domaines_corriges[societe] = await corriger_domaine(siren, societe)
+            if domaines_corriges[societe]:
+                ct["domaine"] = domaines_corriges[societe]
 
     to_enrich = []
     for ct in contacts:
