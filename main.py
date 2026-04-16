@@ -237,7 +237,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 50,
-                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
                         "messages": [{"role": "user", "content": prompt}]
                     }
                 )
@@ -474,7 +474,7 @@ Réponds UNIQUEMENT avec ce JSON :
                         json={
                             "model": "claude-sonnet-4-6",
                             "max_tokens": 1000,
-                            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+                            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
                             "messages": [{"role": "user", "content": prompt}]
                         }
                     )
@@ -566,6 +566,7 @@ async def enrich_claude(request: Request):
     siren      = data.get("siren", "")
     domaine    = nettoyer_domaine(data.get("domaine", ""))
     fondateurs = data.get("fondateurs", "")
+    max_contacts = int(data.get("max_contacts", 3))
 
     if not ANTHROPIC_KEY:
         return {"contacts": []}
@@ -577,6 +578,7 @@ Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+
 Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
 - Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
 - Emails professionnels uniquement (pas gmail/hotmail/yahoo)
+- Retourne AU MAXIMUM {max_contacts} contact(s)
 
 Réponds UNIQUEMENT avec ce JSON :
 {{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
@@ -592,7 +594,7 @@ Réponds UNIQUEMENT avec ce JSON :
                     json={
                         "model": "claude-sonnet-4-6",
                         "max_tokens": 1000,
-                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
                         "messages": [{"role": "user", "content": prompt}]
                     }
                 )
