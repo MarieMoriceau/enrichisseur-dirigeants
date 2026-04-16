@@ -199,19 +199,30 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
 
 
 async def corriger_domaine(siren: str, societe: str) -> str:
-    """Tente de trouver le vrai domaine via Pappers puis Claude."""
-    if PAPPERS_KEY and siren:
+    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude."""
+    if PAPPERS_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
-                r = await c.get("https://api.pappers.fr/v2/entreprise",
-                    params={"api_token": PAPPERS_KEY, "siren": siren})
-                if r.status_code == 200:
-                    d = r.json()
-                    domaine = d.get("domaine_url","") or d.get("site_web","")
-                    domaine = nettoyer_domaine(domaine)
-                    if domaine_valide(domaine):
-                        print(f"[DOMAINE FIX] Pappers → {domaine} pour {societe}")
-                        return domaine
+                # Tentative 1 : par SIREN
+                if siren:
+                    r = await c.get("https://api.pappers.fr/v2/entreprise",
+                        params={"api_token": PAPPERS_KEY, "siren": siren})
+                    if r.status_code == 200:
+                        d = r.json()
+                        domaine = nettoyer_domaine(d.get("domaine_url","") or d.get("site_web",""))
+                        if domaine_valide(domaine):
+                            print(f"[DOMAINE FIX] Pappers SIREN → {domaine} pour {societe}")
+                            return domaine
+                # Tentative 2 : par nom si SIREN ne donne pas de domaine
+                r2 = await c.get("https://api.pappers.fr/v2/recherche",
+                    params={"api_token": PAPPERS_KEY, "q": societe, "par_page": 1})
+                if r2.status_code == 200:
+                    resultats = r2.json().get("resultats", [])
+                    if resultats:
+                        domaine = nettoyer_domaine(resultats[0].get("domaine_url","") or resultats[0].get("site_web",""))
+                        if domaine_valide(domaine):
+                            print(f"[DOMAINE FIX] Pappers nom → {domaine} pour {societe}")
+                            return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Pappers] {e}")
 
@@ -271,15 +282,55 @@ async def enrich_one(request: Request):
                     items = r.json().get("data", {}).get("items", [])
                     for item in items:
                         org_name = item.get("item", {}).get("name", "")
+                        org_id_pipe = item.get("item", {}).get("id", "")
                         if noms_similaires(nom, org_name):
-                            print(f"[PIPEDRIVE ORG] ✅ '{nom}' déjà dans Pipedrive → stop")
-                            return {"results": [{
-                                "org_id": org_id, "societe": nom, "siren": siren,
-                                "domaine": domaine, "prenom": "", "nom_dg": "",
-                                "titre": "", "email": "", "linkedin": "",
-                                "confiance": "", "source": "",
-                                "dans_pipedrive": "oui — société déjà dans Pipedrive"
-                            }]}
+                            print(f"[PIPEDRIVE ORG] ✅ '{nom}' dans Pipedrive → récupération contacts")
+                            # Récupérer tous les contacts de cette organisation
+                            contacts_pipe = []
+                            try:
+                                r2 = await c.get(
+                                    f"https://api.pipedrive.com/v1/organizations/{org_id_pipe}/persons",
+                                    params={"api_token": PIPEDRIVE_KEY, "limit": 50}
+                                )
+                                if r2.status_code == 200:
+                                    persons = r2.json().get("data") or []
+                                    for p in persons:
+                                        prenom_p = p.get("first_name", "") or ""
+                                        nom_p    = p.get("last_name", "") or ""
+                                        titre_p  = p.get("job_title", "") or ""
+                                        emails_p = p.get("email", []) or []
+                                        email_p  = ""
+                                        for e in emails_p:
+                                            val = e.get("value","") if isinstance(e, dict) else str(e)
+                                            if val and "@" in val:
+                                                email_p = val
+                                                break
+                                        contacts_pipe.append({
+                                            "prenom": prenom_p, "nom": nom_p,
+                                            "titre": titre_p, "email": email_p,
+                                            "confiance": "haute" if email_p else "",
+                                            "source": "Pipedrive",
+                                            "dans_pipedrive": "oui"
+                                        })
+                                    print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} contacts récupérés")
+                            except Exception as e2:
+                                print(f"[PIPEDRIVE ORG CONTACTS ERROR] {e2}")
+
+                            if not contacts_pipe:
+                                contacts_pipe = [{"prenom":"","nom":"","titre":"","email":"",
+                                                  "confiance":"","source":"Pipedrive","dans_pipedrive":"oui"}]
+                            results = []
+                            for ct in contacts_pipe:
+                                results.append({
+                                    "org_id": org_id, "societe": nom, "siren": siren,
+                                    "domaine": domaine,
+                                    "prenom": ct["prenom"], "nom_dg": ct["nom"],
+                                    "titre": ct["titre"], "email": ct["email"],
+                                    "linkedin": "", "confiance": ct["confiance"],
+                                    "source": ct["source"],
+                                    "dans_pipedrive": ct["dans_pipedrive"]
+                                })
+                            return {"results": results}
         except Exception as e:
             print(f"[PIPEDRIVE ORG ERROR] {e}")
 
@@ -360,8 +411,10 @@ async def enrich_one(request: Request):
                 titre = rep.get("qualite","Représentant légal")
                 if est_ancien_dirigeant(titre) or est_titre_exclu(titre):
                     continue
+                prenom_raw = rep.get("prenom","")
+                prenom_clean = prenom_raw.split(",")[0].strip()  # "Florian, Paul, Robert" → "Florian"
                 pappers_contacts.append({
-                    "prenom": rep.get("prenom",""),
+                    "prenom": prenom_clean,
                     "nom":    rep.get("nom",""),
                     "titre":  titre,
                     "email":  "",
@@ -371,16 +424,26 @@ async def enrich_one(request: Request):
             print(f"[PAPPERS] {len(pappers_contacts)} représentants actifs | domaine={domaine}")
 
     # Pré-remplir le contact connu depuis le fichier source (ex: fichier occupants)
+    # Dédup : on ne l'ajoute que s'il n'est pas déjà dans pappers_contacts
     if contact_prenom and contact_nom:
-        pappers_contacts.insert(0, {
-            "prenom": contact_prenom,
-            "nom":    contact_nom,
-            "titre":  contact_titre or "Dirigeant",
-            "email":  "",
-            "confiance": "",
-            "source": "Fichier source"
-        })
-        print(f"[SOURCE] Contact pré-rempli : {contact_prenom} {contact_nom} ({contact_titre})")
+        contact_prenom_clean = contact_prenom.split(",")[0].strip()
+        deja_present = any(
+            noms_similaires(contact_prenom_clean, ct.get("prenom","")) and
+            noms_similaires(contact_nom, ct.get("nom",""))
+            for ct in pappers_contacts
+        )
+        if not deja_present:
+            pappers_contacts.insert(0, {
+                "prenom": contact_prenom_clean,
+                "nom":    contact_nom,
+                "titre":  contact_titre or "Dirigeant",
+                "email":  "",
+                "confiance": "",
+                "source": "Fichier source"
+            })
+            print(f"[SOURCE] Contact pré-rempli : {contact_prenom_clean} {contact_nom} ({contact_titre})")
+        else:
+            print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
 
     # ÉTAPE 2 : Claude + web_search
     claude_contacts = []
