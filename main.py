@@ -412,6 +412,7 @@ Réponds UNIQUEMENT avec ce JSON :
                 ct["email"] = email_pd
                 ct["confiance_email"] = "haute"
                 ct["source"] = ct.get("source","") + "+Pipedrive"
+                ct["dans_pipedrive"] = "oui"
 
     # ÉTAPE 4 : Kaspr + LinkedIn → géré en batch dans /enrich_emails après la Passe 1
     # (évite la surcharge Claude pendant la Passe 1)
@@ -422,17 +423,18 @@ Réponds UNIQUEMENT avec ce JSON :
     results = []
     for ct in tous_contacts:
         results.append({
-            "org_id":    org_id,
-            "societe":   nom,
-            "siren":     siren,
-            "domaine":   domaine,
-            "prenom":    ct.get("prenom",""),
-            "nom_dg":    ct.get("nom",""),
-            "titre":     ct.get("titre",""),
-            "email":     ct.get("email","") or "",
-            "linkedin":  ct.get("linkedin",""),
-            "confiance": ct.get("confiance_email", ct.get("confiance","")),
-            "source":    ct.get("source",""),
+            "org_id":         org_id,
+            "societe":        nom,
+            "siren":          siren,
+            "domaine":        domaine,
+            "prenom":         ct.get("prenom",""),
+            "nom_dg":         ct.get("nom",""),
+            "titre":          ct.get("titre",""),
+            "email":          ct.get("email","") or "",
+            "linkedin":       ct.get("linkedin",""),
+            "confiance":      ct.get("confiance_email", ct.get("confiance","")),
+            "source":         ct.get("source",""),
+            "dans_pipedrive": ct.get("dans_pipedrive",""),
         })
 
     print(f"[DONE] {nom} → {len(results)} contacts | domaine={domaine}")
@@ -533,11 +535,22 @@ async def enrich_emails(request: Request):
 
     # -------------------------------------------------------
     # KASPR : cherche LinkedIn puis email pour chaque contact
+    # Déduplication : on skip si un contact avec même nom a déjà un email
     # -------------------------------------------------------
+    emails_par_nom = {}  # cache "prenom nom" → email déjà trouvé
     if KASPR_KEY:
         for ct in contacts:
             email = ct.get("email","")
             if email and "*" not in email:
+                emails_par_nom[f"{ct.get('prenom','')} {ct.get('nom','')}".lower().strip()] = email
+                continue
+            # Vérifier doublon
+            prenom_clean = ct.get("prenom","").split(",")[0].strip()
+            cle = f"{prenom_clean} {ct.get('nom','')}".lower().strip()
+            if cle in emails_par_nom:
+                idx = str(ct.get("idx",0))
+                emails_result[idx] = {"email": emails_par_nom[cle], "source": "+dedup"}
+                print(f"[DEDUP] {cle} → email déjà trouvé, skip Kaspr")
                 continue
             # Nettoyer prénom composé Pappers ex: "Emmanuel, Roger" → "Emmanuel"
             prenom = ct.get("prenom","").split(",")[0].strip()
@@ -581,8 +594,9 @@ async def enrich_emails(request: Request):
         if not domaine_valide(domaine_ct):
             print(f"[FULLENRICH] Domaine toujours invalide pour {ct.get('prenom')} {ct.get('nom')} — ignoré")
             continue
+        prenom_clean = ct["prenom"].split(",")[0].strip()  # "Emmanuel, Roger" → "Emmanuel"
         to_enrich.append({
-            "firstname":    ct["prenom"],
+            "firstname":    prenom_clean,
             "lastname":     ct["nom"],
             "domain":       domaine_ct,
             "company_name": ct.get("societe",""),
