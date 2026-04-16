@@ -74,6 +74,11 @@ tr:hover td { background: #f8fafc; }
       <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV — colonnes : Nom, Site web, Fondateurs, siren, domaine</div>
     </div>
     <div class="info" id="fileInfo"></div>
+    <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+      <label style="font-size:12px;font-weight:600;color:#475569">📧 Recevoir le CSV par email :</label>
+      <input type="email" id="emailDest" placeholder="votre@email.com"
+        style="border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;font-size:12px;width:220px;outline:none">
+    </div>
 
     <div class="phases">
       <button class="btn btn-all" id="btnAll" onclick="runAll()" disabled>⚡ Tout lancer</button>
@@ -419,6 +424,26 @@ async function runAll() {
   await sleep(500); // laisse results se stabiliser avant Phase 5
   // Phase 5 : Fullenrich — fromRunAll=true pour bypasser le race condition sur "running"
   await runPhase5(true);
+
+  // Envoi email si adresse renseignée
+  const emailDest = document.getElementById('emailDest').value.trim();
+  if (emailDest && results.length) {
+    document.getElementById('statLabel').textContent = `📧 Envoi du CSV à ${emailDest}...`;
+    try {
+      const r = await fetch('/send_csv', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ email: emailDest, rows: results })
+      });
+      const d = await r.json();
+      if (d.ok) {
+        document.getElementById('statLabel').textContent = `✅ CSV envoyé à ${emailDest}`;
+      } else {
+        document.getElementById('statLabel').textContent = `❌ Erreur envoi email : ${d.error}`;
+      }
+    } catch(e) {
+      document.getElementById('statLabel').textContent = `❌ Erreur envoi email`;
+    }
+  }
 }
 
 function stopAll() {
