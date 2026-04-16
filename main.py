@@ -119,7 +119,7 @@ async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
             "offset": 0,
             "limit": 3,
             "first_names": [{"value": prenom, "exact_match": False}],
-            "last_names":  [{"value": nom,    "exact_match": False}],
+            "last_names":  [{"value": nom,    "exact_match": True}],  # strict sur le nom de famille
         }
         if societe:
             payload["current_company_names"] = [{"value": societe, "exact_match": False, "exclude": False}]
@@ -159,7 +159,7 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
             print(f"[KASPR] Appel pour {prenom} {nom} — {linkedin_url}")
             r = await c.post(
                 "https://api.developers.kaspr.io/profile/linkedin",
-                headers={"Authorization": KASPR_KEY, "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {KASPR_KEY}", "Content-Type": "application/json"},
                 json={"name": f"{prenom} {nom}", "id": linkedin_url}
             )
             print(f"[KASPR] Status {r.status_code} pour {prenom} {nom}")
