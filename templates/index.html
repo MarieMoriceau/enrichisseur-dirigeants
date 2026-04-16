@@ -90,7 +90,7 @@ tr:hover td { background: #f8fafc; }
       <button class="btn btn-fullenrich"id="btn5" onclick="runPhase5()" disabled>5. Fullenrich</button>
       <div class="phase-divider">|</div>
       <button class="btn btn-stop"   id="btnStop"   onclick="stopAll()">⏹ Stop</button>
-      <button class="btn btn-export" id="btnExport" onclick="exportCSV()">⬇️ CSV</button>
+      <button class="btn btn-export" id="btnExport" onclick="exportExcel()">⬇️ Excel</button>
       <span class="stat" id="statLabel"></span>
     </div>
 
@@ -253,6 +253,12 @@ async function runPhase2() {
   for (let i = 0; i < societes.length; i++) {
     if (stopFlag) break;
     const nomSociete = societes[i];
+    const existants = results.filter(r => r.societe === nomSociete);
+    // Skip si société déjà détectée dans Pipedrive en phase 1
+    if (existants.some(r => r.dans_pipedrive && r.dans_pipedrive.includes('société'))) {
+      console.log(`[PHASE2] Skip ${nomSociete} — déjà dans Pipedrive`);
+      continue;
+    }
     const row = rows.find(r => r.nom === nomSociete) || {nom: nomSociete, domaine:'', siren:'', fondateurs:''};
     const existing = results.find(r => r.societe === nomSociete);
     if (existing) { row.siren = existing.siren || row.siren; row.domaine = existing.domaine || row.domaine; }
@@ -478,16 +484,22 @@ function renderResults() {
   }).join('');
 }
 
-// ── Export CSV ─────────────────────────────────────────────────
-function exportCSV() {
-  const headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre','email','linkedin','confiance','source','dans_pipedrive'];
-  const lines = [headers.join(';')];
-  results.forEach(r => lines.push(headers.map(h=>`"${(r[h]||'').replace(/"/g,'""')}"`).join(';')));
-  const blob = new Blob(['\uFEFF'+lines.join('\n')], {type:'text/csv;charset=utf-8'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'enrichissement_dirigeants.csv';
-  a.click();
+// ── Export Excel ───────────────────────────────────────────────
+async function exportExcel() {
+  if (!results.length) return;
+  try {
+    const resp = await fetch('/export_excel', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ rows: results })
+    });
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'enrichissement_dirigeants.xlsx';
+    a.click();
+  } catch(e) {
+    console.error('Export Excel error:', e);
+  }
 }
 </script>
 </body>
