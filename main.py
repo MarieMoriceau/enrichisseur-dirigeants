@@ -246,11 +246,16 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
 @app.post("/enrich_one")
 async def enrich_one(request: Request):
     data = await request.json()
-    nom        = data.get("nom", "")
-    siren      = data.get("siren", "")
-    domaine    = nettoyer_domaine(data.get("domaine", ""))
-    org_id     = data.get("org_id", "")
-    fondateurs = data.get("fondateurs", "")
+    nom            = data.get("nom", "")
+    siren          = re.sub(r'\D', '', data.get("siren", ""))[:9]  # nettoie "331191825-00099" → "331191825"
+    domaine        = nettoyer_domaine(data.get("domaine", ""))
+    org_id         = data.get("org_id", "")
+    fondateurs     = data.get("fondateurs", "")
+    contact_prenom = data.get("contact_prenom", "")
+    contact_nom    = data.get("contact_nom", "")
+    contact_titre  = data.get("contact_titre", "")
+    code_postal    = data.get("code_postal", "")
+    ville          = data.get("ville", "")
 
     print(f"[START] {nom} | domaine={domaine} | siren={siren}")
 
@@ -298,9 +303,11 @@ async def enrich_one(request: Request):
         # Tentative 2 : par nom
         if not pappers_data and not siren:
             try:
+                params = {"api_token": PAPPERS_KEY, "q": nom, "par_page": 1}
+                if code_postal: params["code_postal"] = code_postal
+                if ville:       params["ville"] = ville
                 async with httpx.AsyncClient(timeout=10) as c:
-                    r = await c.get("https://api.pappers.fr/v2/recherche",
-                        params={"api_token": PAPPERS_KEY, "q": nom, "par_page": 1})
+                    r = await c.get("https://api.pappers.fr/v2/recherche", params=params)
                     if r.status_code == 200:
                         resultats = r.json().get("resultats", [])
                         if resultats:
@@ -362,6 +369,18 @@ async def enrich_one(request: Request):
                     "source": "Pappers"
                 })
             print(f"[PAPPERS] {len(pappers_contacts)} représentants actifs | domaine={domaine}")
+
+    # Pré-remplir le contact connu depuis le fichier source (ex: fichier occupants)
+    if contact_prenom and contact_nom:
+        pappers_contacts.insert(0, {
+            "prenom": contact_prenom,
+            "nom":    contact_nom,
+            "titre":  contact_titre or "Dirigeant",
+            "email":  "",
+            "confiance": "",
+            "source": "Fichier source"
+        })
+        print(f"[SOURCE] Contact pré-rempli : {contact_prenom} {contact_nom} ({contact_titre})")
 
     # ÉTAPE 2 : Claude + web_search
     claude_contacts = []
@@ -814,11 +833,12 @@ async def export_excel(request: Request):
 @app.post("/send_csv")
 async def send_csv(request: Request):
     data = await request.json()
-    email_dest = data.get("email", "")
-    rows       = data.get("rows", [])
+    emails_raw  = data.get("emails", []) or ([data.get("email")] if data.get("email") else [])
+    emails_dest = [e.strip() for e in emails_raw if e and "@" in e]
+    rows        = data.get("rows", [])
 
-    if not email_dest or not rows:
-        return {"ok": False, "error": "Email ou données manquants"}
+    if not emails_dest or not rows:
+        return {"ok": False, "error": "Email(s) ou données manquants"}
     if not SMTP_USER or not SMTP_PASS:
         return {"ok": False, "error": "SMTP non configuré"}
 
@@ -829,7 +849,7 @@ async def send_csv(request: Request):
         # Construire le mail
         msg = MIMEMultipart()
         msg['From']    = SMTP_USER
-        msg['To']      = email_dest
+        msg['To']      = ", ".join(emails_dest)
         msg['Subject'] = f"Enrichissement dirigeants — {len(rows)} contacts"
 
         emails_count = len([r for r in rows if r.get('email')])
@@ -854,9 +874,9 @@ Enrichisseur Dirigeants"""
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, email_dest, msg.as_string())
+            server.sendmail(SMTP_USER, emails_dest, msg.as_string())
 
-        print(f"[EMAIL] ✅ CSV envoyé à {email_dest}")
+        print(f"[EMAIL] ✅ Excel envoyé à {', '.join(emails_dest)}")
         return {"ok": True}
 
     except Exception as e:
