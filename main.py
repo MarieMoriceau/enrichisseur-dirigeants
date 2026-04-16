@@ -1,4 +1,8 @@
-import os, json, asyncio, httpx, re
+import os, json, asyncio, httpx, re, smtplib, csv, io
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -11,6 +15,10 @@ PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 PIPEDRIVE_KEY  = os.getenv("PIPEDRIVE_API_KEY", "")
 KASPR_KEY      = os.getenv("KASPR_API_KEY", "")
+SMTP_HOST      = os.getenv("SMTP_HOST", "pro2.mail.ovh.net")
+SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER      = os.getenv("SMTP_USER", "")
+SMTP_PASS      = os.getenv("SMTP_PASS", "")
 
 ANCIENS_KEYWORDS = [
     "ancien", "ancienne", "ex-", "ex ", "démissionnaire",
@@ -687,3 +695,64 @@ async def enrich_emails(request: Request):
     except Exception as e:
         print(f"[FULLENRICH EXCEPTION] {e}")
         return {"emails": emails_result}
+
+# -------------------------------------------------------
+# ROUTE ENVOI EMAIL CSV
+# -------------------------------------------------------
+@app.post("/send_csv")
+async def send_csv(request: Request):
+    data = await request.json()
+    email_dest = data.get("email", "")
+    rows       = data.get("rows", [])
+
+    if not email_dest or not rows:
+        return {"ok": False, "error": "Email ou données manquants"}
+    if not SMTP_USER or not SMTP_PASS:
+        return {"ok": False, "error": "SMTP non configuré"}
+
+    try:
+        # Générer le CSV en mémoire
+        headers = ['org_id','societe','siren','domaine','prenom','nom_dg','titre',
+                   'email','linkedin','confiance','source','dans_pipedrive']
+        output = io.StringIO()
+        output.write('\ufeff')  # BOM UTF-8 pour Excel
+        writer = csv.DictWriter(output, fieldnames=headers, delimiter=';', extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(rows)
+        csv_content = output.getvalue().encode('utf-8')
+
+        # Construire le mail
+        msg = MIMEMultipart()
+        msg['From']    = SMTP_USER
+        msg['To']      = email_dest
+        msg['Subject'] = f"Enrichissement dirigeants — {len(rows)} contacts"
+
+        body = f"""Bonjour,
+
+Votre enrichissement est terminé.
+{len(rows)} contacts exportés dont {len([r for r in rows if r.get('email')])} emails trouvés.
+
+Fichier CSV en pièce jointe.
+
+Enrichisseur Dirigeants"""
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+        # Pièce jointe CSV
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(csv_content)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', 'attachment; filename="enrichissement_dirigeants.csv"')
+        msg.attach(part)
+
+        # Envoi SMTP
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, email_dest, msg.as_string())
+
+        print(f"[EMAIL] ✅ CSV envoyé à {email_dest}")
+        return {"ok": True}
+
+    except Exception as e:
+        print(f"[EMAIL ERROR] {e}")
+        return {"ok": False, "error": str(e)}
