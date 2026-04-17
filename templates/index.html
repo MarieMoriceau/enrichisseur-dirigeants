@@ -119,7 +119,7 @@ tr:hover td { background: #f8fafc; }
 </div>
 
 <script>
-let rows = [], results = [], running = false, stopFlag = false;
+let rows = [], results = [], running = false, stopFlag = false, sourceFileName = '';
 
 // ── File handling ──────────────────────────────────────────────
 function handleDrop(e) {
@@ -128,6 +128,7 @@ function handleDrop(e) {
   if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 }
 function handleFile(file) {
+  sourceFileName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '_');
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext === 'csv') {
     // Lire en binaire pour détecter l'encoding
@@ -215,6 +216,14 @@ function normalizeRow(r) {
   };
 }
 function onRowsParsed() {
+  // Dédupliquer par SIREN (ou nom si pas de SIREN) — 1 ligne par société
+  const seen = new Set();
+  rows = rows.filter(r => {
+    const key = r.siren || r.nom.toLowerCase().trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   document.getElementById('fileInfo').textContent += ` — ${rows.length} société(s)`;
   ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
   document.getElementById('statLabel').textContent = `${rows.length} sociétés`;
@@ -479,7 +488,7 @@ async function runAll() {
       try {
         const r = await fetch('/send_csv', {
           method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ emails: emails, rows: results })
+          body: JSON.stringify({ emails: emails, rows: results, filename: `enrichissement_${sourceFileName}_${new Date().toISOString().slice(0,10)}.xlsx` })
         });
         const d = await r.json();
         if (d.ok) {
@@ -530,14 +539,16 @@ function renderResults() {
 async function exportExcel() {
   if (!results.length) return;
   try {
+    const today = new Date().toISOString().slice(0,10);
+    const filename = `enrichissement_${sourceFileName}_${today}.xlsx`;
     const resp = await fetch('/export_excel', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ rows: results })
+      body: JSON.stringify({ rows: results, filename: filename })
     });
     const blob = await resp.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'enrichissement_dirigeants.xlsx';
+    a.download = filename;
     a.click();
   } catch(e) {
     console.error('Export Excel error:', e);
