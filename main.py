@@ -5,7 +5,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
 app = FastAPI()
@@ -78,7 +78,95 @@ def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.get("/health")
+@app.get("/template")
+async def get_template():
+    """Génère et sert le template Excel enrichisseur."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sociétés à enrichir"
+
+    colonnes = [
+        ("nom",            True,  "Nom commercial de la société",        "Grenke Location"),
+        ("siren",          False, "SIREN ou SIRET (9 ou 14 chiffres)",   "428616734"),
+        ("domaine",        False, "Domaine du site web",                 "grenke.fr"),
+        ("org_id",         False, "ID Pipedrive de l'organisation",      "17136"),
+        ("fondateurs",     False, "Fondateurs connus (contexte Claude)", "Jean Dupont, Marie Martin"),
+        ("contact_prenom", False, "Prénom du contact principal",         "Nathalie"),
+        ("contact_nom",    False, "Nom de famille du contact",           "Seyller"),
+        ("contact_titre",  False, "Poste / fonction du contact",         "CFO"),
+        ("code_postal",    False, "Code postal du siège",                "75008"),
+        ("ville",          False, "Ville du siège",                      "Paris"),
+        ("adresse",        False, "Adresse complète du siège",           "9 Rue de Lisbonne 75008 Paris"),
+    ]
+
+    thin   = Side(style='thin', color="e2e8f0")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.merge_cells(f'A1:{get_column_letter(len(colonnes))}1')
+    c = ws['A1']
+    c.value = "📋 Template Enrichisseur Dirigeants — 1 ligne par société"
+    c.font  = Font(name='Arial', bold=True, size=13, color="FFFFFF")
+    c.fill  = PatternFill('solid', start_color="1e3a5f")
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells(f'A2:{get_column_letter(len(colonnes))}2')
+    c = ws['A2']
+    c.value = "🟢 Colonne obligatoire    🟣 Colonne optionnelle — plus vous remplissez, meilleurs sont les résultats"
+    c.font  = Font(name='Arial', size=10, color="FFFFFF")
+    c.fill  = PatternFill('solid', start_color="2563eb")
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[2].height = 20
+
+    for col_idx, (nom, obligatoire, desc, exemple) in enumerate(colonnes, 1):
+        c = ws.cell(row=3, column=col_idx, value=nom)
+        c.font  = Font(name='Arial', bold=True, size=10, color="FFFFFF")
+        c.fill  = PatternFill('solid', start_color="059669" if obligatoire else "7c3aed")
+        c.alignment = Alignment(horizontal='center', vertical='center')
+        c.border = border
+    ws.row_dimensions[3].height = 25
+
+    for col_idx, (nom, obligatoire, desc, exemple) in enumerate(colonnes, 1):
+        c = ws.cell(row=4, column=col_idx, value=desc)
+        c.font  = Font(name='Arial', italic=True, size=9, color="475569")
+        c.fill  = PatternFill('solid', start_color="f8fafc")
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        c.border = border
+    ws.row_dimensions[4].height = 35
+
+    for col_idx, (nom, obligatoire, desc, exemple) in enumerate(colonnes, 1):
+        c = ws.cell(row=5, column=col_idx, value=exemple)
+        c.font  = Font(name='Arial', size=9, color="94a3b8")
+        c.fill  = PatternFill('solid', start_color="f1f5f9")
+        c.alignment = Alignment(horizontal='center', vertical='center')
+        c.border = border
+    ws.row_dimensions[5].height = 20
+
+    for row in range(6, 26):
+        for col_idx in range(1, len(colonnes)+1):
+            c = ws.cell(row=row, column=col_idx, value="")
+            c.fill = PatternFill('solid', start_color="ffffff" if row % 2 == 0 else "f8fafc")
+            c.border = border
+            c.font = Font(name='Arial', size=10)
+        ws.row_dimensions[row].height = 18
+
+    largeurs = [22, 14, 20, 12, 28, 16, 18, 18, 12, 14, 32]
+    for i, w in enumerate(largeurs, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = 'A6'
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=template_enrichisseur.xlsx"}
+    )
 async def health():
     return {
         "ok": True,
