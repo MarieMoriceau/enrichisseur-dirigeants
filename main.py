@@ -265,6 +265,7 @@ async def enrich_one(request: Request):
     contact_prenom = data.get("contact_prenom", "")
     contact_nom    = data.get("contact_nom", "")
     contact_titre  = data.get("contact_titre", "")
+    contact_email  = data.get("contact_email", "")  # email déjà connu depuis le fichier source
     code_postal    = data.get("code_postal", "")
     ville          = data.get("ville", "")
 
@@ -437,8 +438,8 @@ async def enrich_one(request: Request):
                 "prenom": contact_prenom_clean,
                 "nom":    contact_nom,
                 "titre":  contact_titre or "Dirigeant",
-                "email":  "",
-                "confiance": "",
+                "email":  contact_email,  # email pré-rempli si déjà connu
+                "confiance": "haute" if contact_email else "",
                 "source": "Fichier source"
             })
             print(f"[SOURCE] Contact pré-rempli : {contact_prenom_clean} {contact_nom} ({contact_titre})")
@@ -901,6 +902,7 @@ async def send_csv(request: Request):
     emails_raw  = data.get("emails", []) or ([data.get("email")] if data.get("email") else [])
     emails_dest = [e.strip() for e in emails_raw if e and "@" in e]
     rows        = data.get("rows", [])
+    filename    = data.get("filename", "enrichissement_dirigeants.xlsx")
 
     if not emails_dest or not rows:
         return {"ok": False, "error": "Email(s) ou données manquants"}
@@ -932,7 +934,7 @@ Enrichisseur Dirigeants"""
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_content)
         encoders.encode_base64(part)
-        part.add_header('Content-Disposition', 'attachment; filename="enrichissement_dirigeants.xlsx"')
+        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(part)
 
         # Envoi SMTP
