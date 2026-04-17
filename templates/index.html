@@ -196,19 +196,22 @@ function cleanSiren(val) {
   return val.replace(/\D/g, '').substring(0, 9);
 }
 function normalizeRow(r) {
-  const get = (...keys) => { for (const k of keys) { if (r[k] && r[k] !== '—' && r[k] !== 'nan') return r[k]; } return ''; };
+  const get = (...keys) => { for (const k of keys) { if (r[k] && r[k] !== '—' && r[k] !== 'nan' && r[k] !== 'NaN') return r[k]; } return ''; };
   return {
-    nom:            get('nom','name','organisation','societe','societe','company','entreprise'),
+    // Nom de la SOCIÉTÉ — ne jamais prendre "nom" tout seul (c'est souvent le nom de famille)
+    nom:            get('nom commercial','nom legal','organisation','societe','company','entreprise','name'),
     siren:          cleanSiren(get('siret/siren','siren','siret')),
-    domaine:        cleanDomain(get('site web','domaine','domain','website','site','url')),
-    org_id:         get('org id','org_id','id'),
+    domaine:        cleanDomain(get('url du site internet','site web','domaine','domain','website','site','url')),
+    org_id:         get('id entreprise pipedrive','org id','org_id','id'),
     fondateurs:     get('fondateurs','founders','fondateur'),
-    contact_prenom: get('contact prenom','prenom contact'),
-    contact_nom:    get('contact nom','nom contact'),
-    contact_titre:  get('fonction','titre','poste'),
+    // Infos CONTACT déjà connues
+    contact_prenom: get('prenom','contact prenom','prenom contact'),
+    contact_nom:    get('nom','contact nom','nom contact'),  // nom de famille
+    contact_titre:  get('poste occupe','fonction','titre','poste'),
+    contact_email:  '',  // ignoré volontairement — on cherche l'email via notre process
     code_postal:    get('code postal','cp','code_postal'),
     ville:          get('ville','city'),
-    adresse:        get('adresse complete','adresse','rue'),
+    adresse:        get('adresse du siege complete','adresse complete','adresse','rue'),
   };
 }
 function onRowsParsed() {
@@ -280,11 +283,18 @@ async function runPhase2() {
     if (stopFlag) break;
     const nomSociete = societes[i];
     const existants = results.filter(r => r.societe === nomSociete);
-    // Skip si société déjà détectée dans Pipedrive en phase 1
-    if (existants.some(r => r.dans_pipedrive && r.dans_pipedrive.includes('société'))) {
+    // Skip si société déjà récupérée depuis Pipedrive en phase 1
+    if (existants.some(r => r.dans_pipedrive === 'oui' || (r.dans_pipedrive && r.dans_pipedrive.length > 0))) {
       console.log(`[PHASE2] Skip ${nomSociete} — déjà dans Pipedrive`);
       continue;
     }
+    // Skip si on a déjà 3 contacts pour cette société
+    const contactsReels = existants.filter(r => r.nom_dg);
+    if (contactsReels.length >= 3) {
+      console.log(`[PHASE2] Skip ${nomSociete} — déjà ${contactsReels.length} contacts`);
+      continue;
+    }
+    const maxAjouter = 3 - contactsReels.length; // combien Claude peut encore ajouter
     const row = rows.find(r => r.nom === nomSociete) || {nom: nomSociete, domaine:'', siren:'', fondateurs:''};
     const existing = results.find(r => r.societe === nomSociete);
     if (existing) { row.siren = existing.siren || row.siren; row.domaine = existing.domaine || row.domaine; }
@@ -296,12 +306,14 @@ async function runPhase2() {
     try {
       const resp = await fetch('/enrich_claude', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(row)
+        body: JSON.stringify({...row, max_contacts: maxAjouter})
       });
       const data = await resp.json();
       if (data.contacts && data.contacts.length > 0) {
         const noms_existants = results.filter(r => r.societe === nomSociete).map(r => `${r.prenom} ${r.nom_dg}`.toLowerCase().trim());
+        let ajoutes = 0;
         for (const ct of data.contacts) {
+          if (ajoutes >= maxAjouter) break;  // stop quand on a atteint 3 contacts total
           const key = `${ct.prenom} ${ct.nom}`.toLowerCase().trim();
           if (!noms_existants.includes(key)) {
             results.push({
@@ -309,9 +321,10 @@ async function runPhase2() {
               siren: row.siren||'', domaine: row.domaine||'',
               prenom: ct.prenom, nom_dg: ct.nom, titre: ct.titre,
               email: ct.email||'', confiance: ct.confiance_email||'faible',
-              source: 'Claude+web', linkedin: ''
+              source: 'Claude+web', linkedin: '', dans_pipedrive: ''
             });
             totalFound++;
+            ajoutes++;
           }
         }
         renderResults();
