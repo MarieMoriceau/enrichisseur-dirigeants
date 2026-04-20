@@ -371,6 +371,8 @@ async function runPhase3() {
         results[idx].email = data.email;
         results[idx].confiance = 'haute';
         results[idx].source = (results[idx].source||'') + '+Pipedrive';
+        results[idx].dans_pipedrive = 'oui';
+        if (data.phone) results[idx].phone = data.phone;
         found++;
         renderResults();
       }
