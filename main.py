@@ -635,6 +635,7 @@ Réponds UNIQUEMENT avec ce JSON :
             "nom_dg":         ct.get("nom",""),
             "titre":          ct.get("titre",""),
             "email":          ct.get("email","") or "",
+            "phone":          ct.get("phone","") or "",
             "linkedin":       ct.get("linkedin",""),
             "confiance":      ct.get("confiance_email", ct.get("confiance","")),
             "source":         ct.get("source",""),
@@ -768,6 +769,11 @@ async def enrich_emails(request: Request):
             print(f"[KASPR] Recherche LinkedIn pour {prenom} {nom_ct}")
             linkedin_url = await trouver_linkedin(prenom, nom_ct, societe_ct)
             if linkedin_url:
+                # Stocker LinkedIn même si Kaspr ne trouve pas d'email
+                if idx not in emails_result:
+                    emails_result[idx] = {"email": "", "linkedin": linkedin_url, "source": ""}
+                else:
+                    emails_result[idx]["linkedin"] = linkedin_url
                 email_kaspr = await kaspr_email(prenom, nom_ct, linkedin_url)
                 if email_kaspr:
                     ct["email"] = email_kaspr
@@ -806,7 +812,7 @@ async def enrich_emails(request: Request):
             "lastname":     ct["nom"],
             "domain":       domaine_ct,
             "company_name": ct.get("societe",""),
-            "enrich_fields": ["contact.emails"],
+            "enrich_fields": ["contact.emails", "contact.phones", "contact.phones.mobile"],
             "custom": {"idx": str(ct.get("idx",0))}
         })
 
@@ -849,18 +855,43 @@ async def enrich_emails(request: Request):
                     emails_par_idx = {}
                     for ct_result in result.get("datas",[]):
                         idx = ct_result.get("custom",{}).get("idx","-1")
-                        emails = ct_result.get("contact",{}).get("emails",[])
-                        if emails:
-                            for e in emails:
-                                val = e.get("value") or e.get("email") or ""
-                                if val and "@" in val:
-                                    emails_par_idx[idx] = val
+                        contact_data = ct_result.get("contact",{})
+                        # Email
+                        email_val = ""
+                        for e in contact_data.get("emails",[]):
+                            val = e.get("value") or e.get("email") or ""
+                            if val and "@" in val:
+                                email_val = val
+                                break
+                        # Téléphone — priorité au mobile
+                        phone_val = ""
+                        phones = contact_data.get("phones",[])
+                        # D'abord chercher un mobile
+                        for p in phones:
+                            ptype = p.get("type","") or ""
+                            val = p.get("value") or p.get("phone") or ""
+                            if val and "mobile" in ptype.lower():
+                                phone_val = val
+                                break
+                        # Sinon prendre le premier disponible
+                        if not phone_val:
+                            for p in phones:
+                                val = p.get("value") or p.get("phone") or ""
+                                if val:
+                                    phone_val = val
                                     break
-                    print(f"[FULLENRICH] {len(emails_par_idx)} emails trouvés")
+                        if email_val or phone_val:
+                            emails_par_idx[idx] = {"email": email_val, "phone": phone_val}
+                    print(f"[FULLENRICH] {len(emails_par_idx)} contacts enrichis")
                     # Fusionner Kaspr + Fullenrich
                     for k, v in emails_par_idx.items():
                         if k not in emails_result:
-                            emails_result[k] = {"email": v, "source": "+Fullenrich"}
+                            emails_result[k] = {"email": v["email"], "phone": v["phone"], "source": "+Fullenrich"}
+                        else:
+                            if v["email"] and not emails_result[k].get("email"):
+                                emails_result[k]["email"] = v["email"]
+                            if v["phone"] and not emails_result[k].get("phone"):
+                                emails_result[k]["phone"] = v["phone"]
                     return {"emails": emails_result}
 
             print(f"[FULLENRICH] Timeout 180s")
@@ -882,8 +913,8 @@ def generer_excel(rows: list) -> bytes:
     ws = wb.active
     ws.title = "Dirigeants enrichis"
 
-    headers  = ['Organisation','Prénom','Nom','Titre','Email','LinkedIn','Confiance','Source','Dans Pipedrive']
-    col_map  = ['societe','prenom','nom_dg','titre','email','linkedin','confiance','source','dans_pipedrive']
+    headers  = ['Organisation','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
+    col_map  = ['societe','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
     thin     = Side(style='thin', color="e2e8f0")
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
 
@@ -955,7 +986,7 @@ def generer_excel(rows: list) -> bytes:
             else:
                 c.fill = PatternFill('solid', start_color=bg)
 
-    for i, w in enumerate([22,14,18,28,32,14,12,22,28], 1):
+    for i, w in enumerate([22,14,18,28,32,16,14,20,12,22,28], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     ws.freeze_panes = 'A4'
