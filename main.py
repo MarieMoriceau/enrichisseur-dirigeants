@@ -889,33 +889,20 @@ async def enrich_emails(request: Request):
                     for ct_result in result.get("datas",[]):
                         idx = ct_result.get("custom",{}).get("idx","-1")
                         contact_data = ct_result.get("contact",{})
-                        # Debug : afficher la structure complète phones
-                        phones_raw = contact_data.get("phones",[])
-                        if phones_raw:
-                            print(f"[FULLENRICH DEBUG phones] idx={idx} : {phones_raw[:2]}")
                         email_val = ""
                         for e in contact_data.get("emails",[]):
                             val = e.get("value") or e.get("email") or ""
                             if val and "@" in val:
                                 email_val = val
                                 break
-                        # Téléphone — priorité au mobile
+                        # Téléphone — Fullenrich retourne {"number": "+33 6 83 23 76 59", "region": "FR"}
                         phone_val = ""
                         phones = contact_data.get("phones",[])
-                        # D'abord chercher un mobile
                         for p in phones:
-                            ptype = p.get("type","") or ""
-                            val = p.get("value") or p.get("phone") or ""
-                            if val and "mobile" in ptype.lower():
+                            val = p.get("number") or p.get("value") or p.get("phone") or ""
+                            if val:
                                 phone_val = val
                                 break
-                        # Sinon prendre le premier disponible
-                        if not phone_val:
-                            for p in phones:
-                                val = p.get("value") or p.get("phone") or ""
-                                if val:
-                                    phone_val = val
-                                    break
                         if email_val or phone_val:
                             emails_par_idx[idx] = {"email": email_val, "phone": phone_val}
                     print(f"[FULLENRICH] {len(emails_par_idx)} contacts enrichis")
