@@ -161,14 +161,14 @@ function parseCSV(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const sep = text.split('\n')[0].split(';').length > text.split('\n')[0].split(',').length ? ';' : ',';
   const lines = text.trim().split('\n');
-  const headers = lines[0].split(sep).map(h => normalizeHeader(h));
-  rows = lines.slice(1).filter(l => l.trim()).map(line => {
+  rawHeaders = lines[0].split(sep).map(h => h.trim().replace(/^"|"$/g,''));
+  rawData = lines.slice(1).filter(l => l.trim()).map(line => {
     const vals = line.split(sep);
     const row = {};
-    headers.forEach((h, i) => row[h] = (vals[i]||'').trim().replace(/^"|"$/g,''));
-    return normalizeRow(row);
-  }).filter(r => r.nom);
-  onRowsParsed();
+    rawHeaders.forEach((h, i) => row[h] = (vals[i]||'').trim().replace(/^"|"$/g,''));
+    return row;
+  });
+  showMappingScreen();
 }
 function parseXLSX(buffer) {
   if (!window.XLSX) {
@@ -182,12 +182,14 @@ function doParseXLSX(buffer) {
   const wb = window.XLSX.read(buffer, {type:'array'});
   const ws = wb.Sheets[wb.SheetNames[0]];
   const data = window.XLSX.utils.sheet_to_json(ws, {defval:''});
-  rows = data.map(r => {
-    const low = {};
-    Object.keys(r).forEach(k => low[k.toLowerCase().trim()] = String(r[k]).trim());
-    return normalizeRow(low);
-  }).filter(r => r.nom);
-  onRowsParsed();
+  if (data.length === 0) return;
+  rawHeaders = Object.keys(data[0]);
+  rawData = data.map(r => {
+    const out = {};
+    rawHeaders.forEach(k => out[k] = String(r[k]||'').trim());
+    return out;
+  });
+  showMappingScreen();
 }
 function cleanDomain(url) {
   if (!url) return '';
@@ -217,19 +219,7 @@ function normalizeRow(r) {
     adresse:        get('adresse du siege complete','adresse complete','adresse','rue'),
   };
 }
-function onRowsParsed() {
-  // Dédupliquer par SIREN (ou nom si pas de SIREN) — 1 ligne par société
-  const seen = new Set();
-  rows = rows.filter(r => {
-    const key = r.siren || r.nom.toLowerCase().trim();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  document.getElementById('fileInfo').textContent += ` — ${rows.length} société(s)`;
-  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
-  document.getElementById('statLabel').textContent = `${rows.length} sociétés`;
-}
+function onRowsParsed() { /* remplacé par applyMapping() */ }
 
 // ── Status helpers ─────────────────────────────────────────────
 function setStatus(n, state, label) {
@@ -565,6 +555,132 @@ async function exportExcel() {
     console.error('Export Excel error:', e);
   }
 }
+
+// ── Champs cibles du template ──────────────────────────────────
+const CHAMPS_CIBLES = [
+  { key: 'nom',            label: '🏢 Nom société',         required: true  },
+  { key: 'siren',          label: '🔢 SIREN/SIRET',         required: false },
+  { key: 'domaine',        label: '🌐 Domaine web',         required: false },
+  { key: 'org_id',         label: '🔗 ID Pipedrive org',    required: false },
+  { key: 'fondateurs',     label: '👥 Fondateurs',          required: false },
+  { key: 'contact_prenom', label: '👤 Prénom contact',      required: false },
+  { key: 'contact_nom',    label: '👤 Nom contact',         required: false },
+  { key: 'contact_titre',  label: '💼 Poste contact',       required: false },
+  { key: 'code_postal',    label: '📮 Code postal',         required: false },
+  { key: 'ville',          label: '🏙️ Ville',               required: false },
+  { key: 'adresse',        label: '📍 Adresse complète',    required: false },
+];
+
+// Colonnes brutes du fichier uploadé (avant normalisation)
+let rawHeaders = [];
+let rawData    = [];
+let mapping    = {}; // { champ_cible: colonne_brute }
+
+function showMappingScreen() {
+  // Auto-détecter le mapping probable
+  mapping = {};
+  const AUTO = {
+    nom:            ['nom commercial','nom legal','organisation','societe','société','company','entreprise','name'],
+    siren:          ['siret/siren','siren','siret'],
+    domaine:        ['url du site internet','site web','domaine','domain','website','site','url'],
+    org_id:         ['id entreprise pipedrive','org id','org_id','id'],
+    fondateurs:     ['fondateurs','founders','fondateur'],
+    contact_prenom: ['prenom','prénom','contact prenom','contact prénom','prenom contact'],
+    contact_nom:    ['nom','contact nom','nom contact'],
+    contact_titre:  ['poste occupe','poste occupé','fonction','titre','poste'],
+    code_postal:    ['code postal','cp','code_postal'],
+    ville:          ['ville','city'],
+    adresse:        ['adresse du siege complete','adresse complète','adresse complete','adresse','rue'],
+  };
+  const normalH = h => h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,' ').trim();
+  const normHeaders = rawHeaders.map(normalH);
+  CHAMPS_CIBLES.forEach(({key}) => {
+    const candidates = AUTO[key] || [];
+    for (const c of candidates) {
+      const idx = normHeaders.indexOf(normalH(c));
+      if (idx >= 0) { mapping[key] = rawHeaders[idx]; break; }
+    }
+  });
+
+  // Construire l'écran de mapping
+  const html = `
+    <div id="mappingScreen" style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin-top:12px">
+      <div style="font-size:14px;font-weight:800;color:#1e293b;margin-bottom:4px">🗂️ Mapper les colonnes</div>
+      <div style="font-size:12px;color:#64748b;margin-bottom:16px">
+        Vérifiez que chaque champ pointe vers la bonne colonne de votre fichier.
+        Les colonnes reconnues automatiquement sont pré-remplies.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        ${CHAMPS_CIBLES.map(({key, label, required}) => `
+          <div style="display:flex;align-items:center;gap:8px;background:white;border-radius:8px;padding:8px 10px;border:1px solid ${mapping[key] ? '#dcfce7' : required ? '#fee2e2' : '#e2e8f0'}">
+            <div style="font-size:11px;font-weight:600;color:#475569;min-width:130px">${label}${required ? ' *' : ''}</div>
+            <select data-key="${key}" onchange="mapping['${key}']=this.value"
+              style="flex:1;border:1px solid #e2e8f0;border-radius:6px;padding:4px 6px;font-size:11px;background:white">
+              <option value="">— ignorer —</option>
+              ${rawHeaders.map(h => `<option value="${h}" ${mapping[key]===h?'selected':''}>${h}</option>`).join('')}
+            </select>
+          </div>
+        `).join('')}
+      </div>
+      <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+        <button onclick="applyMapping()" class="btn" style="background:#2563eb;color:white;padding:8px 20px">✅ Valider le mapping</button>
+        <span style="font-size:11px;color:#94a3b8">* champ obligatoire</span>
+      </div>
+    </div>`;
+  
+  const existing = document.getElementById('mappingScreen');
+  if (existing) existing.remove();
+  document.getElementById('fileInfo').insertAdjacentHTML('afterend', html);
+  // Désactiver les boutons jusqu'à validation
+  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = true);
+}
+
+function applyMapping() {
+  if (!mapping['nom']) {
+    alert('⚠️ Le champ "Nom société" est obligatoire — veuillez le mapper.');
+    return;
+  }
+  // Appliquer le mapping sur rawData → rows
+  rows = rawData.map(r => {
+    const mapped = {};
+    Object.entries(mapping).forEach(([cible, source]) => {
+      if (source) mapped[cible] = r[source] || '';
+    });
+    return applyTransforms(mapped);
+  }).filter(r => r.nom);
+
+  // Dédupliquer
+  const seen = new Set();
+  rows = rows.filter(r => {
+    const key = r.siren || r.nom.toLowerCase().trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  document.getElementById('mappingScreen').remove();
+  document.getElementById('fileInfo').textContent = document.getElementById('fileInfo').textContent.replace(/ — .*/, '') + ` — ${rows.length} société(s)`;
+  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
+  document.getElementById('statLabel').textContent = `${rows.length} sociétés prêtes`;
+}
+
+function applyTransforms(r) {
+  return {
+    nom:            r.nom || '',
+    siren:          cleanSiren(r.siren || ''),
+    domaine:        cleanDomain(r.domaine || ''),
+    org_id:         r.org_id || '',
+    fondateurs:     r.fondateurs || '',
+    contact_prenom: r.contact_prenom || '',
+    contact_nom:    r.contact_nom || '',
+    contact_titre:  r.contact_titre || '',
+    contact_email:  '',
+    code_postal:    r.code_postal || '',
+    ville:          r.ville || '',
+    adresse:        r.adresse || '',
+  };
+}
+
 </script>
 </body>
 </html>
