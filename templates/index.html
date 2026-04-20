@@ -113,7 +113,7 @@ tr:hover td { background: #f8fafc; }
     <h2>✅ Résultats</h2>
     <div style="overflow-x:auto">
     <table>
-      <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Email</th><th>LinkedIn</th><th>Confiance</th><th>Source</th><th>Pipedrive</th></tr></thead>
+      <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Email</th><th>Téléphone</th><th>LinkedIn</th><th>Domaine</th><th>Confiance</th><th>Source</th><th>Pipedrive</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
@@ -435,15 +435,20 @@ async function runEmailBatch(phase) {
       if (idx >= 0 && idx < results.length) {
         const email   = typeof val === 'string' ? val : (val && val.email ? val.email : '');
         const linkedin = val && val.linkedin ? val.linkedin : '';
+        const phone   = val && val.phone ? val.phone : '';
         const srcTag  = val && val.source ? val.source : `+${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'}`;
         if (email && email.includes('@')) {
           results[idx].email = email;
           results[idx].confiance = 'haute';
           if (linkedin) results[idx].linkedin = linkedin;
+          if (phone) results[idx].phone = phone;
           const src = results[idx].source || '';
           const tag = srcTag.replace('+','');
           if (!src.includes(tag)) results[idx].source = src + srcTag;
           found++;
+        } else if (linkedin && !results[idx].linkedin) {
+          // Stocker LinkedIn même sans email
+          results[idx].linkedin = linkedin;
         }
       }
     }
@@ -529,7 +534,9 @@ function renderResults() {
       <td>${r.nom_dg||'—'}</td>
       <td>${r.titre||'—'}</td>
       <td>${r.email?`<span class="email-ok">${r.email}</span>`:`<span class="no-email">—</span>`}</td>
-      <td>${r.linkedin?`<a href="${r.linkedin}" target="_blank" style="color:#0077b5;font-size:11px">🔗</a>`:'—'}</td>
+      <td>${r.phone?`<span style="color:#059669;font-size:11px">${r.phone}</span>`:'—'}</td>
+      <td>${r.linkedin?`<a href="${r.linkedin}" target="_blank" style="color:#0077b5;font-size:11px">🔗 LinkedIn</a>`:'—'}</td>
+      <td>${r.domaine?`<span style="font-size:11px;color:#64748b">${r.domaine}</span>`:'—'}</td>
       <td>${conf?`<span class="badge ${conf}">${conf}</span>`:'—'}</td>
       <td>${src?`<span class="badge ${srcClass}">${src}</span>`:'—'}</td>
       <td>${r.dans_pipedrive?`<span class="badge" style="background:#fef3c7;color:#92400e">✅ Pipedrive</span>`:'—'}</td>
