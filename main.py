@@ -812,7 +812,7 @@ async def enrich_emails(request: Request):
             "lastname":     ct["nom"],
             "domain":       domaine_ct,
             "company_name": ct.get("societe",""),
-            "enrich_fields": ["contact.emails", "contact.phones", "contact.phones.mobile"],
+            "enrich_fields": ["contact.emails", "contact.phones"],
             "custom": {"idx": str(ct.get("idx",0))}
         })
 
