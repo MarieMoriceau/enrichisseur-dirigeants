@@ -177,15 +177,15 @@ async def health():
         "kaspr_key": bool(KASPR_KEY),
     }
 
-async def check_pipedrive(prenom: str, nom: str) -> str:
+async def check_pipedrive(prenom: str, nom: str) -> dict:
     if not PIPEDRIVE_KEY or not prenom or not nom:
-        return ""
+        return {}
     terme = f"{prenom} {nom}".strip()
     try:
         async with httpx.AsyncClient(timeout=8) as c:
             r = await c.get(
                 "https://api.pipedrive.com/v1/persons/search",
-                params={"term": terme, "fields": "name,email", "exact_match": "false", "limit": 5, "api_token": PIPEDRIVE_KEY}
+                params={"term": terme, "fields": "name,email,phone", "exact_match": "false", "limit": 5, "api_token": PIPEDRIVE_KEY}
             )
             if r.status_code == 200:
                 items = r.json().get("data", {}).get("items", [])
@@ -193,15 +193,29 @@ async def check_pipedrive(prenom: str, nom: str) -> str:
                     person = item.get("item", {})
                     person_name = person.get("name", "").lower()
                     if nom.lower() in person_name or prenom.lower() in person_name:
+                        # Email
+                        email = ""
                         emails = person.get("emails", [])
                         if emails:
                             email = emails[0] if isinstance(emails[0], str) else emails[0].get("value", "")
-                            if email and "@" in email:
-                                print(f"[PIPEDRIVE] ✅ {terme} → {email}")
-                                return email
+                        # Téléphone — priorité mobile
+                        phone = ""
+                        phones = person.get("phones", [])
+                        for ph in phones:
+                            val   = ph if isinstance(ph, str) else ph.get("value", "")
+                            label = (ph.get("label","") if isinstance(ph, dict) else "").lower()
+                            if val and ("mobile" in label or "portable" in label or "cell" in label):
+                                phone = val
+                                break
+                        if not phone and phones:
+                            ph = phones[0]
+                            phone = ph if isinstance(ph, str) else ph.get("value", "")
+                        if email and "@" in email:
+                            print(f"[PIPEDRIVE] ✅ {terme} → {email} | tél: {phone}")
+                            return {"email": email, "phone": phone}
     except Exception as e:
         print(f"[PIPEDRIVE ERROR] {terme}: {e}")
-    return ""
+    return {}
 
 async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
     """Cherche l'URL LinkedIn du dirigeant via Claude+web (max_uses:1)."""
@@ -394,9 +408,25 @@ async def enrich_one(request: Request):
                                             if val and "@" in val:
                                                 email_p = val
                                                 break
+                                        # Téléphone Pipedrive — priorité mobile
+                                        phones_p = p.get("phone", []) or []
+                                        phone_p  = ""
+                                        for ph in phones_p:
+                                            val   = ph.get("value","") if isinstance(ph, dict) else str(ph)
+                                            label = (ph.get("label","") if isinstance(ph, dict) else "").lower()
+                                            if val and ("mobile" in label or "portable" in label or "cell" in label):
+                                                phone_p = val
+                                                break
+                                        if not phone_p:
+                                            for ph in phones_p:
+                                                val = ph.get("value","") if isinstance(ph, dict) else str(ph)
+                                                if val:
+                                                    phone_p = val
+                                                    break
                                         contacts_pipe.append({
                                             "prenom": prenom_p, "nom": nom_p,
                                             "titre": titre_p, "email": email_p,
+                                            "phone": phone_p,
                                             "confiance": "haute" if email_p else "",
                                             "source": "Pipedrive",
                                             "dans_pipedrive": "oui"
@@ -415,6 +445,7 @@ async def enrich_one(request: Request):
                                     "domaine": domaine,
                                     "prenom": ct["prenom"], "nom_dg": ct["nom"],
                                     "titre": ct["titre"], "email": ct["email"],
+                                    "phone": ct.get("phone",""),
                                     "linkedin": "", "confiance": ct["confiance"],
                                     "source": ct["source"],
                                     "dans_pipedrive": ct["dans_pipedrive"]
@@ -611,12 +642,14 @@ Réponds UNIQUEMENT avec ce JSON :
         for ct in tous_contacts:
             if ct.get("email"):
                 continue
-            email_pd = await check_pipedrive(ct.get("prenom",""), ct.get("nom",""))
-            if email_pd:
-                ct["email"] = email_pd
+            pd_data = await check_pipedrive(ct.get("prenom",""), ct.get("nom",""))
+            if pd_data.get("email"):
+                ct["email"] = pd_data["email"]
                 ct["confiance_email"] = "haute"
                 ct["source"] = ct.get("source","") + "+Pipedrive"
                 ct["dans_pipedrive"] = "oui"
+            if pd_data.get("phone"):
+                ct["phone"] = pd_data["phone"]
 
     # ÉTAPE 4 : Kaspr + LinkedIn → géré en batch dans /enrich_emails après la Passe 1
     # (évite la surcharge Claude pendant la Passe 1)
@@ -724,8 +757,8 @@ async def check_pipedrive_route(request: Request):
     data = await request.json()
     prenom = data.get("prenom","")
     nom    = data.get("nom","")
-    email  = await check_pipedrive(prenom, nom)
-    return {"email": email}
+    result = await check_pipedrive(prenom, nom)
+    return {"email": result.get("email",""), "phone": result.get("phone","")}
 
 # -------------------------------------------------------
 # ROUTE PASSE 2 : Kaspr + LinkedIn + Fullenrich batch
@@ -856,7 +889,10 @@ async def enrich_emails(request: Request):
                     for ct_result in result.get("datas",[]):
                         idx = ct_result.get("custom",{}).get("idx","-1")
                         contact_data = ct_result.get("contact",{})
-                        # Email
+                        # Debug : afficher la structure complète phones
+                        phones_raw = contact_data.get("phones",[])
+                        if phones_raw:
+                            print(f"[FULLENRICH DEBUG phones] idx={idx} : {phones_raw[:2]}")
                         email_val = ""
                         for e in contact_data.get("emails",[]):
                             val = e.get("value") or e.get("email") or ""
