@@ -33,6 +33,17 @@ TITRES_EXCLUS = [
     "liquidateur", "mandataire", "administrateur judiciaire",
 ]
 
+def nettoyer_prenom(prenom: str) -> str:
+    """Supprime civilités et prénoms composés Pappers : 'M Denis' → 'Denis', 'Florian, Paul' → 'Florian'."""
+    if not prenom:
+        return ""
+    # Prénoms composés Pappers : "Florian, Paul, Robert" → "Florian"
+    prenom = prenom.split(",")[0].strip()
+    # Civilités collées : "M Denis" → "Denis", "Mme Caroline" → "Caroline"
+    import re
+    prenom = re.sub(r'^(M\.?\s+|Mme\.?\s+|Mr\.?\s+|Dr\.?\s+|Me\.?\s+)', '', prenom, flags=re.IGNORECASE).strip()
+    return prenom
+
 def est_ancien_dirigeant(titre: str) -> bool:
     return any(kw in titre.lower() for kw in ANCIENS_KEYWORDS)
 
@@ -222,7 +233,7 @@ async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
     if not ANTHROPIC_KEY:
         return ""
     # Nettoyer les prénoms composés Pappers ex: "Emmanuel, Roger" → "Emmanuel"
-    prenom = prenom.split(",")[0].strip()
+    prenom = nettoyer_prenom(prenom)
     if not prenom or not nom:
         return ""
     try:
@@ -427,10 +438,13 @@ async def enrich_one(request: Request):
                                             "prenom": prenom_p, "nom": nom_p,
                                             "titre": titre_p, "email": email_p,
                                             "phone": phone_p,
-                                            # Sans email → confiance faible → Kaspr+Fullenrich les enrichira
-                                            "confiance": "haute" if email_p else "faible",
+                                            # Sans email → faible → Kaspr+Fullenrich enrichira
+                                            # Avec email mais sans phone → faible aussi → Fullenrich cherchera le tel
+                                            # Avec email ET phone → haute → skip
+                                            "confiance": "haute" if (email_p and phone_p) else "faible",
                                             "source": "Pipedrive",
-                                            "dans_pipedrive": "oui"
+                                            "dans_pipedrive": "oui",
+                                            "siren": siren,
                                         })
                                     print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} contacts récupérés")
                             except Exception as e2:
@@ -451,6 +465,8 @@ async def enrich_one(request: Request):
                                     "source": ct["source"],
                                     "dans_pipedrive": ct["dans_pipedrive"]
                                 })
+                            sans_email = len([c for c in contacts_pipe if not c["email"]])
+                            print(f"[PIPEDRIVE ORG] {len(results)} contacts ({sans_email} sans email → seront enrichis par Kaspr/Fullenrich)")
                             return {"results": results}
         except Exception as e:
             print(f"[PIPEDRIVE ORG ERROR] {e}")
@@ -533,7 +549,7 @@ async def enrich_one(request: Request):
                 if est_ancien_dirigeant(titre) or est_titre_exclu(titre):
                     continue
                 prenom_raw = rep.get("prenom","")
-                prenom_clean = prenom_raw.split(",")[0].strip()  # "Florian, Paul, Robert" → "Florian"
+                prenom_clean = nettoyer_prenom(prenom_raw)
                 pappers_contacts.append({
                     "prenom": prenom_clean,
                     "nom":    rep.get("nom",""),
@@ -547,7 +563,7 @@ async def enrich_one(request: Request):
     # Pré-remplir le contact connu depuis le fichier source (ex: fichier occupants)
     # Dédup : on ne l'ajoute que s'il n'est pas déjà dans pappers_contacts
     if contact_prenom and contact_nom:
-        contact_prenom_clean = contact_prenom.split(",")[0].strip()
+        contact_prenom_clean = nettoyer_prenom(contact_prenom)
         deja_present = any(
             noms_similaires(contact_prenom_clean, ct.get("prenom","")) and
             noms_similaires(contact_nom, ct.get("nom",""))
@@ -786,7 +802,7 @@ async def enrich_emails(request: Request):
                 emails_par_nom[f"{ct.get('prenom','')} {ct.get('nom','')}".lower().strip()] = email
                 continue
             # Vérifier doublon
-            prenom_clean = ct.get("prenom","").split(",")[0].strip()
+            prenom_clean = nettoyer_prenom(ct.get("prenom",""))
             cle = f"{prenom_clean} {ct.get('nom','')}".lower().strip()
             if cle in emails_par_nom:
                 idx = str(ct.get("idx",0))
@@ -794,7 +810,7 @@ async def enrich_emails(request: Request):
                 print(f"[DEDUP] {cle} → email déjà trouvé, skip Kaspr")
                 continue
             # Nettoyer prénom composé Pappers ex: "Emmanuel, Roger" → "Emmanuel"
-            prenom = ct.get("prenom","").split(",")[0].strip()
+            prenom = nettoyer_prenom(ct.get("prenom",""))
             nom_ct = ct.get("nom","")
             societe_ct = ct.get("societe","")
             idx = str(ct.get("idx",0))
@@ -829,10 +845,16 @@ async def enrich_emails(request: Request):
                 ct["domaine"] = domaines_corriges[societe]
 
     to_enrich = []
+    phase = data.get("phase","fullenrich")
     for ct in contacts:
         email = ct.get("email","")
         confiance = ct.get("confiance","")
-        if email and confiance not in ("faible",""):
+        phone = ct.get("phone","")
+        # Skip si email ET téléphone déjà trouvés avec haute confiance
+        if email and confiance not in ("faible","") and phone:
+            continue
+        # Pour Kaspr : skip si email haute confiance (Kaspr ne fait que LinkedIn→email)
+        if phase == "kaspr" and email and confiance not in ("faible",""):
             continue
         if not ct.get("prenom") or not ct.get("nom"):
             continue
@@ -840,7 +862,7 @@ async def enrich_emails(request: Request):
         if not domaine_valide(domaine_ct):
             print(f"[FULLENRICH] Domaine toujours invalide pour {ct.get('prenom')} {ct.get('nom')} — ignoré")
             continue
-        prenom_clean = ct["prenom"].split(",")[0].strip()  # "Emmanuel, Roger" → "Emmanuel"
+        prenom_clean = nettoyer_prenom(ct["prenom"])
         to_enrich.append({
             "firstname":    prenom_clean,
             "lastname":     ct["nom"],
