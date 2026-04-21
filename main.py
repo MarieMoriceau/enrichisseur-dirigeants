@@ -427,7 +427,8 @@ async def enrich_one(request: Request):
                                             "prenom": prenom_p, "nom": nom_p,
                                             "titre": titre_p, "email": email_p,
                                             "phone": phone_p,
-                                            "confiance": "haute" if email_p else "",
+                                            # Sans email → confiance faible → Kaspr+Fullenrich les enrichira
+                                            "confiance": "haute" if email_p else "faible",
                                             "source": "Pipedrive",
                                             "dans_pipedrive": "oui"
                                         })
