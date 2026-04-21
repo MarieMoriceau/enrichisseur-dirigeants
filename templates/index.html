@@ -399,7 +399,10 @@ async function runPhase5(fromRunAll = false) {
 async function runEmailBatch(phase) {
   const toEnrich = results
     .map((r, idx) => ({...r, idx}))
-    .filter(r => r.nom_dg && (!r.email || r.confiance === 'faible'));
+    .filter(r => r.nom_dg && (
+      !r.email || r.confiance === 'faible'  // sans email
+      || (!r.phone && phase === 'fullenrich') // avec email mais sans tel → Fullenrich seulement
+    ));
 
   if (!toEnrich.length) {
     if (phase === 'kaspr') setStatus(4, 'done', '4. Kaspr ✅ (rien à faire)');
@@ -429,17 +432,17 @@ async function runEmailBatch(phase) {
         const linkedin = val && val.linkedin ? val.linkedin : '';
         const phone   = val && val.phone ? val.phone : '';
         const srcTag  = val && val.source ? val.source : `+${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'}`;
+        // Mettre à jour le téléphone quelle que soit la situation
+        if (phone && !results[idx].phone) results[idx].phone = phone;
         if (email && email.includes('@')) {
           results[idx].email = email;
           results[idx].confiance = 'haute';
           if (linkedin) results[idx].linkedin = linkedin;
-          if (phone) results[idx].phone = phone;
           const src = results[idx].source || '';
           const tag = srcTag.replace('+','');
           if (!src.includes(tag)) results[idx].source = src + srcTag;
           found++;
         } else if (linkedin && !results[idx].linkedin) {
-          // Stocker LinkedIn même sans email
           results[idx].linkedin = linkedin;
         }
       }
