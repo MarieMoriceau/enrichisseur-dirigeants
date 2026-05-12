@@ -1096,7 +1096,7 @@ Enrichisseur Dirigeants"""
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
         # Pièce jointe Excel
-        part = MIMEBase('application', 'octet-stream')
+        part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         part.set_payload(excel_content)
         encoders.encode_base64(part)
         part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
