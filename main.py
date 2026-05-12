@@ -21,6 +21,14 @@ SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER      = os.getenv("SMTP_USER", "")
 SMTP_PASS      = os.getenv("SMTP_PASS", "")
 
+# ────────────────────────────────────────────────────────────────────
+# MODÈLES CLAUDE
+# Sonnet : pour la recherche dirigeants (qualité critique, web search)
+# Haiku  : pour les tâches d'extraction simple (URL LinkedIn, domaine)
+# ────────────────────────────────────────────────────────────────────
+MODEL_ENRICH = "claude-sonnet-4-6"          # qualité élevée requise
+MODEL_EXTRACT = "claude-haiku-4-5-20251001" # extraction simple, ~4× moins cher
+
 ANCIENS_KEYWORDS = [
     "ancien", "ancienne", "ex-", "ex ", "démissionnaire",
     "jusqu'au", "jusqu au", "sortant"
@@ -32,6 +40,109 @@ TITRES_EXCLUS = [
     "liquidateur", "mandataire", "administrateur judiciaire",
 ]
 
+# ────────────────────────────────────────────────────────────────────
+# SYSTEM PROMPT MIS EN CACHE
+# Bloc stable, identique pour toutes les sociétés → caché par Anthropic.
+# Doit faire au moins 1024 tokens pour activer le cache : on a inclus
+# des exemples few-shot qui améliorent en bonus la qualité des résultats.
+# ────────────────────────────────────────────────────────────────────
+SYSTEM_ENRICH = """Tu es un assistant spécialisé dans la recherche de dirigeants opérationnels de sociétés françaises sur le web.
+
+OBJECTIF
+Identifier les vrais décideurs opérationnels (CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs) — pas les simples mandataires légaux ou représentants de holdings.
+
+CONSIGNES STRICTES
+- Cherche uniquement les dirigeants ACTUELLEMENT EN POSTE.
+- Ne jamais inclure : "ancien", "ex-", "sortant", "démissionnaire", "jusqu'au".
+- Postes à EXCLURE absolument : commissaire aux comptes, conseil de surveillance, membre du conseil, censeur, observateur, représentant permanent, liquidateur, mandataire, administrateur judiciaire.
+- Privilégie les sources officielles : site de la société (page "équipe", "à propos", "leadership"), LinkedIn, presse spécialisée (Les Échos, Maddyness, Frenchweb).
+- Si la société est une filiale d'un groupe, identifie les dirigeants de l'entité française précisément ciblée (pas ceux du groupe parent).
+
+RÈGLES EMAIL
+- Emails uniquement professionnels (domaine de la société). Jamais gmail, hotmail, yahoo, outlook.com, icloud, free, orange, wanadoo.
+- Si tu trouves l'email confirmé sur le site officiel ou une source fiable → "confiance_email": "haute"
+- Si tu déduis l'email du pattern habituel (prenom.nom@domaine, p.nom@domaine, etc.) sans confirmation → "confiance_email": "moyenne"
+- Si tu n'es pas sûr ou pattern incertain → "email": null, "confiance_email": "faible"
+
+FORMAT DE SORTIE OBLIGATOIRE
+Réponds UNIQUEMENT avec ce JSON, sans aucun texte avant ni après, sans backticks, sans markdown :
+{"contacts":[{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}]}
+
+EXEMPLES DE BONNES RÉPONSES
+
+Exemple 1 — startup tech avec dirigeants identifiables sur le site :
+Input : Société "Doctolib", site doctolib.fr
+Output : {"contacts":[{"prenom":"Stanislas","nom":"Niox-Chateau","titre":"CEO & Cofondateur","email":"stanislas.niox-chateau@doctolib.com","confiance_email":"moyenne"},{"prenom":"Olivier","nom":"Loison","titre":"COO","email":"olivier.loison@doctolib.com","confiance_email":"moyenne"}]}
+
+Exemple 2 — société avec plusieurs cofondateurs dirigeants :
+Input : Société "Mirakl", site mirakl.com
+Output : {"contacts":[{"prenom":"Adrien","nom":"Nussenbaum","titre":"CEO & Cofondateur","email":"adrien.nussenbaum@mirakl.com","confiance_email":"moyenne"},{"prenom":"Philippe","nom":"Corrot","titre":"Président & Cofondateur","email":"philippe.corrot@mirakl.com","confiance_email":"moyenne"}]}
+
+Exemple 3 — distinction ancien vs actuel dirigeant :
+Si une source dit "Jean Dupont, ancien CEO jusqu'en 2023" → NE PAS l'inclure.
+Si une source dit "Marie Martin, CEO depuis janvier 2024" → l'inclure.
+Si une source dit "Paul Durand, CFO" sans précision temporelle et l'info est récente → l'inclure.
+
+Exemple 4 — pas de dirigeant identifiable de manière fiable :
+Output : {"contacts":[]}
+
+Exemple 5 — distinguer dirigeant opérationnel vs représentant légal :
+Si Pappers a renvoyé "Holding Patrimoniale Dupont, représentant Jean Dupont, président" → cherche en plus le directeur général opérationnel sur le site/LinkedIn.
+
+Exemple 6 — emails à exclure systématiquement :
+{"email":"ceo@gmail.com"} → INCORRECT, mettre "email": null à la place.
+
+RÈGLE FINALE
+Ne renvoie JAMAIS de texte hors du JSON. Pas de "Voici les contacts trouvés", pas de commentaire, pas de markdown. Le premier caractère de ta réponse doit être { et le dernier }."""
+
+
+SYSTEM_LINKEDIN = """Tu es un assistant spécialisé dans la recherche d'URLs LinkedIn de dirigeants français.
+
+CONSIGNES
+- Cherche l'URL LinkedIn exacte de la personne demandée.
+- Vérifie que la personne occupe bien un poste dans la société indiquée (pour éviter les homonymes).
+- Format URL attendu : https://www.linkedin.com/in/prenom-nom-xxxxx/
+- Si tu n'es pas certain à 100% que c'est la bonne personne → réponds exactement : NON
+- Ne renvoie AUCUN autre texte que l'URL ou NON.
+
+EXEMPLES
+Input : Stanislas Niox-Chateau chez Doctolib
+Output : https://www.linkedin.com/in/stanislas-niox-chateau-9728851a/
+
+Input : Jean Dupont chez Société Inconnue (homonyme probable)
+Output : NON"""
+
+
+SYSTEM_DOMAINE = """Tu es un assistant spécialisé dans l'identification de noms de domaine officiels de sociétés françaises.
+
+CONSIGNES
+- Renvoie UNIQUEMENT le nom de domaine du site web officiel de la société.
+- Pas de http:// ni https:// ni www.
+- Pas de slash final, pas de chemin.
+- Aucun autre texte, aucune explication.
+- Si tu ne trouves pas avec certitude → renvoie une chaîne vide.
+
+EXEMPLES
+Input : Doctolib
+Output : doctolib.fr
+
+Input : Mirakl
+Output : mirakl.com
+
+Input : Société française inconnue
+Output : """
+
+
+def log_usage(label: str, societe: str, response_json: dict) -> None:
+    """Log la consommation tokens d'un appel Claude pour suivi des coûts."""
+    usage = response_json.get("usage", {}) or {}
+    print(f"[COST] {label} | {societe} | "
+          f"in={usage.get('input_tokens', 0)} | "
+          f"cache_read={usage.get('cache_read_input_tokens', 0)} | "
+          f"cache_write={usage.get('cache_creation_input_tokens', 0)} | "
+          f"out={usage.get('output_tokens', 0)}")
+
+
 def nettoyer_prenom(prenom: str) -> str:
     """Supprime civilités et prénoms composés Pappers : 'M Denis' → 'Denis', 'Florian, Paul' → 'Florian'."""
     if not prenom:
@@ -41,15 +152,19 @@ def nettoyer_prenom(prenom: str) -> str:
     prenom = re.sub(r'^(M\.?\s+|Mme\.?\s+|Mr\.?\s+|Dr\.?\s+|Me\.?\s+)', '', prenom, flags=re.IGNORECASE).strip()
     return prenom
 
+
 def est_ancien_dirigeant(titre: str) -> bool:
     return any(kw in titre.lower() for kw in ANCIENS_KEYWORDS)
+
 
 def est_titre_exclu(titre: str) -> bool:
     return any(kw in titre.lower() for kw in TITRES_EXCLUS)
 
+
 def domaine_valide(d: str) -> bool:
     d = d.strip()
     return bool(d) and "." in d and " " not in d and len(d) > 3
+
 
 def nettoyer_domaine(url: str) -> str:
     """Extrait le domaine depuis une URL complète."""
@@ -59,6 +174,7 @@ def nettoyer_domaine(url: str) -> str:
     d = d.replace("https://", "").replace("http://", "").replace("www.", "")
     d = d.split("/")[0].strip()
     return d
+
 
 def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
     import unicodedata
@@ -79,9 +195,11 @@ def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
         return True
     return len(mots_a & mots_b) > 0
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
 
 @app.get("/template")
 async def get_template():
@@ -162,6 +280,7 @@ async def get_template():
         headers={"Content-Disposition": "attachment; filename=template_enrichisseur.xlsx"}
     )
 
+
 async def health():
     return {
         "ok": True,
@@ -171,6 +290,7 @@ async def health():
         "pipedrive_key": bool(PIPEDRIVE_KEY),
         "kaspr_key": bool(KASPR_KEY),
     }
+
 
 async def check_pipedrive(prenom: str, nom: str) -> dict:
     if not PIPEDRIVE_KEY or not prenom or not nom:
@@ -210,34 +330,42 @@ async def check_pipedrive(prenom: str, nom: str) -> dict:
         print(f"[PIPEDRIVE ERROR] {terme}: {e}")
     return {}
 
+
 async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
-    """Cherche l'URL LinkedIn du dirigeant via Claude+web (max_uses:1)."""
+    """Cherche l'URL LinkedIn du dirigeant via Claude+web (Haiku, max_uses:1)."""
     if not ANTHROPIC_KEY:
         return ""
     prenom = nettoyer_prenom(prenom)
     if not prenom or not nom:
         return ""
     try:
-        prompt = f"""Trouve l'URL LinkedIn exacte de cette personne :
-Prénom: {prenom}
-Nom: {nom}
-Société: {societe}
-Réponds UNIQUEMENT avec l'URL complète (ex: https://www.linkedin.com/in/prenom-nom-xxxxx/)
-Si tu n'es pas certain à 100%, réponds: NON"""
+        user_prompt = f"""Trouve l'URL LinkedIn de :
+Prénom : {prenom}
+Nom : {nom}
+Société : {societe}"""
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                 json={
-                    "model": "claude-sonnet-4-6",
+                    "model": MODEL_EXTRACT,  # Haiku — extraction simple
                     "max_tokens": 200,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": SYSTEM_LINKEDIN,
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ],
                     "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
-                    "messages": [{"role": "user", "content": prompt}]
+                    "messages": [{"role": "user", "content": user_prompt}]
                 }
             )
             print(f"[LINKEDIN] Status {r.status_code} pour {prenom} {nom}")
             if r.status_code == 200:
-                all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
+                response_json = r.json()
+                log_usage("LINKEDIN", f"{prenom} {nom}", response_json)
+                all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text").strip()
                 m = re.search(r'https?://(?:www\.)?linkedin\.com/in/[^\s\)\"\'\]]+', all_text)
                 if m:
                     url = m.group().rstrip('/')
@@ -247,6 +375,7 @@ Si tu n'es pas certain à 100%, réponds: NON"""
         print(f"[LINKEDIN ERROR] {prenom} {nom}: {e}")
     print(f"[LINKEDIN] ❌ Pas trouvé pour {prenom} {nom}")
     return ""
+
 
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
     """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement (illimité)."""
@@ -289,8 +418,9 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
         print(f"[KASPR ERROR] {prenom} {nom}: {e}")
     return ""
 
+
 async def corriger_domaine(siren: str, societe: str) -> str:
-    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude."""
+    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude (Haiku)."""
     if PAPPERS_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
@@ -316,21 +446,29 @@ async def corriger_domaine(siren: str, societe: str) -> str:
             print(f"[DOMAINE FIX ERROR Pappers] {e}")
     if ANTHROPIC_KEY:
         try:
-            prompt = f"""Quel est le nom de domaine du site web officiel de cette société française : {societe} ?
-Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans aucun autre texte."""
+            user_prompt = f"Société : {societe}"
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
-                        "model": "claude-sonnet-4-6",
+                        "model": MODEL_EXTRACT,  # Haiku — extraction simple
                         "max_tokens": 50,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": SYSTEM_DOMAINE,
+                                "cache_control": {"type": "ephemeral"}
+                            }
+                        ],
                         "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
-                        "messages": [{"role": "user", "content": prompt}]
+                        "messages": [{"role": "user", "content": user_prompt}]
                     }
                 )
                 if r.status_code == 200:
-                    all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
+                    response_json = r.json()
+                    log_usage("DOMAINE", societe, response_json)
+                    all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text").strip()
                     domaine = nettoyer_domaine(all_text.split()[0] if all_text else "")
                     if domaine_valide(domaine):
                         print(f"[DOMAINE FIX] Claude → {domaine} pour {societe}")
@@ -338,6 +476,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Claude] {e}")
     return ""
+
 
 # -------------------------------------------------------
 # ROUTE PASSE 1 : Pappers + Claude + Pipedrive
@@ -360,9 +499,6 @@ async def enrich_one(request: Request):
     print(f"[START] {nom} | domaine={domaine} | siren={siren}")
 
     # ── CHECK PIPEDRIVE ORGANISATION ──
-    # NOUVEAU : on garde les contacts Pipedrive (s'ils existent) mais on
-    # continue avec Pappers + Claude pour récupérer les dirigeants manquants.
-    # La Passe 2 (Kaspr + FullEnrich) enrichira ensuite les emails.
     if PIPEDRIVE_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
@@ -422,15 +558,15 @@ async def enrich_one(request: Request):
                                     print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} contacts récupérés")
                             except Exception as e2:
                                 print(f"[PIPEDRIVE ORG CONTACTS ERROR] {e2}")
-                            # On garde et on continue le pipeline (Pappers + Claude)
                             pipedrive_org_contacts = contacts_pipe
                             print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} Pipedrive — on continue avec Pappers + Claude pour compléter")
-                            break  # sortir de la boucle for item, pas du try
+                            break
         except Exception as e:
             print(f"[PIPEDRIVE ORG ERROR] {e}")
 
     pappers_contacts = []
     pappers_data = None
+
     # ÉTAPE 1 : Pappers
     if PAPPERS_KEY:
         if domaine_valide(domaine):
@@ -525,19 +661,14 @@ async def enrich_one(request: Request):
         else:
             print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
 
-    # ÉTAPE 2 : Claude + web_search
+    # ÉTAPE 2 : Claude + web_search (recherche CEO/CFO opérationnels)
     claude_contacts = []
     if ANTHROPIC_KEY:
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
-        exclusion = f"\nNe pas inclure : {', '.join(noms_deja)}" if noms_deja else ""
+        exclusion = f"\nDirigeants déjà connus à ne PAS inclure : {', '.join(noms_deja)}" if noms_deja else ""
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
-        prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
-Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}{exclusion}
-Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
-- Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
-- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
-Réponds UNIQUEMENT avec ce JSON :
-{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
+        user_prompt = f"""Société française à enrichir :
+Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN : "+siren if siren else ""}{contexte_fondateurs}{exclusion}"""
         delays = [10, 25, 45]
         for attempt in range(3):
             try:
@@ -547,10 +678,17 @@ Réponds UNIQUEMENT avec ce JSON :
                         "https://api.anthropic.com/v1/messages",
                         headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                         json={
-                            "model": "claude-sonnet-4-6",
+                            "model": MODEL_ENRICH,  # Sonnet — qualité requise
                             "max_tokens": 1000,
+                            "system": [
+                                {
+                                    "type": "text",
+                                    "text": SYSTEM_ENRICH,
+                                    "cache_control": {"type": "ephemeral"}
+                                }
+                            ],
                             "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
-                            "messages": [{"role": "user", "content": prompt}]
+                            "messages": [{"role": "user", "content": user_prompt}]
                         }
                     )
                     print(f"[CLAUDE] Status {r.status_code} pour {nom}")
@@ -558,7 +696,9 @@ Réponds UNIQUEMENT avec ce JSON :
                         await asyncio.sleep(delays[attempt])
                         continue
                     if r.status_code == 200:
-                        all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
+                        response_json = r.json()
+                        log_usage("ENRICH", nom, response_json)
+                        all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text")
                         m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
                         if m:
                             parsed = json.loads(m.group())
@@ -605,8 +745,6 @@ Réponds UNIQUEMENT avec ce JSON :
                 ct["phone"] = pd_data["phone"]
 
     # ─── FUSION ──────────────────────────────────────────────────
-    # On fusionne contacts Pipedrive (org) + Pappers + Claude en dédoublonnant
-    # par prénom+nom. Priorité aux contacts Pipedrive (mis en tête).
     existing_keys = {(c.get("prenom","").lower(), c.get("nom","").lower())
                      for c in pappers_contacts + claude_contacts
                      if c.get("prenom") or c.get("nom")}
@@ -617,10 +755,8 @@ Réponds UNIQUEMENT avec ce JSON :
             existing_keys.add(key)
 
     tous_contacts = pappers_contacts + claude_contacts
-
     if not tous_contacts:
         tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
-
     results = []
     for ct in tous_contacts:
         results.append({
@@ -641,6 +777,7 @@ Réponds UNIQUEMENT avec ce JSON :
     print(f"[DONE] {nom} → {len(results)} contacts | domaine={domaine}")
     return {"results": results}
 
+
 # -------------------------------------------------------
 # ROUTE CLAUDE ONLY (Phase 2 standalone)
 # -------------------------------------------------------
@@ -652,17 +789,15 @@ async def enrich_claude(request: Request):
     domaine    = nettoyer_domaine(data.get("domaine", ""))
     fondateurs = data.get("fondateurs", "")
     max_contacts = int(data.get("max_contacts", 3))
+
     if not ANTHROPIC_KEY:
         return {"contacts": []}
+
     contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
-    prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
-Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}
-Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
-- Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
-- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
-- Retourne AU MAXIMUM {max_contacts} contact(s)
-Réponds UNIQUEMENT avec ce JSON :
-{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
+    user_prompt = f"""Société française à enrichir :
+Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN : "+siren if siren else ""}{contexte_fondateurs}
+Retourne au maximum {max_contacts} contact(s)."""
+
     delays = [10, 25, 45]
     for attempt in range(3):
         try:
@@ -672,10 +807,17 @@ Réponds UNIQUEMENT avec ce JSON :
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
-                        "model": "claude-sonnet-4-6",
+                        "model": MODEL_ENRICH,  # Sonnet — qualité requise
                         "max_tokens": 1000,
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": SYSTEM_ENRICH,
+                                "cache_control": {"type": "ephemeral"}
+                            }
+                        ],
                         "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
-                        "messages": [{"role": "user", "content": prompt}]
+                        "messages": [{"role": "user", "content": user_prompt}]
                     }
                 )
                 print(f"[CLAUDE PHASE2] Status {r.status_code} pour {nom}")
@@ -683,7 +825,9 @@ Réponds UNIQUEMENT avec ce JSON :
                     await asyncio.sleep(delays[attempt])
                     continue
                 if r.status_code == 200:
-                    all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
+                    response_json = r.json()
+                    log_usage("ENRICH-P2", nom, response_json)
+                    all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text")
                     m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
                     if m:
                         parsed = json.loads(m.group())
@@ -706,6 +850,7 @@ Réponds UNIQUEMENT avec ce JSON :
                 await asyncio.sleep(delays[attempt])
     return {"contacts": []}
 
+
 # -------------------------------------------------------
 # ROUTE PIPEDRIVE CHECK standalone
 # -------------------------------------------------------
@@ -716,6 +861,7 @@ async def check_pipedrive_route(request: Request):
     nom    = data.get("nom","")
     result = await check_pipedrive(prenom, nom)
     return {"email": result.get("email",""), "phone": result.get("phone","")}
+
 
 # -------------------------------------------------------
 # ROUTE PASSE 2 : Kaspr + LinkedIn + Fullenrich batch
@@ -761,6 +907,7 @@ async def enrich_emails(request: Request):
                     ct["source_kaspr"] = True
                     emails_result[idx] = {"email": email_kaspr, "linkedin": linkedin_url, "source": "+Kaspr"}
                     print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
+
     domaines_corriges = {}
     for ct in contacts:
         if not domaine_valide(ct.get("domaine","")):
@@ -771,6 +918,7 @@ async def enrich_emails(request: Request):
                 domaines_corriges[societe] = await corriger_domaine(siren, societe)
             if domaines_corriges[societe]:
                 ct["domaine"] = domaines_corriges[societe]
+
     to_enrich = []
     phase = data.get("phase","fullenrich")
     for ct in contacts:
@@ -796,8 +944,10 @@ async def enrich_emails(request: Request):
             "enrich_fields": ["contact.emails", "contact.phones"],
             "custom": {"idx": str(ct.get("idx",0))}
         })
+
     if not to_enrich:
         return {"emails": emails_result}
+
     print(f"[FULLENRICH BATCH] {len(to_enrich)} contacts envoyés")
     try:
         async with httpx.AsyncClient(timeout=30) as c:
@@ -860,6 +1010,7 @@ async def enrich_emails(request: Request):
     except Exception as e:
         print(f"[FULLENRICH EXCEPTION] {e}")
         return {"emails": emails_result}
+
 
 # -------------------------------------------------------
 # HELPER : Génère un Excel mis en forme en mémoire
@@ -941,6 +1092,7 @@ def generer_excel(rows: list) -> bytes:
     wb.save(buf)
     return buf.getvalue()
 
+
 # -------------------------------------------------------
 # ROUTE EXPORT EXCEL
 # -------------------------------------------------------
@@ -956,6 +1108,7 @@ async def export_excel(request: Request):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=enrichissement_dirigeants.xlsx"}
     )
+
 
 # -------------------------------------------------------
 # ROUTE ENVOI EMAIL CSV
