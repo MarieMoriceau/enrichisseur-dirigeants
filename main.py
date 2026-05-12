@@ -356,6 +356,7 @@ async def get_template():
     )
 
 
+@app.get("/health")
 async def health():
     return {
         "ok": True,
