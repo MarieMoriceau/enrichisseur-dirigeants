@@ -370,6 +370,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
 @app.post("/enrich_one")
 async def enrich_one(request: Request):
     data = await request.json()
+    pipedrive_org_contacts = []  # rempli plus bas si l'org est trouvée dans Pipedrive
     nom            = data.get("nom", "")
     siren          = re.sub(r'\D', '', data.get("siren", ""))[:9]  # nettoie "331191825-00099" → "331191825"
     domaine        = nettoyer_domaine(data.get("domaine", ""))
@@ -465,9 +466,12 @@ async def enrich_one(request: Request):
                                     "source": ct["source"],
                                     "dans_pipedrive": ct["dans_pipedrive"]
                                 })
-                            sans_email = len([c for c in contacts_pipe if not c["email"]])
-                            print(f"[PIPEDRIVE ORG] {len(results)} contacts ({sans_email} sans email → seront enrichis par Kaspr/Fullenrich)")
-                            return {"results": results}
+                            # NOUVEAU : on garde les contacts Pipedrive mais on continue
+            # avec Pappers + Claude pour récupérer les dirigeants manquants.
+            # La Passe 2 (Kaspr + FullEnrich) enrichira ensuite les emails.
+            pipedrive_org_contacts = contacts_pipe
+            print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} contacts Pipedrive trouvés, on continue avec Pappers + Claude pour compléter")
+            break  # sort de la boucle for item in items, on continue le pipeline
         except Exception as e:
             print(f"[PIPEDRIVE ORG ERROR] {e}")
 
@@ -670,6 +674,15 @@ Réponds UNIQUEMENT avec ce JSON :
 
     # ÉTAPE 4 : Kaspr + LinkedIn → géré en batch dans /enrich_emails après la Passe 1
     # (évite la surcharge Claude pendant la Passe 1)
+
+    # Fusionner les contacts Pipedrive en tête (priorité), dédup par prénom+nom
+    existing = {(c.get("prenom","").lower(), c.get("nom","").lower())
+                for c in pappers_contacts + claude_contacts}
+    for ct in pipedrive_org_contacts:
+        key = (ct.get("prenom","").lower(), ct.get("nom","").lower())
+        if key not in existing and (ct.get("prenom") or ct.get("nom")):
+            pappers_contacts.insert(0, ct)
+    tous_contacts = pappers_contacts + claude_contacts
 
     if not tous_contacts:
         tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
