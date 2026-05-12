@@ -1,5 +1,6 @@
-import os, json, asyncio, httpx, re, smtplib, csv, io
+import os, json, asyncio, httpx, re, smtplib, csv, io, sqlite3, time
 from io import BytesIO
+from pathlib import Path
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -131,6 +132,80 @@ Output : mirakl.com
 
 Input : Société française inconnue
 Output : """
+
+
+# ────────────────────────────────────────────────────────────────────
+# CACHE DISQUE PAR SIREN — sqlite, zéro dépendance externe
+# Persiste les résultats Claude+web 60 jours pour éviter de re-payer
+# une recherche déjà faite sur la même société.
+# Sur Render : attacher un Render Disk monté sur /var/data (1 $/mois)
+# Sinon : fallback /tmp (perdu au redéploiement, OK pour test local)
+# ────────────────────────────────────────────────────────────────────
+CACHE_DIR = "/var/data" if os.path.isdir("/var/data") else "/tmp"
+Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+CACHE_DB = os.path.join(CACHE_DIR, "enrich_cache.db")
+CACHE_TTL_DAYS = 60
+
+def _init_cache():
+    with sqlite3.connect(CACHE_DB) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS claude_cache (
+            siren TEXT PRIMARY KEY,
+            contacts_json TEXT NOT NULL,
+            cached_at INTEGER NOT NULL
+        )""")
+        conn.commit()
+_init_cache()
+print(f"[CACHE] Init OK → {CACHE_DB}")
+
+
+def _normalize_siren(siren) -> str:
+    return re.sub(r'\D', '', str(siren or ''))[:9]
+
+
+def cache_get(siren: str):
+    """Renvoie la liste de contacts en cache si fraîche (< TTL), sinon None."""
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9:
+        return None
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            row = conn.execute(
+                "SELECT contacts_json, cached_at FROM claude_cache WHERE siren = ?",
+                (siren,)
+            ).fetchone()
+            if row and (time.time() - row[1]) < CACHE_TTL_DAYS * 86400:
+                return json.loads(row[0])
+    except Exception as e:
+        print(f"[CACHE GET ERROR] {siren}: {e}")
+    return None
+
+
+def cache_set(siren: str, contacts: list) -> None:
+    """Sauve les contacts en cache pour cette société."""
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9 or not contacts:
+        return
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO claude_cache (siren, contacts_json, cached_at) VALUES (?, ?, ?)",
+                (siren, json.dumps(contacts, ensure_ascii=False), int(time.time()))
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[CACHE SET ERROR] {siren}: {e}")
+
+
+def cache_stats() -> dict:
+    """Stats utiles pour suivi."""
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            total = conn.execute("SELECT COUNT(*) FROM claude_cache").fetchone()[0]
+            cutoff = int(time.time()) - CACHE_TTL_DAYS * 86400
+            valid = conn.execute("SELECT COUNT(*) FROM claude_cache WHERE cached_at >= ?", (cutoff,)).fetchone()[0]
+        return {"total_societes": total, "valides_dans_ttl": valid, "ttl_jours": CACHE_TTL_DAYS}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def log_usage(label: str, societe: str, response_json: dict) -> None:
@@ -289,7 +364,30 @@ async def health():
         "fullenrich_key": bool(FULLENRICH_KEY),
         "pipedrive_key": bool(PIPEDRIVE_KEY),
         "kaspr_key": bool(KASPR_KEY),
+        "cache": cache_stats(),
     }
+
+
+@app.get("/cache/stats")
+async def cache_stats_route():
+    """Affiche le nombre de sociétés en cache (utile pour suivre l'effet de l'optim)."""
+    return cache_stats()
+
+
+@app.post("/cache/clear")
+async def cache_clear_route(request: Request):
+    """Vide le cache. À utiliser uniquement si tu veux forcer un re-scan complet.
+    Pour éviter les accidents : exige un body JSON {\"confirm\": \"oui\"}."""
+    data = await request.json()
+    if data.get("confirm") != "oui":
+        return {"ok": False, "error": "Ajoute {\"confirm\": \"oui\"} dans le body pour confirmer"}
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            conn.execute("DELETE FROM claude_cache")
+            conn.commit()
+        return {"ok": True, "message": "Cache vidé"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 async def check_pipedrive(prenom: str, nom: str) -> dict:
@@ -662,8 +760,27 @@ async def enrich_one(request: Request):
             print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
 
     # ÉTAPE 2 : Claude + web_search (recherche CEO/CFO opérationnels)
+    # Règle métier : on saute Claude+web si :
+    #   1) la société est déjà dans Pipedrive (contacts récupérés ci-dessus)
+    #   2) on a déjà un résultat en cache pour cette société (SIREN, TTL 60j)
     claude_contacts = []
-    if ANTHROPIC_KEY:
+    skip_claude_web = False
+    skip_reason = ""
+
+    if pipedrive_org_contacts:
+        skip_claude_web = True
+        skip_reason = f"déjà dans Pipedrive ({len(pipedrive_org_contacts)} contacts)"
+        print(f"[SKIP CLAUDE+WEB] {nom} — {skip_reason}")
+
+    if not skip_claude_web:
+        cached = cache_get(siren)
+        if cached is not None:
+            claude_contacts = cached
+            skip_claude_web = True
+            skip_reason = f"cache hit SIREN {siren}"
+            print(f"[CACHE HIT] {nom} → {len(cached)} contacts (économie d'1 appel Claude+web)")
+
+    if not skip_claude_web and ANTHROPIC_KEY:
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
         exclusion = f"\nDirigeants déjà connus à ne PAS inclure : {', '.join(noms_deja)}" if noms_deja else ""
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
@@ -712,6 +829,10 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                                     ct["_skip"] = True
                             claude_contacts = [ct for ct in parsed.get("contacts",[]) if not ct.get("_skip")]
                             print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
+                            # Mettre en cache pour 60 jours (évite de re-payer si scan futur sur la même société)
+                            if siren and claude_contacts:
+                                cache_set(siren, claude_contacts)
+                                print(f"[CACHE SET] {nom} (SIREN {siren}) → {len(claude_contacts)} contacts mis en cache")
                         break
                     else:
                         print(f"[CLAUDE ERROR DETAIL] {r.status_code}: {r.text[:300]}")
@@ -793,6 +914,12 @@ async def enrich_claude(request: Request):
     if not ANTHROPIC_KEY:
         return {"contacts": []}
 
+    # Vérifier le cache avant de payer un appel
+    cached = cache_get(siren)
+    if cached is not None:
+        print(f"[CACHE HIT P2] {nom} (SIREN {siren}) → {len(cached)} contacts depuis cache")
+        return {"contacts": cached[:max_contacts]}
+
     contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
     user_prompt = f"""Société française à enrichir :
 Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN : "+siren if siren else ""}{contexte_fondateurs}
@@ -840,6 +967,10 @@ Retourne au maximum {max_contacts} contact(s)."""
                             if not est_ancien_dirigeant(ct.get("titre","")) and not est_titre_exclu(ct.get("titre","")):
                                 contacts.append(ct)
                         print(f"[CLAUDE PHASE2 OK] {len(contacts)} contacts pour {nom}")
+                        # Mettre en cache pour 60 jours
+                        if siren and contacts:
+                            cache_set(siren, contacts)
+                            print(f"[CACHE SET P2] {nom} (SIREN {siren}) → {len(contacts)} contacts mis en cache")
                         return {"contacts": contacts}
                 else:
                     print(f"[CLAUDE PHASE2 ERROR] {r.status_code}: {r.text[:200]}")
