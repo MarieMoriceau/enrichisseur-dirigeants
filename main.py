@@ -25,7 +25,6 @@ ANCIENS_KEYWORDS = [
     "ancien", "ancienne", "ex-", "ex ", "démissionnaire",
     "jusqu'au", "jusqu au", "sortant"
 ]
-
 TITRES_EXCLUS = [
     "commissaire aux comptes", "commissaire", "conseil de surveillance",
     "membre du conseil", "membre du directoire observateur",
@@ -37,9 +36,7 @@ def nettoyer_prenom(prenom: str) -> str:
     """Supprime civilités et prénoms composés Pappers : 'M Denis' → 'Denis', 'Florian, Paul' → 'Florian'."""
     if not prenom:
         return ""
-    # Prénoms composés Pappers : "Florian, Paul, Robert" → "Florian"
     prenom = prenom.split(",")[0].strip()
-    # Civilités collées : "M Denis" → "Denis", "Mme Caroline" → "Caroline"
     import re
     prenom = re.sub(r'^(M\.?\s+|Mme\.?\s+|Mr\.?\s+|Dr\.?\s+|Me\.?\s+)', '', prenom, flags=re.IGNORECASE).strip()
     return prenom
@@ -66,7 +63,6 @@ def nettoyer_domaine(url: str) -> str:
 def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
     import unicodedata
     def normaliser(s):
-        # Enlever accents, tirets, points, espaces multiples
         s = s.lower().strip()
         s = unicodedata.normalize("NFD", s)
         s = "".join(c for c in s if unicodedata.category(c) != "Mn")
@@ -75,10 +71,8 @@ def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
         return s
     a = normaliser(nom_csv)
     b = normaliser(nom_pappers)
-    # Correspondance exacte après normalisation
     if a == b:
         return True
-    # Au moins 1 mot significatif en commun
     mots_a = set(w for w in a.split() if len(w) > 2)
     mots_b = set(w for w in b.split() if len(w) > 2)
     if not mots_a:
@@ -95,11 +89,9 @@ async def get_template():
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
-
     wb = Workbook()
     ws = wb.active
     ws.title = "Sociétés à enrichir"
-
     colonnes = [
         ("nom",            True,  "Nom commercial de la société",        "Grenke Location"),
         ("siren",          False, "SIREN ou SIRET (9 ou 14 chiffres)",   "428616734"),
@@ -113,10 +105,8 @@ async def get_template():
         ("ville",          False, "Ville du siège",                      "Paris"),
         ("adresse",        False, "Adresse complète du siège",           "9 Rue de Lisbonne 75008 Paris"),
     ]
-
     thin   = Side(style='thin', color="e2e8f0")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
     ws.merge_cells(f'A1:{get_column_letter(len(colonnes))}1')
     c = ws['A1']
     c.value = "📋 Template Enrichisseur Dirigeants — 1 ligne par société"
@@ -124,7 +114,6 @@ async def get_template():
     c.fill  = PatternFill('solid', start_color="1e3a5f")
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 30
-
     ws.merge_cells(f'A2:{get_column_letter(len(colonnes))}2')
     c = ws['A2']
     c.value = "🟢 Colonne obligatoire    🟣 Colonne optionnelle — plus vous remplissez, meilleurs sont les résultats"
@@ -132,7 +121,6 @@ async def get_template():
     c.fill  = PatternFill('solid', start_color="2563eb")
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[2].height = 20
-
     for col_idx, (nom, obligatoire, desc, exemple) in enumerate(colonnes, 1):
         c = ws.cell(row=3, column=col_idx, value=nom)
         c.font  = Font(name='Arial', bold=True, size=10, color="FFFFFF")
@@ -140,7 +128,6 @@ async def get_template():
         c.alignment = Alignment(horizontal='center', vertical='center')
         c.border = border
     ws.row_dimensions[3].height = 25
-
     for col_idx, (nom, obligatoire, desc, exemple) in enumerate(colonnes, 1):
         c = ws.cell(row=4, column=col_idx, value=desc)
         c.font  = Font(name='Arial', italic=True, size=9, color="475569")
@@ -148,7 +135,6 @@ async def get_template():
         c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         c.border = border
     ws.row_dimensions[4].height = 35
-
     for col_idx, (nom, obligatoire, desc, exemple) in enumerate(colonnes, 1):
         c = ws.cell(row=5, column=col_idx, value=exemple)
         c.font  = Font(name='Arial', size=9, color="94a3b8")
@@ -156,7 +142,6 @@ async def get_template():
         c.alignment = Alignment(horizontal='center', vertical='center')
         c.border = border
     ws.row_dimensions[5].height = 20
-
     for row in range(6, 26):
         for col_idx in range(1, len(colonnes)+1):
             c = ws.cell(row=row, column=col_idx, value="")
@@ -164,12 +149,10 @@ async def get_template():
             c.border = border
             c.font = Font(name='Arial', size=10)
         ws.row_dimensions[row].height = 18
-
     largeurs = [22, 14, 20, 12, 28, 16, 18, 18, 12, 14, 32]
     for i, w in enumerate(largeurs, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = 'A6'
-
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -178,6 +161,7 @@ async def get_template():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=template_enrichisseur.xlsx"}
     )
+
 async def health():
     return {
         "ok": True,
@@ -204,12 +188,10 @@ async def check_pipedrive(prenom: str, nom: str) -> dict:
                     person = item.get("item", {})
                     person_name = person.get("name", "").lower()
                     if nom.lower() in person_name or prenom.lower() in person_name:
-                        # Email
                         email = ""
                         emails = person.get("emails", [])
                         if emails:
                             email = emails[0] if isinstance(emails[0], str) else emails[0].get("value", "")
-                        # Téléphone — priorité mobile
                         phone = ""
                         phones = person.get("phones", [])
                         for ph in phones:
@@ -232,7 +214,6 @@ async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
     """Cherche l'URL LinkedIn du dirigeant via Claude+web (max_uses:1)."""
     if not ANTHROPIC_KEY:
         return ""
-    # Nettoyer les prénoms composés Pappers ex: "Emmanuel, Roger" → "Emmanuel"
     prenom = nettoyer_prenom(prenom)
     if not prenom or not nom:
         return ""
@@ -241,7 +222,6 @@ async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
 Prénom: {prenom}
 Nom: {nom}
 Société: {societe}
-
 Réponds UNIQUEMENT avec l'URL complète (ex: https://www.linkedin.com/in/prenom-nom-xxxxx/)
 Si tu n'es pas certain à 100%, réponds: NON"""
         async with httpx.AsyncClient(timeout=30) as c:
@@ -268,7 +248,6 @@ Si tu n'es pas certain à 100%, réponds: NON"""
     print(f"[LINKEDIN] ❌ Pas trouvé pour {prenom} {nom}")
     return ""
 
-
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
     """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement (illimité)."""
     if not KASPR_KEY or not linkedin_url:
@@ -286,7 +265,7 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
                 json={
                     "name": f"{prenom} {nom}",
                     "id": linkedin_url,
-                    "dataToGet": ["workEmail"]  # B2B uniquement = crédits illimités
+                    "dataToGet": ["workEmail"]
                 }
             )
             print(f"[KASPR] Status {r.status_code} pour {prenom} {nom}")
@@ -310,13 +289,11 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
         print(f"[KASPR ERROR] {prenom} {nom}: {e}")
     return ""
 
-
 async def corriger_domaine(siren: str, societe: str) -> str:
     """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude."""
     if PAPPERS_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
-                # Tentative 1 : par SIREN
                 if siren:
                     r = await c.get("https://api.pappers.fr/v2/entreprise",
                         params={"api_token": PAPPERS_KEY, "siren": siren})
@@ -326,7 +303,6 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                         if domaine_valide(domaine):
                             print(f"[DOMAINE FIX] Pappers SIREN → {domaine} pour {societe}")
                             return domaine
-                # Tentative 2 : par nom si SIREN ne donne pas de domaine
                 r2 = await c.get("https://api.pappers.fr/v2/recherche",
                     params={"api_token": PAPPERS_KEY, "q": societe, "par_page": 1})
                 if r2.status_code == 200:
@@ -338,7 +314,6 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                             return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Pappers] {e}")
-
     if ANTHROPIC_KEY:
         try:
             prompt = f"""Quel est le nom de domaine du site web officiel de cette société française : {societe} ?
@@ -372,20 +347,22 @@ async def enrich_one(request: Request):
     data = await request.json()
     pipedrive_org_contacts = []  # rempli plus bas si l'org est trouvée dans Pipedrive
     nom            = data.get("nom", "")
-    siren          = re.sub(r'\D', '', data.get("siren", ""))[:9]  # nettoie "331191825-00099" → "331191825"
+    siren          = re.sub(r'\D', '', data.get("siren", ""))[:9]
     domaine        = nettoyer_domaine(data.get("domaine", ""))
     org_id         = data.get("org_id", "")
     fondateurs     = data.get("fondateurs", "")
     contact_prenom = data.get("contact_prenom", "")
     contact_nom    = data.get("contact_nom", "")
     contact_titre  = data.get("contact_titre", "")
-    contact_email  = data.get("contact_email", "")  # email déjà connu depuis le fichier source
+    contact_email  = data.get("contact_email", "")
     code_postal    = data.get("code_postal", "")
     ville          = data.get("ville", "")
-
     print(f"[START] {nom} | domaine={domaine} | siren={siren}")
 
-    # ── CHECK PIPEDRIVE ORGANISATION (avant tout le process) ──────
+    # ── CHECK PIPEDRIVE ORGANISATION ──
+    # NOUVEAU : on garde les contacts Pipedrive (s'ils existent) mais on
+    # continue avec Pappers + Claude pour récupérer les dirigeants manquants.
+    # La Passe 2 (Kaspr + FullEnrich) enrichira ensuite les emails.
     if PIPEDRIVE_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
@@ -400,7 +377,6 @@ async def enrich_one(request: Request):
                         org_id_pipe = item.get("item", {}).get("id", "")
                         if noms_similaires(nom, org_name):
                             print(f"[PIPEDRIVE ORG] ✅ '{nom}' dans Pipedrive → récupération contacts")
-                            # Récupérer tous les contacts de cette organisation
                             contacts_pipe = []
                             try:
                                 r2 = await c.get(
@@ -420,7 +396,6 @@ async def enrich_one(request: Request):
                                             if val and "@" in val:
                                                 email_p = val
                                                 break
-                                        # Téléphone Pipedrive — priorité mobile
                                         phones_p = p.get("phone", []) or []
                                         phone_p  = ""
                                         for ph in phones_p:
@@ -439,9 +414,6 @@ async def enrich_one(request: Request):
                                             "prenom": prenom_p, "nom": nom_p,
                                             "titre": titre_p, "email": email_p,
                                             "phone": phone_p,
-                                            # Sans email → faible → Kaspr+Fullenrich enrichira
-                                            # Avec email mais sans phone → faible aussi → Fullenrich cherchera le tel
-                                            # Avec email ET phone → haute → skip
                                             "confiance": "haute" if (email_p and phone_p) else "faible",
                                             "source": "Pipedrive",
                                             "dans_pipedrive": "oui",
@@ -450,37 +422,17 @@ async def enrich_one(request: Request):
                                     print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} contacts récupérés")
                             except Exception as e2:
                                 print(f"[PIPEDRIVE ORG CONTACTS ERROR] {e2}")
-
-                            if not contacts_pipe:
-                                contacts_pipe = [{"prenom":"","nom":"","titre":"","email":"",
-                                                  "confiance":"","source":"Pipedrive","dans_pipedrive":"oui"}]
-                            results = []
-                            for ct in contacts_pipe:
-                                results.append({
-                                    "org_id": org_id, "societe": nom, "siren": siren,
-                                    "domaine": domaine,
-                                    "prenom": ct["prenom"], "nom_dg": ct["nom"],
-                                    "titre": ct["titre"], "email": ct["email"],
-                                    "phone": ct.get("phone",""),
-                                    "linkedin": "", "confiance": ct["confiance"],
-                                    "source": ct["source"],
-                                    "dans_pipedrive": ct["dans_pipedrive"]
-                                })
-                            # NOUVEAU : on garde les contacts Pipedrive mais on continue
-            # avec Pappers + Claude pour récupérer les dirigeants manquants.
-            # La Passe 2 (Kaspr + FullEnrich) enrichira ensuite les emails.
-            pipedrive_org_contacts = contacts_pipe
-            print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} contacts Pipedrive trouvés, on continue avec Pappers + Claude pour compléter")
-            break  # sort de la boucle for item in items, on continue le pipeline
+                            # On garde et on continue le pipeline (Pappers + Claude)
+                            pipedrive_org_contacts = contacts_pipe
+                            print(f"[PIPEDRIVE ORG] {len(contacts_pipe)} Pipedrive — on continue avec Pappers + Claude pour compléter")
+                            break  # sortir de la boucle for item, pas du try
         except Exception as e:
             print(f"[PIPEDRIVE ORG ERROR] {e}")
 
     pappers_contacts = []
     pappers_data = None
-
     # ÉTAPE 1 : Pappers
     if PAPPERS_KEY:
-        # Tentative 1 : par domaine
         if domaine_valide(domaine):
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -491,8 +443,6 @@ async def enrich_one(request: Request):
                         print(f"[PAPPERS] Trouvé par domaine")
             except Exception as e:
                 print(f"[PAPPERS ERROR domaine] {e}")
-
-        # Tentative 2 : par nom
         if not pappers_data and not siren:
             try:
                 params = {"api_token": PAPPERS_KEY, "q": nom, "par_page": 1}
@@ -507,8 +457,6 @@ async def enrich_one(request: Request):
                             print(f"[PAPPERS] SIREN trouvé par nom : {siren}")
             except Exception as e:
                 print(f"[PAPPERS ERROR nom] {e}")
-
-        # Tentative 3 : par SIREN
         if not pappers_data and siren:
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -518,12 +466,9 @@ async def enrich_one(request: Request):
                         pappers_data = r.json()
             except Exception as e:
                 print(f"[PAPPERS ERROR siren] {e}")
-
         if pappers_data:
             if not siren:
                 siren = pappers_data.get("siren", "")
-
-            # Récupérer le domaine depuis Pappers si manquant
             if not domaine_valide(domaine):
                 domaine_pappers = nettoyer_domaine(
                     pappers_data.get("domaine_url","") or pappers_data.get("site_web","")
@@ -531,21 +476,16 @@ async def enrich_one(request: Request):
                 if domaine_valide(domaine_pappers):
                     domaine = domaine_pappers
                     print(f"[PAPPERS] Domaine récupéré : {domaine}")
-
-            # Vérifier que c'est bien la bonne société
             nom_pappers = pappers_data.get("nom_entreprise","") or pappers_data.get("denomination","")
             if nom_pappers and not noms_similaires(nom, nom_pappers):
                 print(f"[PAPPERS] ⚠️ Mauvaise société : '{nom_pappers}' pour '{nom}' — ignoré")
                 pappers_data = None
                 siren = ""
                 domaine = nettoyer_domaine(data.get("domaine",""))
-
         if pappers_data:
-            # Société radiée ?
             if pappers_data.get("entreprise_cessee") or pappers_data.get("statut_rcs","").lower() == "radié" or pappers_data.get("statut_consolide","").lower() == "radié":
                 print(f"[RADIÉE] {nom} — arrêt")
                 return {"results": [{"org_id":org_id,"societe":nom,"siren":siren,"domaine":domaine,"prenom":"","nom_dg":"","titre":"⚠️ Société radiée","email":"","confiance":"","source":"Pappers"}]}
-
             for rep in pappers_data.get("representants", []):
                 if rep.get("personne_morale"):
                     continue
@@ -564,8 +504,7 @@ async def enrich_one(request: Request):
                 })
             print(f"[PAPPERS] {len(pappers_contacts)} représentants actifs | domaine={domaine}")
 
-    # Pré-remplir le contact connu depuis le fichier source (ex: fichier occupants)
-    # Dédup : on ne l'ajoute que s'il n'est pas déjà dans pappers_contacts
+    # Pré-remplir le contact connu depuis le fichier source
     if contact_prenom and contact_nom:
         contact_prenom_clean = nettoyer_prenom(contact_prenom)
         deja_present = any(
@@ -578,7 +517,7 @@ async def enrich_one(request: Request):
                 "prenom": contact_prenom_clean,
                 "nom":    contact_nom,
                 "titre":  contact_titre or "Dirigeant",
-                "email":  contact_email,  # email pré-rempli si déjà connu
+                "email":  contact_email,
                 "confiance": "haute" if contact_email else "",
                 "source": "Fichier source"
             })
@@ -591,19 +530,14 @@ async def enrich_one(request: Request):
     if ANTHROPIC_KEY:
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
         exclusion = f"\nNe pas inclure : {', '.join(noms_deja)}" if noms_deja else ""
-        # Ajouter les fondateurs connus du CSV comme contexte
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
-
         prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
 Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}{exclusion}
-
 Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
 - Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
 - Emails professionnels uniquement (pas gmail/hotmail/yahoo)
-
 Réponds UNIQUEMENT avec ce JSON :
 {{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
-
         delays = [10, 25, 45]
         for attempt in range(3):
             try:
@@ -647,20 +581,18 @@ Réponds UNIQUEMENT avec ce JSON :
                 if attempt < 2:
                     await asyncio.sleep(delays[attempt])
 
-    tous_contacts = pappers_contacts + claude_contacts
-
-    # Si domaine toujours manquant, on tente de le corriger maintenant
+    # Domaine fallback si toujours manquant
     if not domaine_valide(domaine) and siren:
         domaine = await corriger_domaine(siren, nom)
 
-    # Mettre à jour le domaine sur tous les contacts
-    for ct in tous_contacts:
+    # Propager le domaine sur tous les contacts
+    for ct in pappers_contacts + claude_contacts + pipedrive_org_contacts:
         if not ct.get("domaine"):
             ct["domaine"] = domaine
 
-    # ÉTAPE 3 : Pipedrive check
+    # ÉTAPE 3 : Pipedrive check par personne (pour les contacts qui n'ont pas d'email)
     if PIPEDRIVE_KEY:
-        for ct in tous_contacts:
+        for ct in pappers_contacts + claude_contacts:
             if ct.get("email"):
                 continue
             pd_data = await check_pipedrive(ct.get("prenom",""), ct.get("nom",""))
@@ -672,16 +604,18 @@ Réponds UNIQUEMENT avec ce JSON :
             if pd_data.get("phone"):
                 ct["phone"] = pd_data["phone"]
 
-    # ÉTAPE 4 : Kaspr + LinkedIn → géré en batch dans /enrich_emails après la Passe 1
-    # (évite la surcharge Claude pendant la Passe 1)
-
-    # Fusionner les contacts Pipedrive en tête (priorité), dédup par prénom+nom
-    existing = {(c.get("prenom","").lower(), c.get("nom","").lower())
-                for c in pappers_contacts + claude_contacts}
+    # ─── FUSION ──────────────────────────────────────────────────
+    # On fusionne contacts Pipedrive (org) + Pappers + Claude en dédoublonnant
+    # par prénom+nom. Priorité aux contacts Pipedrive (mis en tête).
+    existing_keys = {(c.get("prenom","").lower(), c.get("nom","").lower())
+                     for c in pappers_contacts + claude_contacts
+                     if c.get("prenom") or c.get("nom")}
     for ct in pipedrive_org_contacts:
         key = (ct.get("prenom","").lower(), ct.get("nom","").lower())
-        if key not in existing and (ct.get("prenom") or ct.get("nom")):
+        if key not in existing_keys and (ct.get("prenom") or ct.get("nom")):
             pappers_contacts.insert(0, ct)
+            existing_keys.add(key)
+
     tous_contacts = pappers_contacts + claude_contacts
 
     if not tous_contacts:
@@ -704,10 +638,8 @@ Réponds UNIQUEMENT avec ce JSON :
             "source":         ct.get("source",""),
             "dans_pipedrive": ct.get("dans_pipedrive",""),
         })
-
     print(f"[DONE] {nom} → {len(results)} contacts | domaine={domaine}")
     return {"results": results}
-
 
 # -------------------------------------------------------
 # ROUTE CLAUDE ONLY (Phase 2 standalone)
@@ -720,22 +652,17 @@ async def enrich_claude(request: Request):
     domaine    = nettoyer_domaine(data.get("domaine", ""))
     fondateurs = data.get("fondateurs", "")
     max_contacts = int(data.get("max_contacts", 3))
-
     if not ANTHROPIC_KEY:
         return {"contacts": []}
-
     contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
     prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
 Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}
-
 Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
 - Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
 - Emails professionnels uniquement (pas gmail/hotmail/yahoo)
 - Retourne AU MAXIMUM {max_contacts} contact(s)
-
 Réponds UNIQUEMENT avec ce JSON :
 {{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
-
     delays = [10, 25, 45]
     for attempt in range(3):
         try:
@@ -797,24 +724,16 @@ async def check_pipedrive_route(request: Request):
 async def enrich_emails(request: Request):
     data = await request.json()
     contacts = data.get("contacts", [])
-
     if not contacts:
         return {"emails": {}}
-
     emails_result = {}
-
-    # -------------------------------------------------------
-    # KASPR : cherche LinkedIn puis email pour chaque contact
-    # Déduplication : on skip si un contact avec même nom a déjà un email
-    # -------------------------------------------------------
-    emails_par_nom = {}  # cache "prenom nom" → email déjà trouvé
+    emails_par_nom = {}
     if KASPR_KEY:
         for ct in contacts:
             email = ct.get("email","")
             if email and "*" not in email:
                 emails_par_nom[f"{ct.get('prenom','')} {ct.get('nom','')}".lower().strip()] = email
                 continue
-            # Vérifier doublon
             prenom_clean = nettoyer_prenom(ct.get("prenom",""))
             cle = f"{prenom_clean} {ct.get('nom','')}".lower().strip()
             if cle in emails_par_nom:
@@ -822,7 +741,6 @@ async def enrich_emails(request: Request):
                 emails_result[idx] = {"email": emails_par_nom[cle], "source": "+dedup"}
                 print(f"[DEDUP] {cle} → email déjà trouvé, skip Kaspr")
                 continue
-            # Nettoyer prénom composé Pappers ex: "Emmanuel, Roger" → "Emmanuel"
             prenom = nettoyer_prenom(ct.get("prenom",""))
             nom_ct = ct.get("nom","")
             societe_ct = ct.get("societe","")
@@ -832,7 +750,6 @@ async def enrich_emails(request: Request):
             print(f"[KASPR] Recherche LinkedIn pour {prenom} {nom_ct}")
             linkedin_url = await trouver_linkedin(prenom, nom_ct, societe_ct)
             if linkedin_url:
-                # Stocker LinkedIn même si Kaspr ne trouve pas d'email
                 if idx not in emails_result:
                     emails_result[idx] = {"email": "", "linkedin": linkedin_url, "source": ""}
                 else:
@@ -844,8 +761,6 @@ async def enrich_emails(request: Request):
                     ct["source_kaspr"] = True
                     emails_result[idx] = {"email": email_kaspr, "linkedin": linkedin_url, "source": "+Kaspr"}
                     print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
-
-    # Corriger les domaines invalides avant Fullenrich (1 seul appel par société)
     domaines_corriges = {}
     for ct in contacts:
         if not domaine_valide(ct.get("domaine","")):
@@ -856,17 +771,14 @@ async def enrich_emails(request: Request):
                 domaines_corriges[societe] = await corriger_domaine(siren, societe)
             if domaines_corriges[societe]:
                 ct["domaine"] = domaines_corriges[societe]
-
     to_enrich = []
     phase = data.get("phase","fullenrich")
     for ct in contacts:
         email = ct.get("email","")
         confiance = ct.get("confiance","")
         phone = ct.get("phone","")
-        # Skip si email ET téléphone déjà trouvés avec haute confiance
         if email and confiance not in ("faible","") and phone:
             continue
-        # Pour Kaspr : skip si email haute confiance (Kaspr ne fait que LinkedIn→email)
         if phase == "kaspr" and email and confiance not in ("faible",""):
             continue
         if not ct.get("prenom") or not ct.get("nom"):
@@ -884,12 +796,9 @@ async def enrich_emails(request: Request):
             "enrich_fields": ["contact.emails", "contact.phones"],
             "custom": {"idx": str(ct.get("idx",0))}
         })
-
     if not to_enrich:
-        return {"emails": {}}
-
+        return {"emails": emails_result}
     print(f"[FULLENRICH BATCH] {len(to_enrich)} contacts envoyés")
-
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
@@ -900,14 +809,11 @@ async def enrich_emails(request: Request):
             print(f"[FULLENRICH] Status lancement : {r.status_code}")
             if r.status_code not in (200, 201):
                 print(f"[FULLENRICH ERROR] {r.text[:200]}")
-                return {"emails": {}}
-
+                return {"emails": emails_result}
             enrichment_id = r.json().get("enrichment_id") or r.json().get("id")
             if not enrichment_id:
-                return {"emails": {}}
-
+                return {"emails": emails_result}
             print(f"[FULLENRICH] enrichment_id={enrichment_id}")
-
             for attempt in range(36):
                 await asyncio.sleep(5)
                 r2 = await c.get(
@@ -919,7 +825,6 @@ async def enrich_emails(request: Request):
                 result = r2.json()
                 status = result.get("status","")
                 print(f"[FULLENRICH] Polling {attempt+1}/36 — status={status}")
-
                 if status == "FINISHED":
                     emails_par_idx = {}
                     for ct_result in result.get("datas",[]):
@@ -931,7 +836,6 @@ async def enrich_emails(request: Request):
                             if val and "@" in val:
                                 email_val = val
                                 break
-                        # Téléphone — Fullenrich retourne {"number": "+33 6 83 23 76 59", "region": "FR"}
                         phone_val = ""
                         phones = contact_data.get("phones",[])
                         for p in phones:
@@ -942,7 +846,6 @@ async def enrich_emails(request: Request):
                         if email_val or phone_val:
                             emails_par_idx[idx] = {"email": email_val, "phone": phone_val}
                     print(f"[FULLENRICH] {len(emails_par_idx)} contacts enrichis")
-                    # Fusionner Kaspr + Fullenrich
                     for k, v in emails_par_idx.items():
                         if k not in emails_result:
                             emails_result[k] = {"email": v["email"], "phone": v["phone"], "source": "+Fullenrich"}
@@ -952,10 +855,8 @@ async def enrich_emails(request: Request):
                             if v["phone"] and not emails_result[k].get("phone"):
                                 emails_result[k]["phone"] = v["phone"]
                     return {"emails": emails_result}
-
             print(f"[FULLENRICH] Timeout 180s")
             return {"emails": emails_result}
-
     except Exception as e:
         print(f"[FULLENRICH EXCEPTION] {e}")
         return {"emails": emails_result}
@@ -967,17 +868,13 @@ def generer_excel(rows: list) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
-
     wb = Workbook()
     ws = wb.active
     ws.title = "Dirigeants enrichis"
-
     headers  = ['Organisation','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
     col_map  = ['societe','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
     thin     = Side(style='thin', color="e2e8f0")
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    # Titre
     ws.merge_cells('A1:I1')
     c = ws['A1']
     c.value = "Enrichissement Dirigeants"
@@ -985,8 +882,6 @@ def generer_excel(rows: list) -> bytes:
     c.fill  = PatternFill('solid', start_color="1e3a5f")
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 32
-
-    # Stats
     emails_count = len([r for r in rows if r.get('email')])
     ws.merge_cells('A2:I2')
     c = ws['A2']
@@ -995,8 +890,6 @@ def generer_excel(rows: list) -> bytes:
     c.fill  = PatternFill('solid', start_color="2563eb")
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[2].height = 22
-
-    # Headers
     for col_idx, h in enumerate(headers, 1):
         c = ws.cell(row=3, column=col_idx, value=h)
         c.font = Font(name='Arial', bold=True, size=10, color="FFFFFF")
@@ -1004,10 +897,7 @@ def generer_excel(rows: list) -> bytes:
         c.alignment = Alignment(horizontal='center', vertical='center')
         c.border = border
     ws.row_dimensions[3].height = 28
-
     src_colors = {'Pappers':'eff6ff','Claude':'f5f3ff','Pipedrive':'fef3c7','Kaspr':'e0f2fe','Fullenrich':'dcfce7'}
-
-    # Tri par organisation + couleurs alternées par orga
     rows = sorted(rows, key=lambda r: (r.get('societe','') or '').lower())
     org_list = []
     for r in rows:
@@ -1015,7 +905,6 @@ def generer_excel(rows: list) -> bytes:
         if s not in org_list:
             org_list.append(s)
     org_colors = {org: ("f0f7ff" if i % 2 == 0 else "FFFFFF") for i, org in enumerate(org_list)}
-
     for row_idx, row in enumerate(rows, 4):
         bg = org_colors.get(row.get('societe',''), "FFFFFF")
         ws.row_dimensions[row_idx].height = 18
@@ -1044,13 +933,10 @@ def generer_excel(rows: list) -> bytes:
                 c.font = Font(name='Arial', size=9, color="92400e", bold=True)
             else:
                 c.fill = PatternFill('solid', start_color=bg)
-
     for i, w in enumerate([22,14,18,28,32,16,14,20,12,22,28], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
-
     ws.freeze_panes = 'A4'
     ws.auto_filter.ref = f"A3:I{len(rows)+3}"
-
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -1081,49 +967,36 @@ async def send_csv(request: Request):
     emails_dest = [e.strip() for e in emails_raw if e and "@" in e]
     rows        = data.get("rows", [])
     filename    = data.get("filename", "enrichissement_dirigeants.xlsx")
-
     if not emails_dest or not rows:
         return {"ok": False, "error": "Email(s) ou données manquants"}
     if not SMTP_USER or not SMTP_PASS:
         return {"ok": False, "error": "SMTP non configuré"}
-
     try:
-        # Générer l'Excel en mémoire
         excel_content = generer_excel(rows)
-
-        # Construire le mail
         msg = MIMEMultipart()
         msg['From']    = SMTP_USER
         msg['To']      = ", ".join(emails_dest)
         msg['Subject'] = f"Enrichissement dirigeants — {len(rows)} contacts"
-
         emails_count = len([r for r in rows if r.get('email')])
         body = f"""Bonjour,
-
 Votre enrichissement est terminé.
 {len(rows)} contacts exportés dont {emails_count} emails trouvés.
-
 Fichier Excel en pièce jointe.
-
 Enrichisseur Dirigeants"""
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
-
-        # Pièce jointe Excel
+        # Pièce jointe Excel — MIME type officiel pour qu'Apple Mail
+        # reconnaisse le .xlsx (icône Excel + double-clic direct)
         part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         part.set_payload(excel_content)
         encoders.encode_base64(part)
         part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(part)
-
-        # Envoi SMTP
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(SMTP_USER, emails_dest, msg.as_string())
-
         print(f"[EMAIL] ✅ Excel envoyé à {', '.join(emails_dest)}")
         return {"ok": True}
-
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return {"ok": False, "error": str(e)}
