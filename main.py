@@ -143,8 +143,9 @@ Input : Société totalement inexistante → Output : """
 CACHE_DIR = "/var/data" if os.path.isdir("/var/data") else "/tmp"
 Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
 CACHE_DB = os.path.join(CACHE_DIR, "enrich_cache.db")
-CACHE_TTL_DAYS = 60       # contacts dirigeants : 60 jours
-DOMAINE_TTL_DAYS = 90     # domaines : 90 jours (changent quasi jamais)
+CACHE_TTL_DAYS = 60            # contacts dirigeants : 60 jours
+DOMAINE_TTL_DAYS = 90          # domaine trouvé : 90 jours (change quasi jamais)
+DOMAINE_EMPTY_TTL_DAYS = 1     # échec : seulement 1 jour (laisser une chance de re-tenter)
 
 def _init_cache():
     with sqlite3.connect(CACHE_DB) as conn:
@@ -220,7 +221,8 @@ def cache_stats() -> dict:
 
 
 def domaine_cache_get(siren: str):
-    """Renvoie le domaine en cache (peut être vide si on a déjà tenté sans succès)."""
+    """Renvoie le domaine en cache.
+    TTL = 90j si trouvé, 1j si vide (pour permettre de re-tenter rapidement)."""
     siren = _normalize_siren(siren)
     if not siren or len(siren) != 9:
         return None
@@ -230,8 +232,12 @@ def domaine_cache_get(siren: str):
                 "SELECT domaine, cached_at FROM domaine_cache WHERE siren = ?",
                 (siren,)
             ).fetchone()
-            if row and (time.time() - row[1]) < DOMAINE_TTL_DAYS * 86400:
-                return row[0]  # peut être chaîne vide
+            if row:
+                domaine, cached_at = row
+                age_seconds = time.time() - cached_at
+                ttl = DOMAINE_TTL_DAYS if domaine else DOMAINE_EMPTY_TTL_DAYS
+                if age_seconds < ttl * 86400:
+                    return domaine  # peut être chaîne vide
     except Exception as e:
         print(f"[DOMAINE CACHE GET ERROR] {siren}: {e}")
     return None
@@ -287,24 +293,24 @@ def _domaine_candidates(nom: str) -> list:
     return candidates
 
 
-async def _verifier_domaine_async(domaine: str, timeout: float = 4.0) -> bool:
-    """Vérifie que le domaine répond à du HTTPS (HEAD ou GET)."""
-    try:
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; EnrichBot/1.0)"}
-        ) as c:
-            try:
-                r = await c.head(f"https://{domaine}")
-                if r.status_code < 400:
-                    return True
-            except Exception:
-                pass
-            r = await c.get(f"https://{domaine}")
-            return r.status_code < 400
-    except Exception:
+async def _verifier_domaine_async(domaine: str, timeout: float = 5.0) -> bool:
+    """Vérifie qu'un domaine répond (HTTPS puis HTTP en fallback, HEAD puis GET)."""
+    if not domaine:
         return False
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; EnrichBot/1.0)"}
+    ) as c:
+        for scheme in ("https", "http"):  # Plein de PME françaises tournent encore en HTTP only
+            for method in ("HEAD", "GET"):
+                try:
+                    r = await c.request(method, f"{scheme}://{domaine}")
+                    if r.status_code < 400:
+                        return True
+                except Exception:
+                    continue
+    return False
 
 
 def _extraire_domaine_du_texte(texte: str) -> str:
@@ -500,7 +506,36 @@ async def cache_clear_route(request: Request):
         with sqlite3.connect(CACHE_DB) as conn:
             conn.execute("DELETE FROM claude_cache")
             conn.commit()
-        return {"ok": True, "message": "Cache vidé"}
+        return {"ok": True, "message": "Cache contacts vidé"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/cache/clear_empty_domaines")
+async def cache_clear_empty_domaines_route():
+    """Purge uniquement les domaines mis en cache comme vides (pour re-tenter les échecs).
+    Endpoint GET → utilisable directement depuis le navigateur."""
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            cur = conn.execute("DELETE FROM domaine_cache WHERE domaine = ''")
+            n = cur.rowcount
+            conn.commit()
+        return {"ok": True, "purges": n, "message": f"{n} domaines vides supprimés du cache"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/cache/clear_domaines")
+async def cache_clear_domaines_route(request: Request):
+    """Vide TOUT le cache domaine (trouvés + vides). À utiliser avec parcimonie."""
+    data = await request.json()
+    if data.get("confirm") != "oui":
+        return {"ok": False, "error": "Ajoute {\"confirm\": \"oui\"} dans le body pour confirmer"}
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            conn.execute("DELETE FROM domaine_cache")
+            conn.commit()
+        return {"ok": True, "message": "Cache domaines vidé"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
