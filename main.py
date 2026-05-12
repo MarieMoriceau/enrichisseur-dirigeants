@@ -114,24 +114,23 @@ Input : Jean Dupont chez Société Inconnue (homonyme probable)
 Output : NON"""
 
 
-SYSTEM_DOMAINE = """Tu es un assistant spécialisé dans l'identification de noms de domaine officiels de sociétés françaises.
+SYSTEM_DOMAINE = """Tu identifies le domaine officiel d'une société française.
 
-CONSIGNES
-- Renvoie UNIQUEMENT le nom de domaine du site web officiel de la société.
-- Pas de http:// ni https:// ni www.
-- Pas de slash final, pas de chemin.
-- Aucun autre texte, aucune explication.
-- Si tu ne trouves pas avec certitude → renvoie une chaîne vide.
+CONSIGNES STRICTES
+- Cherche sur le web le site officiel de la société.
+- Renvoie UNIQUEMENT le domaine — un seul mot, sans aucun autre texte, sans phrase, sans explication.
+- Format : nomdomaine.tld (exemple : exemple.com)
+- INTERDIT : http://, https://, www., slash final, chemin, commentaire, "Je n'ai pas trouvé", etc.
+- Si tu identifies un site qui semble être le site officiel → renvoie son domaine, même si tu n'es pas sûr à 100%.
+- UNIQUEMENT si vraiment aucun site web n'existe → renvoie une chaîne vide (rien du tout).
 
 EXEMPLES
-Input : Doctolib
-Output : doctolib.fr
-
-Input : Mirakl
-Output : mirakl.com
-
-Input : Société française inconnue
-Output : """
+Input : Doctolib → Output : doctolib.fr
+Input : Mirakl → Output : mirakl.com
+Input : Particeep → Output : particeep.com
+Input : Novatim → Output : novatim.com
+Input : Lightspeed (capital-investissement français) → Output : lightspeed.com
+Input : Société totalement inexistante → Output : """
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -144,13 +143,19 @@ Output : """
 CACHE_DIR = "/var/data" if os.path.isdir("/var/data") else "/tmp"
 Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
 CACHE_DB = os.path.join(CACHE_DIR, "enrich_cache.db")
-CACHE_TTL_DAYS = 60
+CACHE_TTL_DAYS = 60       # contacts dirigeants : 60 jours
+DOMAINE_TTL_DAYS = 90     # domaines : 90 jours (changent quasi jamais)
 
 def _init_cache():
     with sqlite3.connect(CACHE_DB) as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS claude_cache (
             siren TEXT PRIMARY KEY,
             contacts_json TEXT NOT NULL,
+            cached_at INTEGER NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS domaine_cache (
+            siren TEXT PRIMARY KEY,
+            domaine TEXT NOT NULL,
             cached_at INTEGER NOT NULL
         )""")
         conn.commit()
@@ -203,9 +208,118 @@ def cache_stats() -> dict:
             total = conn.execute("SELECT COUNT(*) FROM claude_cache").fetchone()[0]
             cutoff = int(time.time()) - CACHE_TTL_DAYS * 86400
             valid = conn.execute("SELECT COUNT(*) FROM claude_cache WHERE cached_at >= ?", (cutoff,)).fetchone()[0]
-        return {"total_societes": total, "valides_dans_ttl": valid, "ttl_jours": CACHE_TTL_DAYS}
+            dom_total = conn.execute("SELECT COUNT(*) FROM domaine_cache").fetchone()[0]
+            dom_cutoff = int(time.time()) - DOMAINE_TTL_DAYS * 86400
+            dom_valid = conn.execute("SELECT COUNT(*) FROM domaine_cache WHERE cached_at >= ?", (dom_cutoff,)).fetchone()[0]
+        return {
+            "contacts": {"total_societes": total, "valides_dans_ttl": valid, "ttl_jours": CACHE_TTL_DAYS},
+            "domaines": {"total_societes": dom_total, "valides_dans_ttl": dom_valid, "ttl_jours": DOMAINE_TTL_DAYS},
+        }
     except Exception as e:
         return {"error": str(e)}
+
+
+def domaine_cache_get(siren: str):
+    """Renvoie le domaine en cache (peut être vide si on a déjà tenté sans succès)."""
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9:
+        return None
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            row = conn.execute(
+                "SELECT domaine, cached_at FROM domaine_cache WHERE siren = ?",
+                (siren,)
+            ).fetchone()
+            if row and (time.time() - row[1]) < DOMAINE_TTL_DAYS * 86400:
+                return row[0]  # peut être chaîne vide
+    except Exception as e:
+        print(f"[DOMAINE CACHE GET ERROR] {siren}: {e}")
+    return None
+
+
+def domaine_cache_set(siren: str, domaine: str) -> None:
+    """Sauve le domaine (même vide pour éviter de re-tenter inutilement)."""
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9:
+        return
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO domaine_cache (siren, domaine, cached_at) VALUES (?, ?, ?)",
+                (siren, domaine or "", int(time.time()))
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[DOMAINE CACHE SET ERROR] {siren}: {e}")
+
+
+def _domaine_candidates(nom: str) -> list:
+    """Génère des candidats de domaine depuis le nom de société."""
+    if not nom:
+        return []
+    import unicodedata
+    base = nom.lower().strip()
+    base = unicodedata.normalize("NFD", base)
+    base = "".join(c for c in base if unicodedata.category(c) != "Mn")
+    base = re.sub(r"[^\w\s\-]", "", base)
+    # Enlever suffixes juridiques courants
+    for suffix in [" sas", " sa", " sarl", " eurl", " sci", " snc", " selarl",
+                   " france", " group", " groupe", " holding", " holdings", " et associes",
+                   " et fils", " international"]:
+        if base.endswith(suffix):
+            base = base[:-len(suffix)].strip()
+    base = re.sub(r"\s+", " ", base).strip()
+    if not base or len(base) < 2:
+        return []
+    base_clean = base.replace(" ", "").replace("-", "")
+    base_dash  = base.replace(" ", "-")
+    base_first = base.split()[0] if " " in base else base
+    candidates = []
+    seen = set()
+    # Essayer dans cet ordre : .com → .fr → .io → .co → .eu
+    for variant in [base_clean, base_dash, base_first]:
+        if variant and len(variant) >= 3:
+            for tld in [".com", ".fr", ".io", ".co", ".eu"]:
+                cand = f"{variant}{tld}"
+                if cand not in seen:
+                    candidates.append(cand)
+                    seen.add(cand)
+    return candidates
+
+
+async def _verifier_domaine_async(domaine: str, timeout: float = 4.0) -> bool:
+    """Vérifie que le domaine répond à du HTTPS (HEAD ou GET)."""
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; EnrichBot/1.0)"}
+        ) as c:
+            try:
+                r = await c.head(f"https://{domaine}")
+                if r.status_code < 400:
+                    return True
+            except Exception:
+                pass
+            r = await c.get(f"https://{domaine}")
+            return r.status_code < 400
+    except Exception:
+        return False
+
+
+def _extraire_domaine_du_texte(texte: str) -> str:
+    """Extrait un domaine valide du texte (pattern xxx.tld), même si Claude a ajouté du blabla."""
+    if not texte:
+        return ""
+    # Chercher un pattern domaine
+    matches = re.findall(r'\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+)\b', texte.lower())
+    for m in matches:
+        # Filtrer les faux positifs (ex: "1.0", "v2.0", chemins)
+        if "." in m and len(m) > 4 and not m.split(".")[0].isdigit():
+            tld = m.split(".")[-1]
+            if len(tld) >= 2 and tld.isalpha():
+                return nettoyer_domaine(m)
+    return ""
 
 
 def log_usage(label: str, societe: str, response_json: dict) -> None:
@@ -519,7 +633,19 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
 
 
 async def corriger_domaine(siren: str, societe: str) -> str:
-    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude (Haiku)."""
+    """Trouve le domaine officiel via : cache → Pappers → heuristique HTTP → Claude+web.
+    Met en cache le résultat (90 jours) pour ne plus re-tenter."""
+
+    # ── 1. CACHE ──────────────────────────────────────────────
+    cached = domaine_cache_get(siren)
+    if cached is not None:
+        if cached:
+            print(f"[DOMAINE CACHE HIT] {societe} → {cached}")
+        else:
+            print(f"[DOMAINE CACHE HIT] {societe} → vide (déjà tenté)")
+        return cached
+
+    # ── 2. PAPPERS (SIREN puis recherche par nom) ─────────────
     if PAPPERS_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
@@ -531,6 +657,7 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                         domaine = nettoyer_domaine(d.get("domaine_url","") or d.get("site_web",""))
                         if domaine_valide(domaine):
                             print(f"[DOMAINE FIX] Pappers SIREN → {domaine} pour {societe}")
+                            domaine_cache_set(siren, domaine)
                             return domaine
                 r2 = await c.get("https://api.pappers.fr/v2/recherche",
                     params={"api_token": PAPPERS_KEY, "q": societe, "par_page": 1})
@@ -540,19 +667,40 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                         domaine = nettoyer_domaine(resultats[0].get("domaine_url","") or resultats[0].get("site_web",""))
                         if domaine_valide(domaine):
                             print(f"[DOMAINE FIX] Pappers nom → {domaine} pour {societe}")
+                            domaine_cache_set(siren, domaine)
                             return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Pappers] {e}")
+
+    # ── 3. HEURISTIQUE : générer candidats + vérifier HTTP ────
+    # Gratuit, rapide, et ça résout la majorité des cas
+    candidats = _domaine_candidates(societe)
+    if candidats:
+        print(f"[DOMAINE HEURISTIQUE] {societe} → essais : {', '.join(candidats[:5])}...")
+        # Tester en parallèle pour aller vite (5 candidats à la fois)
+        for chunk_start in range(0, len(candidats), 5):
+            chunk = candidats[chunk_start:chunk_start+5]
+            results = await asyncio.gather(
+                *(_verifier_domaine_async(c) for c in chunk),
+                return_exceptions=True
+            )
+            for cand, ok in zip(chunk, results):
+                if ok is True:
+                    print(f"[DOMAINE FIX] Heuristique HTTP → {cand} pour {societe}")
+                    domaine_cache_set(siren, cand)
+                    return cand
+
+    # ── 4. CLAUDE + WEB (filet final, Sonnet pour fiabilité) ──
     if ANTHROPIC_KEY:
         try:
-            user_prompt = f"Société : {societe}"
+            user_prompt = f"Société française : {societe}\nDonne-moi le domaine de son site officiel."
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
-                        "model": MODEL_EXTRACT,  # Haiku — extraction simple
-                        "max_tokens": 50,
+                        "model": MODEL_ENRICH,  # Sonnet : domaine est critique pour Marie
+                        "max_tokens": 80,
                         "system": [
                             {
                                 "type": "text",
@@ -560,7 +708,7 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                                 "cache_control": {"type": "ephemeral"}
                             }
                         ],
-                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
                         "messages": [{"role": "user", "content": user_prompt}]
                     }
                 )
@@ -568,12 +716,22 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                     response_json = r.json()
                     log_usage("DOMAINE", societe, response_json)
                     all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text").strip()
-                    domaine = nettoyer_domaine(all_text.split()[0] if all_text else "")
+                    # Parser robuste : extraire un domaine du texte même si Claude a ajouté du blabla
+                    domaine = _extraire_domaine_du_texte(all_text)
                     if domaine_valide(domaine):
-                        print(f"[DOMAINE FIX] Claude → {domaine} pour {societe}")
-                        return domaine
+                        # Vérifier que le domaine répond vraiment (évite les hallucinations)
+                        if await _verifier_domaine_async(domaine):
+                            print(f"[DOMAINE FIX] Claude+web → {domaine} pour {societe}")
+                            domaine_cache_set(siren, domaine)
+                            return domaine
+                        else:
+                            print(f"[DOMAINE FIX] Claude a proposé {domaine} mais le site ne répond pas")
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Claude] {e}")
+
+    # ── ÉCHEC : on cache le vide pour ne pas re-tenter ────────
+    print(f"[DOMAINE FIX] ❌ Aucun domaine trouvé pour {societe}")
+    domaine_cache_set(siren, "")
     return ""
 
 
