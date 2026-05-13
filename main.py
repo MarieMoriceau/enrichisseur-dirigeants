@@ -814,9 +814,61 @@ async def enrich_one(request: Request):
                                 if r2.status_code == 200:
                                     persons = r2.json().get("data") or []
                                     for p in persons:
+                                        person_id = p.get("id")
                                         prenom_p = p.get("first_name", "") or ""
                                         nom_p    = p.get("last_name", "") or ""
                                         titre_p  = p.get("job_title", "") or ""
+                                        # LinkedIn : pas un champ standard Pipedrive, souvent un custom field
+                                        linkedin_p = ""
+                                        for k in ("linkedin", "linkedin_url", "linkedinUrl", "linkedin_profile"):
+                                            v = p.get(k, "")
+                                            if isinstance(v, str) and "linkedin.com" in v.lower():
+                                                linkedin_p = v.strip()
+                                                break
+
+                                        # ── FALLBACK : si titre OU linkedin manquent,
+                                        # on fetch le détail (/v1/persons/{id}) qui contient
+                                        # tous les champs y compris custom fields
+                                        if (not titre_p or not linkedin_p) and person_id:
+                                            try:
+                                                r3 = await c.get(
+                                                    f"https://api.pipedrive.com/v1/persons/{person_id}",
+                                                    params={"api_token": PIPEDRIVE_KEY},
+                                                )
+                                                if r3.status_code == 200:
+                                                    detail = r3.json().get("data", {}) or {}
+                                                    # ── Titre
+                                                    if not titre_p:
+                                                        titre_p = (detail.get("job_title") or "").strip()
+                                                        if titre_p:
+                                                            print(f"[PIPEDRIVE TITRE FALLBACK ✅] {prenom_p} {nom_p} → {titre_p!r}")
+                                                        else:
+                                                            for k, v in detail.items():
+                                                                if isinstance(v, str) and v and any(
+                                                                    kw in k.lower()
+                                                                    for kw in ("title", "post", "fonction", "role")
+                                                                ):
+                                                                    titre_p = v.strip()
+                                                                    print(f"[PIPEDRIVE TITRE CUSTOM ✅] {prenom_p} {nom_p} → {k}={titre_p!r}")
+                                                                    break
+                                                    # ── LinkedIn
+                                                    if not linkedin_p:
+                                                        # 1. Champs standards potentiels
+                                                        for k in ("linkedin", "linkedin_url", "linkedinUrl"):
+                                                            v = detail.get(k, "")
+                                                            if isinstance(v, str) and "linkedin.com" in v.lower():
+                                                                linkedin_p = v.strip()
+                                                                print(f"[PIPEDRIVE LINKEDIN ✅] {prenom_p} {nom_p} → {linkedin_p}")
+                                                                break
+                                                        # 2. Cherche n'importe quelle valeur contenant linkedin.com
+                                                        if not linkedin_p:
+                                                            for k, v in detail.items():
+                                                                if isinstance(v, str) and "linkedin.com" in v.lower():
+                                                                    linkedin_p = v.strip()
+                                                                    print(f"[PIPEDRIVE LINKEDIN CUSTOM ✅] {prenom_p} {nom_p} → {k}={linkedin_p}")
+                                                                    break
+                                            except Exception as ex:
+                                                print(f"[PIPEDRIVE FALLBACK ERROR] {prenom_p} {nom_p}: {ex}")
                                         emails_p = p.get("email", []) or []
                                         email_p  = ""
                                         for e in emails_p:
@@ -842,6 +894,7 @@ async def enrich_one(request: Request):
                                             "prenom": prenom_p, "nom": nom_p,
                                             "titre": titre_p, "email": email_p,
                                             "phone": phone_p,
+                                            "linkedin": linkedin_p,
                                             "confiance": "haute" if (email_p and phone_p) else "faible",
                                             "source": "Pipedrive",
                                             "dans_pipedrive": "oui",
@@ -1347,11 +1400,11 @@ def generer_excel(rows: list) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Dirigeants enrichis"
-    headers  = ['Organisation','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
-    col_map  = ['societe','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
+    headers  = ['Organisation','Adresse postale','Prénom','Nom','Titre (fonction)','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
+    col_map  = ['societe','adresse','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
     thin     = Side(style='thin', color="e2e8f0")
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
-    ws.merge_cells('A1:I1')
+    ws.merge_cells('A1:L1')
     c = ws['A1']
     c.value = "Enrichissement Dirigeants"
     c.font  = Font(name='Arial', bold=True, size=14, color="FFFFFF")
@@ -1359,7 +1412,7 @@ def generer_excel(rows: list) -> bytes:
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 32
     emails_count = len([r for r in rows if r.get('email')])
-    ws.merge_cells('A2:I2')
+    ws.merge_cells('A2:L2')
     c = ws['A2']
     c.value = f"{len(rows)} contacts  |  {emails_count} emails trouvés  |  {len(rows)-emails_count} sans email"
     c.font  = Font(name='Arial', size=10, color="FFFFFF")
@@ -1409,10 +1462,11 @@ def generer_excel(rows: list) -> bytes:
                 c.font = Font(name='Arial', size=9, color="92400e", bold=True)
             else:
                 c.fill = PatternFill('solid', start_color=bg)
-    for i, w in enumerate([22,14,18,28,32,16,14,20,12,22,28], 1):
+    # Largeurs : Organisation, Adresse postale, Prénom, Nom, Titre, Email, Téléphone, LinkedIn, Domaine, Confiance, Source, Dans Pipedrive
+    for i, w in enumerate([22, 38, 14, 18, 22, 32, 16, 14, 20, 12, 22, 28], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = 'A4'
-    ws.auto_filter.ref = f"A3:I{len(rows)+3}"
+    ws.auto_filter.ref = f"A3:L{len(rows)+3}"
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
