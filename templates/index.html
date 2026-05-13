@@ -53,6 +53,57 @@ tr:hover td { background: #f8fafc; }
 .src-fullenrich{ background: #dcfce7; color: #166534; }
 .info { font-size: 12px; color: #059669; font-weight: 600; margin-top: 8px; }
 .stat { font-size: 12px; color: #64748b; }
+
+/* ─── Mode d'emploi ──────────────────────────────────────── */
+.aide details { cursor: pointer; }
+.aide summary {
+  font-size: 14px; font-weight: 700; color: #1e293b;
+  padding: 4px 0; user-select: none; list-style: none;
+  display: flex; align-items: center; gap: 8px;
+}
+.aide summary::-webkit-details-marker { display: none; }
+.aide summary::before {
+  content: "▶"; font-size: 11px; color: #94a3b8;
+  transition: transform 0.2s;
+}
+.aide details[open] summary::before { transform: rotate(90deg); }
+.aide-content { padding-top: 14px; font-size: 13px; color: #334155; line-height: 1.6; }
+.aide-content ol { padding-left: 22px; margin: 0; }
+.aide-content ol > li { margin-bottom: 12px; }
+.aide-content ol > li > strong { color: #1e3a5f; }
+.aide-content ol ul { margin-top: 6px; padding-left: 18px; }
+.aide-content ol ul li { margin-bottom: 4px; font-size: 12.5px; }
+.aide-content code {
+  background: #f1f5f9; padding: 1px 6px; border-radius: 4px;
+  font-size: 12px; color: #be123c;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+}
+.aide-pipeline {
+  display: flex; gap: 6px; margin: 14px 0; flex-wrap: wrap;
+  align-items: center;
+}
+.aide-step {
+  padding: 6px 12px; border-radius: 6px; font-size: 11px;
+  font-weight: 700; color: white;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.aide-step .num {
+  background: rgba(255,255,255,0.3);
+  width: 16px; height: 16px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px;
+}
+.aide-arrow { color: #94a3b8; font-size: 13px; }
+.aide-warn {
+  background: #fffbea; border: 1px solid #facc15; border-radius: 8px;
+  padding: 10px 14px; margin: 10px 0; font-size: 12.5px; color: #78350f;
+}
+.aide-warn strong { color: #92400e; }
+.aide-tip {
+  background: #eff6ff; border: 1px solid #93c5fd; border-radius: 8px;
+  padding: 10px 14px; margin: 10px 0; font-size: 12.5px; color: #1e40af;
+}
+.aide-tip strong { color: #1e3a8a; }
 </style>
 </head>
 <body>
@@ -61,7 +112,6 @@ tr:hover td { background: #f8fafc; }
   <p>Pappers → Claude → Pipedrive → Kaspr → Fullenrich</p>
 </div>
 <div class="container">
-
   <div class="card">
     <h2>📋 Importer vos sociétés</h2>
     <div class="zone" id="zone" onclick="document.getElementById('fileInput').click()"
@@ -80,7 +130,6 @@ tr:hover td { background: #f8fafc; }
         style="border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;font-size:12px;width:300px;outline:none">
       <span style="font-size:11px;color:#94a3b8">Plusieurs adresses séparées par des virgules</span>
     </div>
-
     <div class="phases">
       <button class="btn btn-all" id="btnAll" onclick="runAll()" disabled>⚡ Tout lancer</button>
       <div class="phase-divider">ou étape par étape →</div>
@@ -96,7 +145,6 @@ tr:hover td { background: #f8fafc; }
          style="background:#64748b;color:white;text-decoration:none;padding:10px 18px">📥 Template</a>
       <span class="stat" id="statLabel"></span>
     </div>
-
     <div class="status-bar" id="statusBar">
       <span class="phase-status phase-idle" id="s1">1. Pappers</span>
       <span class="phase-status phase-idle" id="s2">2. Claude</span>
@@ -104,9 +152,71 @@ tr:hover td { background: #f8fafc; }
       <span class="phase-status phase-idle" id="s4">4. Kaspr</span>
       <span class="phase-status phase-idle" id="s5">5. Fullenrich</span>
     </div>
-
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <div style="font-size:11px;color:#94a3b8;margin-top:6px" id="progressLabel"></div>
+  </div>
+
+  <!-- ─── MODE D'EMPLOI (collapsible) ─────────────────────── -->
+  <div class="card aide">
+    <details>
+      <summary>📖 Mode d'emploi — comment lancer un enrichissement</summary>
+      <div class="aide-content">
+        <ol>
+          <li><strong>Télécharge le template Excel</strong> en cliquant sur <code>📥 Template</code> (bouton gris à droite). Tu auras un fichier prêt à remplir avec les bonnes colonnes.</li>
+          <li><strong>Remplis 1 ligne par société</strong> dans le template :
+            <ul>
+              <li>🟢 <code>nom</code> = obligatoire (nom commercial de la société)</li>
+              <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
+            </ul>
+          </li>
+          <li><strong>Glisse ton fichier</strong> dans la zone <code>📂 Glissez votre fichier ici</code> (ou clique pour parcourir). Tu peux ensuite vérifier le mapping des colonnes proposé.</li>
+          <li><strong>Saisis ton email</strong> dans <code>📧 Recevoir l'Excel par email</code> (vérifie aussi tes spams). Tu peux mettre plusieurs adresses séparées par des virgules.</li>
+          <li><strong>Choisis ton mode de lancement</strong> :
+            <ul>
+              <li><code>⚡ Tout lancer</code> = enchaîne automatiquement les 5 étapes du pipeline (recommandé)</li>
+              <li><strong>Étape par étape</strong> = lance manuellement chaque étape (utile pour debug ou pour ne faire qu'une partie)</li>
+            </ul>
+          </li>
+          <li><strong>Reçois l'Excel par email</strong> à la fin (ou télécharge-le directement avec <code>⬇️ Excel</code>).</li>
+        </ol>
+
+        <div style="margin-top:18px;font-weight:700;color:#1e3a5f">🔄 Le pipeline en détail</div>
+        <div class="aide-pipeline">
+          <div class="aide-step btn-pappers"><span class="num">1</span>Pappers</div>
+          <span class="aide-arrow">→</span>
+          <div class="aide-step btn-claude"><span class="num">2</span>Claude+web</div>
+          <span class="aide-arrow">→</span>
+          <div class="aide-step btn-pipedrive"><span class="num">3</span>Pipedrive</div>
+          <span class="aide-arrow">→</span>
+          <div class="aide-step btn-kaspr"><span class="num">4</span>Kaspr</div>
+          <span class="aide-arrow">→</span>
+          <div class="aide-step btn-fullenrich"><span class="num">5</span>Fullenrich</div>
+        </div>
+        <ul style="padding-left:22px;font-size:12.5px;color:#475569">
+          <li><strong>Pappers</strong> : base légale française (SIREN, domaine, représentants légaux actifs)</li>
+          <li><strong>Claude+web</strong> : recherche web des dirigeants opérationnels (CEO, CFO, CTO, COO, DG, DRH, Partners…)</li>
+          <li><strong>Pipedrive</strong> : check si la société/contacts existent déjà dans ton CRM</li>
+          <li><strong>Kaspr</strong> : LinkedIn → email pro pour les contacts sans email</li>
+          <li><strong>Fullenrich</strong> : batch final pour email + téléphone (multi-providers waterfall)</li>
+        </ul>
+
+        <div class="aide-tip">
+          <strong>💡 Conseil</strong> : plus tu fournis d'infos en entrée (SIREN, domaine, code postal, ville), moins l'enrichisseur tâtonne et plus le résultat est précis. Si tu connais déjà un contact (Prénom + Nom + Titre), remplis-le aussi : il sera enrichi en priorité.
+        </div>
+
+        <div class="aide-warn">
+          <strong>⏱️ Patience</strong> : un fichier de 50 sociétés prend ~15-30 min, 200 sociétés ~1-2 h. Le pipeline est volontairement séquentiel pour ne pas se faire bloquer par les API en aval. Tu peux fermer l'onglet, l'email arrivera à la fin.
+        </div>
+
+        <div class="aide-tip">
+          <strong>🎯 Filtres automatiques</strong> : les anciens dirigeants (ex-CEO, démissionnaires…) et les rôles non-opérationnels (commissaire aux comptes, censeur, liquidateur, mandataire…) sont automatiquement exclus.
+        </div>
+
+        <div class="aide-warn">
+          <strong>🚫 Cas qui peuvent rater</strong> : société radiée (signalée en rouge dans l'Excel), sociétés sans aucun dirigeant identifiable (renvoyée vide), domaine introuvable (Fullenrich sera skip). Ce n'est pas un bug, juste des limites des sources de données.
+        </div>
+      </div>
+    </details>
   </div>
 
   <div class="card">
@@ -119,10 +229,8 @@ tr:hover td { background: #f8fafc; }
     </div>
   </div>
 </div>
-
 <script>
 let rows = [], results = [], running = false, stopFlag = false, sourceFileName = '';
-
 // ── File handling ──────────────────────────────────────────────
 function handleDrop(e) {
   e.preventDefault();
@@ -154,7 +262,7 @@ function handleFile(file) {
 }
 function normalizeHeader(h) {
   return h.trim().toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")  // enlève accents
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")  // enlève accents
     .replace(/\s+/g, ' ');
 }
 function parseCSV(text) {
@@ -220,7 +328,6 @@ function normalizeRow(r) {
   };
 }
 function onRowsParsed() { /* remplacé par applyMapping() */ }
-
 // ── Status helpers ─────────────────────────────────────────────
 function setStatus(n, state, label) {
   const el = document.getElementById(`s${n}`);
@@ -233,7 +340,6 @@ function setRunning(on) {
   document.getElementById('btnExport').style.display = on ? 'none' : 'inline-block';
   ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = on);
 }
-
 // ── PHASE 1 : Pappers + Claude ─────────────────────────────────
 async function runPhase1() {
   if (running) return;
@@ -242,7 +348,6 @@ async function runPhase1() {
   results = [];
   document.getElementById('tbody').innerHTML = '';
   setStatus(1, 'running', '1. Pappers ⏳');
-
   for (let i = 0; i < rows.length; i++) {
     if (stopFlag) break;
     document.getElementById('progressFill').style.width = Math.round(i/rows.length*100) + '%';
@@ -260,7 +365,6 @@ async function runPhase1() {
     }
     if (i < rows.length - 1 && !stopFlag) await sleep(8000);
   }
-
   document.getElementById('progressFill').style.width = '100%';
   setStatus(1, 'done', `1. Pappers ✅ (${results.filter(r=>r.nom_dg).length} dirigeants)`);
   document.getElementById('statLabel').textContent = `✅ ${results.filter(r=>r.nom_dg).length} dirigeants trouvés`;
@@ -269,17 +373,14 @@ async function runPhase1() {
   // Activer phases suivantes
   ['btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
 }
-
 // ── PHASE 2 : Claude+web ─────────────────────────────────────
 async function runPhase2() {
   if (running || !results.length) return;
   setRunning(true);
   stopFlag = false;
   setStatus(2, 'running', '2. Claude ⏳');
-
   const societes = [...new Set(results.map(r => r.societe))];
   let totalFound = 0;
-
   for (let i = 0; i < societes.length; i++) {
     if (stopFlag) break;
     const nomSociete = societes[i];
@@ -299,11 +400,9 @@ async function runPhase2() {
     const row = rows.find(r => r.nom === nomSociete) || {nom: nomSociete, domaine:'', siren:'', fondateurs:''};
     const existing = results.find(r => r.societe === nomSociete);
     if (existing) { row.siren = existing.siren || row.siren; row.domaine = existing.domaine || row.domaine; }
-
     document.getElementById('progressFill').style.width = Math.round(i/societes.length*100) + '%';
     document.getElementById('progressLabel').textContent = `${i+1}/${societes.length} — ${nomSociete}`;
     document.getElementById('statLabel').textContent = `⏳ Claude — ${nomSociete}`;
-
     try {
       const resp = await fetch('/enrich_claude', {
         method: 'POST', headers: {'Content-Type':'application/json'},
@@ -333,13 +432,11 @@ async function runPhase2() {
     } catch(e) { console.error('Claude error:', e); }
     if (i < societes.length - 1 && !stopFlag) await sleep(8000);
   }
-
   document.getElementById('progressFill').style.width = '100%';
   setStatus(2, 'done', `2. Claude ✅ (${totalFound} nouveaux)`);
   document.getElementById('statLabel').textContent = `✅ Claude : ${totalFound} contacts ajoutés`;
   setRunning(false);
 }
-
 // ── PHASE 3 : Pipedrive ──────────────────────────────────────
 async function runPhase3() {
   if (running || !results.length) return;
@@ -372,7 +469,6 @@ async function runPhase3() {
   document.getElementById('statLabel').textContent = `✅ Pipedrive : ${found} emails`;
   setRunning(false);
 }
-
 // ── PHASE 4 : Kaspr ────────────────────────────────────────────
 // FIX : fromRunAll bypass le guard "running" pour éviter le race condition
 async function runPhase4(fromRunAll = false) {
@@ -383,7 +479,6 @@ async function runPhase4(fromRunAll = false) {
   await runEmailBatch('kaspr');
   setRunning(false);
 }
-
 // ── PHASE 5 : Fullenrich ───────────────────────────────────────
 // FIX : fromRunAll bypass le guard "running" pour éviter le race condition
 async function runPhase5(fromRunAll = false) {
@@ -394,7 +489,6 @@ async function runPhase5(fromRunAll = false) {
   await runEmailBatch('fullenrich');
   setRunning(false);
 }
-
 // ── Batch email enrichment (Kaspr + Fullenrich) ────────────────
 async function runEmailBatch(phase) {
   const toEnrich = results
@@ -403,16 +497,13 @@ async function runEmailBatch(phase) {
       !r.email || r.confiance === 'faible'  // sans email
       || (!r.phone && phase === 'fullenrich') // avec email mais sans tel → Fullenrich seulement
     ));
-
   if (!toEnrich.length) {
     if (phase === 'kaspr') setStatus(4, 'done', '4. Kaspr ✅ (rien à faire)');
     else setStatus(5, 'done', '5. Fullenrich ✅ (rien à faire)');
     document.getElementById('statLabel').textContent = '✅ Tous les emails déjà trouvés';
     return;
   }
-
   document.getElementById('statLabel').textContent = `⏳ ${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'} — ${toEnrich.length} contacts…`;
-
   try {
     const resp = await fetch('/enrich_emails', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -457,7 +548,6 @@ async function runEmailBatch(phase) {
     document.getElementById('statLabel').textContent = `❌ Erreur ${phase}`;
   }
 }
-
 // ── TOUT LANCER ────────────────────────────────────────────────
 async function runAll() {
   if (running) return;
@@ -480,7 +570,6 @@ async function runAll() {
   await sleep(500); // laisse results se stabiliser avant Phase 5
   // Phase 5 : Fullenrich — fromRunAll=true pour bypasser le race condition sur "running"
   await runPhase5(true);
-
   // Envoi email si adresse(s) renseignée(s)
   const emailRaw = document.getElementById('emailDest').value.trim();
   if (emailRaw && results.length) {
@@ -504,13 +593,11 @@ async function runAll() {
     }
   }
 }
-
 function stopAll() {
   stopFlag = true;
   document.getElementById('btnStop').style.display = 'none';
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
 // ── Render ─────────────────────────────────────────────────────
 function renderResults() {
   const withEmail = results.filter(r => r.email).length;
@@ -538,7 +625,6 @@ function renderResults() {
     </tr>`;
   }).join('');
 }
-
 // ── Export Excel ───────────────────────────────────────────────
 async function exportExcel() {
   if (!results.length) return;
@@ -558,7 +644,6 @@ async function exportExcel() {
     console.error('Export Excel error:', e);
   }
 }
-
 // ── Champs cibles du template ──────────────────────────────────
 const CHAMPS_CIBLES = [
   { key: 'nom',            label: '🏢 Nom société',         required: true  },
@@ -573,12 +658,10 @@ const CHAMPS_CIBLES = [
   { key: 'ville',          label: '🏙️ Ville',               required: false },
   { key: 'adresse',        label: '📍 Adresse complète',    required: false },
 ];
-
 // Colonnes brutes du fichier uploadé (avant normalisation)
 let rawHeaders = [];
 let rawData    = [];
 let mapping    = {}; // { champ_cible: colonne_brute }
-
 function showMappingScreen() {
   // Auto-détecter le mapping probable
   mapping = {};
@@ -595,7 +678,7 @@ function showMappingScreen() {
     ville:          ['ville','city'],
     adresse:        ['adresse du siege complete','adresse complète','adresse complete','adresse','rue'],
   };
-  const normalH = h => h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g,' ').trim();
+  const normalH = h => h.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\s+/g,' ').trim();
   const normHeaders = rawHeaders.map(normalH);
   CHAMPS_CIBLES.forEach(({key}) => {
     const candidates = AUTO[key] || [];
@@ -604,7 +687,6 @@ function showMappingScreen() {
       if (idx >= 0) { mapping[key] = rawHeaders[idx]; break; }
     }
   });
-
   // Construire l'écran de mapping
   const html = `
     <div id="mappingScreen" style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin-top:12px">
@@ -630,14 +712,13 @@ function showMappingScreen() {
         <span style="font-size:11px;color:#94a3b8">* champ obligatoire</span>
       </div>
     </div>`;
-  
+
   const existing = document.getElementById('mappingScreen');
   if (existing) existing.remove();
   document.getElementById('fileInfo').insertAdjacentHTML('afterend', html);
   // Désactiver les boutons jusqu'à validation
   ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = true);
 }
-
 function applyMapping() {
   if (!mapping['nom']) {
     alert('⚠️ Le champ "Nom société" est obligatoire — veuillez le mapper.');
@@ -651,7 +732,6 @@ function applyMapping() {
     });
     return applyTransforms(mapped);
   }).filter(r => r.nom);
-
   // Dédupliquer
   const seen = new Set();
   rows = rows.filter(r => {
@@ -660,13 +740,11 @@ function applyMapping() {
     seen.add(key);
     return true;
   });
-
   document.getElementById('mappingScreen').remove();
   document.getElementById('fileInfo').textContent = document.getElementById('fileInfo').textContent.replace(/ — .*/, '') + ` — ${rows.length} société(s)`;
   ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
   document.getElementById('statLabel').textContent = `${rows.length} sociétés prêtes`;
 }
-
 function applyTransforms(r) {
   return {
     nom:            r.nom || '',
@@ -683,7 +761,6 @@ function applyTransforms(r) {
     adresse:        r.adresse || '',
   };
 }
-
 </script>
 </body>
 </html>
