@@ -18,6 +18,69 @@ SMTP_HOST      = os.getenv("SMTP_HOST", "pro2.mail.ovh.net")
 SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER      = os.getenv("SMTP_USER", "")
 SMTP_PASS      = os.getenv("SMTP_PASS", "")
+# Destinataire des alertes "solde API à 0" et "run failed"
+ALERT_EMAIL    = os.getenv("ALERT_EMAIL", "mmoriceau@equation-sie.com")
+
+# ────────────────────────────────────────────────────────────────────
+# SYSTÈME D'ALERTES EMAIL (solde API + run failed)
+# 1 envoi max par heure par API (anti-spam : si 100 contacts plantent
+# en Kaspr 402, tu reçois 1 seul email, pas 100)
+# ────────────────────────────────────────────────────────────────────
+import time as _t_alert
+_alert_state = {}  # {api_name: last_sent_timestamp}
+_ALERT_THROTTLE_SECONDS = 3600  # 1 heure
+
+def _send_alert(subject: str, body: str, recipient: str = "") -> bool:
+    """Envoie un email d'alerte simple (sans pièce jointe) via SMTP OVH."""
+    if not SMTP_USER or not SMTP_PASS:
+        print(f"[ALERT] SMTP non configuré, impossible d'envoyer : {subject}")
+        return False
+    dest = recipient or ALERT_EMAIL
+    try:
+        msg = MIMEMultipart()
+        msg['From']    = SMTP_USER
+        msg['To']      = dest
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, [dest], msg.as_string())
+        print(f"[ALERT] ✅ '{subject}' envoyé à {dest}")
+        return True
+    except Exception as e:
+        print(f"[ALERT ERROR] {e}")
+        return False
+
+
+def _alert_api_down(api_name: str, status_code: int = 0, detail: str = "") -> None:
+    """Alerte 'solde API à 0' avec throttling 1h par API."""
+    now = _t_alert.time()
+    last = _alert_state.get(api_name, 0)
+    if now - last < _ALERT_THROTTLE_SECONDS:
+        return  # déjà alerté il y a moins d'1h
+    _alert_state[api_name] = now
+    subject = f"🚨 [Enrichisseur] Solde {api_name} épuisé"
+    body = f"""Bonjour Marie,
+
+L'API {api_name} a renvoyé une erreur indiquant un problème de crédit / quota
+(status HTTP {status_code}).
+
+Tant que tu ne recharges pas, le pipeline d'enrichissement va se dégrader
+sur cette source de données.
+
+→ Va recharger ton solde sur le dashboard {api_name}.
+
+Détail technique :
+{detail[:300]}
+
+Heure de détection : {datetime.now().isoformat(timespec='seconds')}
+
+(Cette alerte est limitée à 1 envoi par heure et par API pour éviter le spam.)
+
+— Enrichisseur Dirigeants
+"""
+    _send_alert(subject, body)
 ANCIENS_KEYWORDS = [
     "ancien", "ancienne", "ex-", "ex ", "démissionnaire",
     "jusqu'au", "jusqu au", "sortant"
@@ -309,6 +372,44 @@ async def aide():
     return HTMLResponse(content=AIDE_HTML)
 
 
+# -------------------------------------------------------
+# ROUTE ALERTE — Envoi d'un email d'alerte générique
+# Appelée par le HF Space quand un run plante (mais utilisable
+# pour n'importe quelle notification)
+# -------------------------------------------------------
+@app.post("/send_alert")
+async def send_alert_route(request: Request):
+    """POST {"subject": "...", "body": "...", "recipient": "..." (optionnel)}
+    → envoi SMTP. Si recipient absent, utilise ALERT_EMAIL."""
+    data = await request.json()
+    subject = data.get("subject", "[Enrichisseur] Notification")
+    body = data.get("body", "")
+    recipient = (data.get("recipient") or "").strip()
+    ok = _send_alert(subject, body, recipient or "")
+    return {"ok": ok}
+
+
+@app.get("/test_alert")
+async def test_alert_route():
+    """Test rapide : envoie un email d'alerte à ALERT_EMAIL.
+    Visite https://enrichisseur-dirigeants.onrender.com/test_alert
+    pour vérifier que les alertes arrivent bien dans ta boîte."""
+    ok = _send_alert(
+        subject="✅ [Enrichisseur] Test d'alerte — tout fonctionne",
+        body=("Bonjour Marie,\n\n"
+              "Si tu lis ceci, c'est que le système d'alerte SMTP fonctionne. "
+              "Tu recevras un email de cette nature quand :\n\n"
+              "• Un run de prospection plante (avec le détail de l'erreur)\n"
+              "• Le solde d'une de tes APIs est épuisé (Pappers, Claude, "
+              "Kaspr, FullEnrich) — 1 seul email par heure et par API pour "
+              "éviter le spam.\n\n"
+              f"Destinataire configuré : {ALERT_EMAIL}\n\n"
+              "— Enrichisseur Dirigeants"),
+    )
+    return {"ok": ok, "recipient": ALERT_EMAIL,
+            "info": "Si ok=true, l'email est parti. Vérifie ta boîte (et les spams)."}
+
+
 @app.get("/template")
 async def get_template():
     """Génère et sert le template Excel enrichisseur."""
@@ -505,6 +606,7 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
                     return email
             elif r.status_code == 402:
                 print(f"[KASPR] Plus de crédits !")
+                _alert_api_down("Kaspr", 402, r.text[:200] if hasattr(r, 'text') else "")
             else:
                 print(f"[KASPR] Erreur {r.status_code}: {r.text[:100]}")
     except Exception as e:
@@ -654,6 +756,8 @@ async def enrich_one(request: Request):
                     if r.status_code == 200:
                         pappers_data = r.json()
                         print(f"[PAPPERS] Trouvé par domaine")
+                    elif r.status_code in (401, 402, 403, 429):
+                        _alert_api_down("Pappers", r.status_code, r.text[:200])
             except Exception as e:
                 print(f"[PAPPERS ERROR domaine] {e}")
         if not pappers_data and not siren:
@@ -668,6 +772,8 @@ async def enrich_one(request: Request):
                         if resultats:
                             siren = resultats[0].get("siren", "")
                             print(f"[PAPPERS] SIREN trouvé par nom : {siren}")
+                    elif r.status_code in (401, 402, 403, 429):
+                        _alert_api_down("Pappers", r.status_code, r.text[:200])
             except Exception as e:
                 print(f"[PAPPERS ERROR nom] {e}")
         if not pappers_data and siren:
@@ -677,6 +783,8 @@ async def enrich_one(request: Request):
                         params={"api_token": PAPPERS_KEY, "siren": siren})
                     if r.status_code == 200:
                         pappers_data = r.json()
+                    elif r.status_code in (401, 402, 403, 429):
+                        _alert_api_down("Pappers", r.status_code, r.text[:200])
             except Exception as e:
                 print(f"[PAPPERS ERROR siren] {e}")
         if pappers_data:
@@ -763,6 +871,8 @@ Réponds UNIQUEMENT avec ce JSON :
                         }
                     )
                     print(f"[CLAUDE] Status {r.status_code} pour {nom}")
+                    if r.status_code == 401:
+                        _alert_api_down("Anthropic Claude", 401, r.text[:200])
                     if r.status_code in (429, 529):
                         await asyncio.sleep(delays[attempt])
                         continue
@@ -993,6 +1103,8 @@ async def enrich_emails(request: Request):
             print(f"[FULLENRICH] Status lancement : {r.status_code}")
             if r.status_code not in (200, 201):
                 print(f"[FULLENRICH ERROR] {r.text[:200]}")
+                if r.status_code in (401, 402, 403):
+                    _alert_api_down("FullEnrich", r.status_code, r.text[:200])
                 return {"emails": emails_result}
             enrichment_id = r.json().get("enrichment_id") or r.json().get("id")
             if not enrichment_id:
