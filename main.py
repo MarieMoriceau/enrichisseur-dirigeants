@@ -1,6 +1,6 @@
-import os, json, asyncio, httpx, re, smtplib, csv, io, sqlite3, time
+import os, json, asyncio, httpx, re, smtplib, csv, io
 from io import BytesIO
-from pathlib import Path
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -8,10 +8,8 @@ from email import encoders
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.templating import Jinja2Templates
-
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
-
 ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
@@ -21,15 +19,69 @@ SMTP_HOST      = os.getenv("SMTP_HOST", "pro2.mail.ovh.net")
 SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER      = os.getenv("SMTP_USER", "")
 SMTP_PASS      = os.getenv("SMTP_PASS", "")
+# Destinataire des alertes "solde API à 0" et "run failed"
+ALERT_EMAIL    = os.getenv("ALERT_EMAIL", "mmoriceau@equation-sie.com")
 
 # ────────────────────────────────────────────────────────────────────
-# MODÈLES CLAUDE
-# Sonnet : pour la recherche dirigeants (qualité critique, web search)
-# Haiku  : pour les tâches d'extraction simple (URL LinkedIn, domaine)
+# SYSTÈME D'ALERTES EMAIL (solde API + run failed)
+# 1 envoi max par heure par API (anti-spam : si 100 contacts plantent
+# en Kaspr 402, tu reçois 1 seul email, pas 100)
 # ────────────────────────────────────────────────────────────────────
-MODEL_ENRICH = "claude-sonnet-4-6"          # qualité élevée requise
-MODEL_EXTRACT = "claude-haiku-4-5-20251001" # extraction simple, ~4× moins cher
+import time as _t_alert
+_alert_state = {}  # {api_name: last_sent_timestamp}
+_ALERT_THROTTLE_SECONDS = 3600  # 1 heure
 
+def _send_alert(subject: str, body: str, recipient: str = "") -> bool:
+    """Envoie un email d'alerte simple (sans pièce jointe) via SMTP OVH."""
+    if not SMTP_USER or not SMTP_PASS:
+        print(f"[ALERT] SMTP non configuré, impossible d'envoyer : {subject}")
+        return False
+    dest = recipient or ALERT_EMAIL
+    try:
+        msg = MIMEMultipart()
+        msg['From']    = SMTP_USER
+        msg['To']      = dest
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, [dest], msg.as_string())
+        print(f"[ALERT] ✅ '{subject}' envoyé à {dest}")
+        return True
+    except Exception as e:
+        print(f"[ALERT ERROR] {e}")
+        return False
+
+
+def _alert_api_down(api_name: str, status_code: int = 0, detail: str = "") -> None:
+    """Alerte 'solde API à 0' avec throttling 1h par API."""
+    now = _t_alert.time()
+    last = _alert_state.get(api_name, 0)
+    if now - last < _ALERT_THROTTLE_SECONDS:
+        return  # déjà alerté il y a moins d'1h
+    _alert_state[api_name] = now
+    subject = f"🚨 [Enrichisseur] Solde {api_name} épuisé"
+    body = f"""Bonjour Marie,
+
+L'API {api_name} a renvoyé une erreur indiquant un problème de crédit / quota
+(status HTTP {status_code}).
+
+Tant que tu ne recharges pas, le pipeline d'enrichissement va se dégrader
+sur cette source de données.
+
+→ Va recharger ton solde sur le dashboard {api_name}.
+
+Détail technique :
+{detail[:300]}
+
+Heure de détection : {datetime.now().isoformat(timespec='seconds')}
+
+(Cette alerte est limitée à 1 envoi par heure et par API pour éviter le spam.)
+
+— Enrichisseur Dirigeants
+"""
+    _send_alert(subject, body)
 ANCIENS_KEYWORDS = [
     "ancien", "ancienne", "ex-", "ex ", "démissionnaire",
     "jusqu'au", "jusqu au", "sortant"
@@ -40,304 +92,6 @@ TITRES_EXCLUS = [
     "censeur", "observateur", "représentant permanent",
     "liquidateur", "mandataire", "administrateur judiciaire",
 ]
-
-# ────────────────────────────────────────────────────────────────────
-# SYSTEM PROMPT MIS EN CACHE
-# Bloc stable, identique pour toutes les sociétés → caché par Anthropic.
-# Doit faire au moins 1024 tokens pour activer le cache : on a inclus
-# des exemples few-shot qui améliorent en bonus la qualité des résultats.
-# ────────────────────────────────────────────────────────────────────
-SYSTEM_ENRICH = """Tu es un assistant spécialisé dans la recherche de dirigeants opérationnels de sociétés françaises sur le web.
-
-OBJECTIF
-Identifier les vrais décideurs opérationnels (CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs) — pas les simples mandataires légaux ou représentants de holdings.
-
-CONSIGNES STRICTES
-- Cherche uniquement les dirigeants ACTUELLEMENT EN POSTE.
-- Ne jamais inclure : "ancien", "ex-", "sortant", "démissionnaire", "jusqu'au".
-- Postes à EXCLURE absolument : commissaire aux comptes, conseil de surveillance, membre du conseil, censeur, observateur, représentant permanent, liquidateur, mandataire, administrateur judiciaire.
-- Privilégie les sources officielles : site de la société (page "équipe", "à propos", "leadership"), LinkedIn, presse spécialisée (Les Échos, Maddyness, Frenchweb).
-- Si la société est une filiale d'un groupe, identifie les dirigeants de l'entité française précisément ciblée (pas ceux du groupe parent).
-
-RÈGLES EMAIL
-- Emails uniquement professionnels (domaine de la société). Jamais gmail, hotmail, yahoo, outlook.com, icloud, free, orange, wanadoo.
-- Si tu trouves l'email confirmé sur le site officiel ou une source fiable → "confiance_email": "haute"
-- Si tu déduis l'email du pattern habituel (prenom.nom@domaine, p.nom@domaine, etc.) sans confirmation → "confiance_email": "moyenne"
-- Si tu n'es pas sûr ou pattern incertain → "email": null, "confiance_email": "faible"
-
-FORMAT DE SORTIE OBLIGATOIRE
-Réponds UNIQUEMENT avec ce JSON, sans aucun texte avant ni après, sans backticks, sans markdown :
-{"contacts":[{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}]}
-
-EXEMPLES DE BONNES RÉPONSES
-
-Exemple 1 — startup tech avec dirigeants identifiables sur le site :
-Input : Société "Doctolib", site doctolib.fr
-Output : {"contacts":[{"prenom":"Stanislas","nom":"Niox-Chateau","titre":"CEO & Cofondateur","email":"stanislas.niox-chateau@doctolib.com","confiance_email":"moyenne"},{"prenom":"Olivier","nom":"Loison","titre":"COO","email":"olivier.loison@doctolib.com","confiance_email":"moyenne"}]}
-
-Exemple 2 — société avec plusieurs cofondateurs dirigeants :
-Input : Société "Mirakl", site mirakl.com
-Output : {"contacts":[{"prenom":"Adrien","nom":"Nussenbaum","titre":"CEO & Cofondateur","email":"adrien.nussenbaum@mirakl.com","confiance_email":"moyenne"},{"prenom":"Philippe","nom":"Corrot","titre":"Président & Cofondateur","email":"philippe.corrot@mirakl.com","confiance_email":"moyenne"}]}
-
-Exemple 3 — distinction ancien vs actuel dirigeant :
-Si une source dit "Jean Dupont, ancien CEO jusqu'en 2023" → NE PAS l'inclure.
-Si une source dit "Marie Martin, CEO depuis janvier 2024" → l'inclure.
-Si une source dit "Paul Durand, CFO" sans précision temporelle et l'info est récente → l'inclure.
-
-Exemple 4 — pas de dirigeant identifiable de manière fiable :
-Output : {"contacts":[]}
-
-Exemple 5 — distinguer dirigeant opérationnel vs représentant légal :
-Si Pappers a renvoyé "Holding Patrimoniale Dupont, représentant Jean Dupont, président" → cherche en plus le directeur général opérationnel sur le site/LinkedIn.
-
-Exemple 6 — emails à exclure systématiquement :
-{"email":"ceo@gmail.com"} → INCORRECT, mettre "email": null à la place.
-
-RÈGLE FINALE
-Ne renvoie JAMAIS de texte hors du JSON. Pas de "Voici les contacts trouvés", pas de commentaire, pas de markdown. Le premier caractère de ta réponse doit être { et le dernier }."""
-
-
-SYSTEM_LINKEDIN = """Tu es un assistant spécialisé dans la recherche d'URLs LinkedIn de dirigeants français.
-
-CONSIGNES
-- Cherche l'URL LinkedIn exacte de la personne demandée.
-- Vérifie que la personne occupe bien un poste dans la société indiquée (pour éviter les homonymes).
-- Format URL attendu : https://www.linkedin.com/in/prenom-nom-xxxxx/
-- Si tu n'es pas certain à 100% que c'est la bonne personne → réponds exactement : NON
-- Ne renvoie AUCUN autre texte que l'URL ou NON.
-
-EXEMPLES
-Input : Stanislas Niox-Chateau chez Doctolib
-Output : https://www.linkedin.com/in/stanislas-niox-chateau-9728851a/
-
-Input : Jean Dupont chez Société Inconnue (homonyme probable)
-Output : NON"""
-
-
-SYSTEM_DOMAINE = """Tu identifies le domaine officiel d'une société française.
-
-CONSIGNES STRICTES
-- Cherche sur le web le site officiel de la société.
-- Renvoie UNIQUEMENT le domaine — un seul mot, sans aucun autre texte, sans phrase, sans explication.
-- Format : nomdomaine.tld (exemple : exemple.com)
-- INTERDIT : http://, https://, www., slash final, chemin, commentaire, "Je n'ai pas trouvé", etc.
-- Si tu identifies un site qui semble être le site officiel → renvoie son domaine, même si tu n'es pas sûr à 100%.
-- UNIQUEMENT si vraiment aucun site web n'existe → renvoie une chaîne vide (rien du tout).
-
-EXEMPLES
-Input : Doctolib → Output : doctolib.fr
-Input : Mirakl → Output : mirakl.com
-Input : Particeep → Output : particeep.com
-Input : Novatim → Output : novatim.com
-Input : Lightspeed (capital-investissement français) → Output : lightspeed.com
-Input : Société totalement inexistante → Output : """
-
-
-# ────────────────────────────────────────────────────────────────────
-# CACHE DISQUE PAR SIREN — sqlite, zéro dépendance externe
-# Persiste les résultats Claude+web 60 jours pour éviter de re-payer
-# une recherche déjà faite sur la même société.
-# Sur Render : attacher un Render Disk monté sur /var/data (1 $/mois)
-# Sinon : fallback /tmp (perdu au redéploiement, OK pour test local)
-# ────────────────────────────────────────────────────────────────────
-CACHE_DIR = "/var/data" if os.path.isdir("/var/data") else "/tmp"
-Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
-CACHE_DB = os.path.join(CACHE_DIR, "enrich_cache.db")
-CACHE_TTL_DAYS = 60            # contacts dirigeants : 60 jours
-DOMAINE_TTL_DAYS = 90          # domaine trouvé : 90 jours (change quasi jamais)
-DOMAINE_EMPTY_TTL_DAYS = 1     # échec : seulement 1 jour (laisser une chance de re-tenter)
-
-def _init_cache():
-    with sqlite3.connect(CACHE_DB) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS claude_cache (
-            siren TEXT PRIMARY KEY,
-            contacts_json TEXT NOT NULL,
-            cached_at INTEGER NOT NULL
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS domaine_cache (
-            siren TEXT PRIMARY KEY,
-            domaine TEXT NOT NULL,
-            cached_at INTEGER NOT NULL
-        )""")
-        conn.commit()
-_init_cache()
-print(f"[CACHE] Init OK → {CACHE_DB}")
-
-
-def _normalize_siren(siren) -> str:
-    return re.sub(r'\D', '', str(siren or ''))[:9]
-
-
-def cache_get(siren: str):
-    """Renvoie la liste de contacts en cache si fraîche (< TTL), sinon None."""
-    siren = _normalize_siren(siren)
-    if not siren or len(siren) != 9:
-        return None
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            row = conn.execute(
-                "SELECT contacts_json, cached_at FROM claude_cache WHERE siren = ?",
-                (siren,)
-            ).fetchone()
-            if row and (time.time() - row[1]) < CACHE_TTL_DAYS * 86400:
-                return json.loads(row[0])
-    except Exception as e:
-        print(f"[CACHE GET ERROR] {siren}: {e}")
-    return None
-
-
-def cache_set(siren: str, contacts: list) -> None:
-    """Sauve les contacts en cache pour cette société."""
-    siren = _normalize_siren(siren)
-    if not siren or len(siren) != 9 or not contacts:
-        return
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO claude_cache (siren, contacts_json, cached_at) VALUES (?, ?, ?)",
-                (siren, json.dumps(contacts, ensure_ascii=False), int(time.time()))
-            )
-            conn.commit()
-    except Exception as e:
-        print(f"[CACHE SET ERROR] {siren}: {e}")
-
-
-def cache_stats() -> dict:
-    """Stats utiles pour suivi."""
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            total = conn.execute("SELECT COUNT(*) FROM claude_cache").fetchone()[0]
-            cutoff = int(time.time()) - CACHE_TTL_DAYS * 86400
-            valid = conn.execute("SELECT COUNT(*) FROM claude_cache WHERE cached_at >= ?", (cutoff,)).fetchone()[0]
-            dom_total = conn.execute("SELECT COUNT(*) FROM domaine_cache").fetchone()[0]
-            dom_cutoff = int(time.time()) - DOMAINE_TTL_DAYS * 86400
-            dom_valid = conn.execute("SELECT COUNT(*) FROM domaine_cache WHERE cached_at >= ?", (dom_cutoff,)).fetchone()[0]
-        return {
-            "contacts": {"total_societes": total, "valides_dans_ttl": valid, "ttl_jours": CACHE_TTL_DAYS},
-            "domaines": {"total_societes": dom_total, "valides_dans_ttl": dom_valid, "ttl_jours": DOMAINE_TTL_DAYS},
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def domaine_cache_get(siren: str):
-    """Renvoie le domaine en cache.
-    TTL = 90j si trouvé, 1j si vide (pour permettre de re-tenter rapidement)."""
-    siren = _normalize_siren(siren)
-    if not siren or len(siren) != 9:
-        return None
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            row = conn.execute(
-                "SELECT domaine, cached_at FROM domaine_cache WHERE siren = ?",
-                (siren,)
-            ).fetchone()
-            if row:
-                domaine, cached_at = row
-                age_seconds = time.time() - cached_at
-                ttl = DOMAINE_TTL_DAYS if domaine else DOMAINE_EMPTY_TTL_DAYS
-                if age_seconds < ttl * 86400:
-                    return domaine  # peut être chaîne vide
-    except Exception as e:
-        print(f"[DOMAINE CACHE GET ERROR] {siren}: {e}")
-    return None
-
-
-def domaine_cache_set(siren: str, domaine: str) -> None:
-    """Sauve le domaine (même vide pour éviter de re-tenter inutilement)."""
-    siren = _normalize_siren(siren)
-    if not siren or len(siren) != 9:
-        return
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO domaine_cache (siren, domaine, cached_at) VALUES (?, ?, ?)",
-                (siren, domaine or "", int(time.time()))
-            )
-            conn.commit()
-    except Exception as e:
-        print(f"[DOMAINE CACHE SET ERROR] {siren}: {e}")
-
-
-def _domaine_candidates(nom: str) -> list:
-    """Génère des candidats de domaine depuis le nom de société."""
-    if not nom:
-        return []
-    import unicodedata
-    base = nom.lower().strip()
-    base = unicodedata.normalize("NFD", base)
-    base = "".join(c for c in base if unicodedata.category(c) != "Mn")
-    base = re.sub(r"[^\w\s\-]", "", base)
-    # Enlever suffixes juridiques courants
-    for suffix in [" sas", " sa", " sarl", " eurl", " sci", " snc", " selarl",
-                   " france", " group", " groupe", " holding", " holdings", " et associes",
-                   " et fils", " international"]:
-        if base.endswith(suffix):
-            base = base[:-len(suffix)].strip()
-    base = re.sub(r"\s+", " ", base).strip()
-    if not base or len(base) < 2:
-        return []
-    base_clean = base.replace(" ", "").replace("-", "")
-    base_dash  = base.replace(" ", "-")
-    base_first = base.split()[0] if " " in base else base
-    candidates = []
-    seen = set()
-    # Essayer dans cet ordre : .com → .fr → .io → .co → .eu
-    for variant in [base_clean, base_dash, base_first]:
-        if variant and len(variant) >= 3:
-            for tld in [".com", ".fr", ".io", ".co", ".eu"]:
-                cand = f"{variant}{tld}"
-                if cand not in seen:
-                    candidates.append(cand)
-                    seen.add(cand)
-    return candidates
-
-
-async def _verifier_domaine_async(domaine: str, timeout: float = 5.0) -> bool:
-    """Vérifie qu'un domaine répond (HTTPS puis HTTP en fallback, HEAD puis GET)."""
-    if not domaine:
-        return False
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; EnrichBot/1.0)"}
-    ) as c:
-        for scheme in ("https", "http"):  # Plein de PME françaises tournent encore en HTTP only
-            for method in ("HEAD", "GET"):
-                try:
-                    r = await c.request(method, f"{scheme}://{domaine}")
-                    if r.status_code < 400:
-                        return True
-                except Exception:
-                    continue
-    return False
-
-
-def _extraire_domaine_du_texte(texte: str) -> str:
-    """Extrait un domaine valide du texte (pattern xxx.tld), même si Claude a ajouté du blabla."""
-    if not texte:
-        return ""
-    # Chercher un pattern domaine
-    matches = re.findall(r'\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+)\b', texte.lower())
-    for m in matches:
-        # Filtrer les faux positifs (ex: "1.0", "v2.0", chemins)
-        if "." in m and len(m) > 4 and not m.split(".")[0].isdigit():
-            tld = m.split(".")[-1]
-            if len(tld) >= 2 and tld.isalpha():
-                return nettoyer_domaine(m)
-    return ""
-
-
-def log_usage(label: str, societe: str, response_json: dict) -> None:
-    """Log la consommation tokens d'un appel Claude pour suivi des coûts."""
-    usage = response_json.get("usage", {}) or {}
-    print(f"[COST] {label} | {societe} | "
-          f"in={usage.get('input_tokens', 0)} | "
-          f"cache_read={usage.get('cache_read_input_tokens', 0)} | "
-          f"cache_write={usage.get('cache_creation_input_tokens', 0)} | "
-          f"out={usage.get('output_tokens', 0)}")
-
-
 def nettoyer_prenom(prenom: str) -> str:
     """Supprime civilités et prénoms composés Pappers : 'M Denis' → 'Denis', 'Florian, Paul' → 'Florian'."""
     if not prenom:
@@ -346,21 +100,13 @@ def nettoyer_prenom(prenom: str) -> str:
     import re
     prenom = re.sub(r'^(M\.?\s+|Mme\.?\s+|Mr\.?\s+|Dr\.?\s+|Me\.?\s+)', '', prenom, flags=re.IGNORECASE).strip()
     return prenom
-
-
 def est_ancien_dirigeant(titre: str) -> bool:
     return any(kw in titre.lower() for kw in ANCIENS_KEYWORDS)
-
-
 def est_titre_exclu(titre: str) -> bool:
     return any(kw in titre.lower() for kw in TITRES_EXCLUS)
-
-
 def domaine_valide(d: str) -> bool:
     d = d.strip()
     return bool(d) and "." in d and " " not in d and len(d) > 3
-
-
 def nettoyer_domaine(url: str) -> str:
     """Extrait le domaine depuis une URL complète."""
     if not url:
@@ -369,8 +115,6 @@ def nettoyer_domaine(url: str) -> str:
     d = d.replace("https://", "").replace("http://", "").replace("www.", "")
     d = d.split("/")[0].strip()
     return d
-
-
 def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
     import unicodedata
     def normaliser(s):
@@ -389,11 +133,282 @@ def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
     if not mots_a:
         return True
     return len(mots_a & mots_b) > 0
-
-
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+# -------------------------------------------------------
+# ROUTE AIDE — Mode d'emploi de l'enrichisseur (HTML standalone)
+# Visible sur https://enrichisseur-dirigeants.onrender.com/aide
+# -------------------------------------------------------
+AIDE_HTML = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mode d'emploi — Enrichisseur Dirigeants</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    background: #f8fafc; color: #1e293b;
+    margin: 0; padding: 24px; line-height: 1.6;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  .header {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+    color: white; padding: 28px 32px; border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(30,58,95,0.15); margin-bottom: 24px;
+  }
+  .header h1 { margin: 0 0 8px 0; font-size: 28px; font-weight: 700; }
+  .header .pipe {
+    font-size: 13px; opacity: 0.95; margin-top: 8px;
+  }
+  .header .pipe span {
+    background: rgba(255,255,255,0.18); padding: 4px 10px;
+    border-radius: 6px; margin: 0 3px; display: inline-block;
+  }
+
+  .card {
+    background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+    padding: 24px 28px; margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .card h2 {
+    color: #1e3a5f; margin: 0 0 16px 0; font-size: 20px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  ol { padding-left: 24px; margin: 0; }
+  ol li { margin-bottom: 14px; }
+  ol li strong { color: #1e3a5f; }
+  ol li ul { margin-top: 8px; padding-left: 20px; }
+  ol li ul li { margin-bottom: 6px; font-size: 14.5px; }
+
+  .pipeline {
+    display: flex; gap: 8px; margin: 20px 0; flex-wrap: wrap;
+    align-items: center; justify-content: center;
+  }
+  .step {
+    padding: 10px 16px; border-radius: 8px; font-size: 13px;
+    font-weight: 600; color: white; display: inline-flex;
+    align-items: center; gap: 8px;
+  }
+  .step .num {
+    background: rgba(255,255,255,0.3);
+    width: 20px; height: 20px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px;
+  }
+  .arrow { color: #94a3b8; font-size: 16px; }
+
+  .s1 { background: #2563eb; }  /* Pappers (bleu) */
+  .s2 { background: #7c3aed; }  /* Claude (violet) */
+  .s3 { background: #ea580c; }  /* Pipedrive (orange) */
+  .s4 { background: #0891b2; }  /* Kaspr (cyan) */
+  .s5 { background: #059669; }  /* FullEnrich (vert) */
+
+  .warn {
+    background: #fffbea; border: 1px solid #facc15; border-radius: 8px;
+    padding: 14px 18px; margin: 16px 0; font-size: 14px;
+  }
+  .warn strong { color: #92400e; }
+
+  .tip {
+    background: #eff6ff; border: 1px solid #93c5fd; border-radius: 8px;
+    padding: 14px 18px; margin: 16px 0; font-size: 14px;
+  }
+  .tip strong { color: #1e40af; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e2e8f0;
+           font-size: 14px; }
+  th { background: #f1f5f9; color: #1e3a5f; font-weight: 700; }
+  td code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px;
+            font-size: 12.5px; color: #be123c; }
+
+  .back {
+    display: inline-block; margin-top: 24px; padding: 10px 18px;
+    background: #2563eb; color: white; text-decoration: none;
+    border-radius: 8px; font-weight: 600; font-size: 14px;
+  }
+  .back:hover { background: #1e40af; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <h1>📖 Mode d'emploi — Enrichisseur Dirigeants</h1>
+    <div class="pipe">
+      <span>CSV Sociétés</span> →
+      <span>Pappers</span> →
+      <span>Claude+web</span> →
+      <span>Pipedrive</span> →
+      <span>Kaspr</span> →
+      <span>FullEnrich</span> →
+      <span>Excel par email</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🚀 Comment lancer un enrichissement</h2>
+    <ol>
+      <li><strong>Télécharge le template Excel</strong> en cliquant sur <code>📥 Template</code> en haut à droite. Tu auras un fichier prêt à remplir avec les bonnes colonnes.</li>
+      <li><strong>Remplis 1 ligne par société</strong> dans le template :
+        <ul>
+          <li>🟢 <code>nom</code> = obligatoire (nom commercial de la société, ex : <em>Grenke Location</em>)</li>
+          <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
+        </ul>
+      </li>
+      <li><strong>Glisse ton fichier</strong> dans la zone <code>📂 Glissez votre fichier ici</code> (ou clique pour parcourir).</li>
+      <li><strong>Saisis ton email</strong> dans <code>📧 Recevoir l'Excel par email</code> (vérifie aussi tes spams). Tu peux mettre plusieurs adresses séparées par des virgules.</li>
+      <li><strong>Clique sur l'un des 2 modes de lancement</strong> :
+        <ul>
+          <li><code>⚡ Tout lancer</code> = enchaîne automatiquement les 5 étapes du pipeline (recommandé)</li>
+          <li><strong>Étape par étape</strong> = lance manuellement chaque étape (utile pour debug ou pour ne faire qu'une partie)</li>
+        </ul>
+      </li>
+      <li><strong>Reçois l'Excel par email</strong> à la fin (ou télécharge-le directement avec <code>⬇️ Excel</code>).</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>🔄 Le pipeline en détail</h2>
+    <div class="pipeline">
+      <div class="step s1"><span class="num">1</span>Pappers</div>
+      <span class="arrow">→</span>
+      <div class="step s2"><span class="num">2</span>Claude+web</div>
+      <span class="arrow">→</span>
+      <div class="step s3"><span class="num">3</span>Pipedrive</div>
+      <span class="arrow">→</span>
+      <div class="step s4"><span class="num">4</span>Kaspr</div>
+      <span class="arrow">→</span>
+      <div class="step s5"><span class="num">5</span>FullEnrich</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>Étape</th><th>Ce qu'elle fait</th><th>Ce qu'elle ramène</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Pappers</strong></td>
+          <td>Interroge la base légale française par SIREN ou nom + ville</td>
+          <td>SIREN, domaine, représentants légaux actifs (président, gérant…)</td>
+        </tr>
+        <tr>
+          <td><strong>Claude+web</strong></td>
+          <td>Recherche en ligne les dirigeants opérationnels (CEO, CFO, CTO, COO, DG, DRH, Partners…)</td>
+          <td>Personnes en poste avec emails pro probables</td>
+        </tr>
+        <tr>
+          <td><strong>Pipedrive</strong></td>
+          <td>Vérifie si la société et ses contacts existent déjà dans ton CRM</td>
+          <td>Email + téléphone des contacts déjà connus</td>
+        </tr>
+        <tr>
+          <td><strong>Kaspr</strong></td>
+          <td>Pour chaque dirigeant sans email, cherche son LinkedIn puis l'email pro associé</td>
+          <td>URL LinkedIn + email pro vérifié</td>
+        </tr>
+        <tr>
+          <td><strong>FullEnrich</strong></td>
+          <td>Batch final pour les contacts qui restent sans email/téléphone (par domaine)</td>
+          <td>Email + téléphone (waterfall multi-providers)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>⚠️ Bonnes pratiques</h2>
+    <div class="warn">
+      <strong>⏱️ Patience</strong> : un fichier de 50 sociétés prend ~15-30 min, 200 sociétés ~1-2h. Le pipeline est volontairement séquentiel pour ne pas se faire bloquer par les API en aval. <strong>Tu peux fermer l'onglet</strong>, l'email arrivera à la fin.
+    </div>
+    <div class="tip">
+      <strong>💡 Optimise ton input</strong> : plus tu fournis d'infos en entrée (SIREN, domaine, code postal, ville), moins l'enrichisseur tâtonne et plus le résultat est précis. Si tu connais déjà un contact (Prénom + Nom + Titre), remplis-le aussi : il sera enrichi en priorité.
+    </div>
+    <div class="tip">
+      <strong>🎯 Filtres automatiques</strong> : les anciens dirigeants (ex-CEO, démissionnaires…) et les rôles non-opérationnels (commissaire aux comptes, censeur, liquidateur, mandataire…) sont automatiquement exclus du résultat.
+    </div>
+    <div class="warn">
+      <strong>🚫 Cas qui peuvent rater</strong> : société radiée (signalée en rouge dans l'Excel), sociétés sans aucun dirigeant identifiable (renvoyée vide), domaine introuvable (FullEnrich sera skip). Ce n'est pas un bug, juste des limites des sources de données.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📊 Le résultat</h2>
+    <p>L'Excel final contient <strong>1 ligne par dirigeant</strong> trouvé, avec les colonnes :</p>
+    <table>
+      <thead><tr><th>Colonne</th><th>Contenu</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Organisation</strong></td><td>Nom de la société</td></tr>
+        <tr><td><strong>Prénom / Nom / Titre</strong></td><td>Identité du dirigeant</td></tr>
+        <tr><td><strong>Email</strong></td><td>Email pro (en bleu si trouvé)</td></tr>
+        <tr><td><strong>Téléphone</strong></td><td>Mobile en priorité, sinon fixe</td></tr>
+        <tr><td><strong>LinkedIn</strong></td><td>URL profil quand trouvée</td></tr>
+        <tr><td><strong>Domaine</strong></td><td>Site web officiel de la société</td></tr>
+        <tr><td><strong>Confiance</strong></td><td>haute / moyenne / faible (fiabilité de l'email)</td></tr>
+        <tr><td><strong>Source</strong></td><td>Pappers, Claude+web, Pipedrive, Kaspr, FullEnrich (ou combinaisons)</td></tr>
+        <tr><td><strong>Dans Pipedrive</strong></td><td>"oui" si la société/contact est déjà dans ton CRM</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:14px;font-size:14px;color:#64748b;">Les lignes sont regroupées par société (alternance de couleur), avec un filtre Excel actif sur les en-têtes pour trier/filtrer rapidement.</p>
+  </div>
+
+  <a href="/" class="back">← Retour à l'enrichisseur</a>
+
+</div>
+</body>
+</html>"""
+
+
+@app.get("/aide", response_class=HTMLResponse)
+async def aide():
+    """Mode d'emploi visuel de l'enrichisseur, accessible directement
+    sur /aide ou via un lien depuis l'index.html."""
+    return HTMLResponse(content=AIDE_HTML)
+
+
+# -------------------------------------------------------
+# ROUTE ALERTE — Envoi d'un email d'alerte générique
+# Appelée par le HF Space quand un run plante (mais utilisable
+# pour n'importe quelle notification)
+# -------------------------------------------------------
+@app.post("/send_alert")
+async def send_alert_route(request: Request):
+    """POST {"subject": "...", "body": "...", "recipient": "..." (optionnel)}
+    → envoi SMTP. Si recipient absent, utilise ALERT_EMAIL."""
+    data = await request.json()
+    subject = data.get("subject", "[Enrichisseur] Notification")
+    body = data.get("body", "")
+    recipient = (data.get("recipient") or "").strip()
+    ok = _send_alert(subject, body, recipient or "")
+    return {"ok": ok}
+
+
+@app.get("/test_alert")
+async def test_alert_route():
+    """Test rapide : envoie un email d'alerte à ALERT_EMAIL.
+    Visite https://enrichisseur-dirigeants.onrender.com/test_alert
+    pour vérifier que les alertes arrivent bien dans ta boîte."""
+    ok = _send_alert(
+        subject="✅ [Enrichisseur] Test d'alerte — tout fonctionne",
+        body=("Bonjour Marie,\n\n"
+              "Si tu lis ceci, c'est que le système d'alerte SMTP fonctionne. "
+              "Tu recevras un email de cette nature quand :\n\n"
+              "• Un run de prospection plante (avec le détail de l'erreur)\n"
+              "• Le solde d'une de tes APIs est épuisé (Pappers, Claude, "
+              "Kaspr, FullEnrich) — 1 seul email par heure et par API pour "
+              "éviter le spam.\n\n"
+              f"Destinataire configuré : {ALERT_EMAIL}\n\n"
+              "— Enrichisseur Dirigeants"),
+    )
+    return {"ok": ok, "recipient": ALERT_EMAIL,
+            "info": "Si ok=true, l'email est parti. Vérifie ta boîte (et les spams)."}
 
 
 @app.get("/template")
@@ -474,9 +489,6 @@ async def get_template():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=template_enrichisseur.xlsx"}
     )
-
-
-@app.get("/health")
 async def health():
     return {
         "ok": True,
@@ -485,61 +497,7 @@ async def health():
         "fullenrich_key": bool(FULLENRICH_KEY),
         "pipedrive_key": bool(PIPEDRIVE_KEY),
         "kaspr_key": bool(KASPR_KEY),
-        "cache": cache_stats(),
     }
-
-
-@app.get("/cache/stats")
-async def cache_stats_route():
-    """Affiche le nombre de sociétés en cache (utile pour suivre l'effet de l'optim)."""
-    return cache_stats()
-
-
-@app.post("/cache/clear")
-async def cache_clear_route(request: Request):
-    """Vide le cache. À utiliser uniquement si tu veux forcer un re-scan complet.
-    Pour éviter les accidents : exige un body JSON {\"confirm\": \"oui\"}."""
-    data = await request.json()
-    if data.get("confirm") != "oui":
-        return {"ok": False, "error": "Ajoute {\"confirm\": \"oui\"} dans le body pour confirmer"}
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            conn.execute("DELETE FROM claude_cache")
-            conn.commit()
-        return {"ok": True, "message": "Cache contacts vidé"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.get("/cache/clear_empty_domaines")
-async def cache_clear_empty_domaines_route():
-    """Purge uniquement les domaines mis en cache comme vides (pour re-tenter les échecs).
-    Endpoint GET → utilisable directement depuis le navigateur."""
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            cur = conn.execute("DELETE FROM domaine_cache WHERE domaine = ''")
-            n = cur.rowcount
-            conn.commit()
-        return {"ok": True, "purges": n, "message": f"{n} domaines vides supprimés du cache"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.post("/cache/clear_domaines")
-async def cache_clear_domaines_route(request: Request):
-    """Vide TOUT le cache domaine (trouvés + vides). À utiliser avec parcimonie."""
-    data = await request.json()
-    if data.get("confirm") != "oui":
-        return {"ok": False, "error": "Ajoute {\"confirm\": \"oui\"} dans le body pour confirmer"}
-    try:
-        with sqlite3.connect(CACHE_DB) as conn:
-            conn.execute("DELETE FROM domaine_cache")
-            conn.commit()
-        return {"ok": True, "message": "Cache domaines vidé"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
 async def check_pipedrive(prenom: str, nom: str) -> dict:
     if not PIPEDRIVE_KEY or not prenom or not nom:
         return {}
@@ -577,43 +535,34 @@ async def check_pipedrive(prenom: str, nom: str) -> dict:
     except Exception as e:
         print(f"[PIPEDRIVE ERROR] {terme}: {e}")
     return {}
-
-
 async def trouver_linkedin(prenom: str, nom: str, societe: str) -> str:
-    """Cherche l'URL LinkedIn du dirigeant via Claude+web (Haiku, max_uses:1)."""
+    """Cherche l'URL LinkedIn du dirigeant via Claude+web (max_uses:1)."""
     if not ANTHROPIC_KEY:
         return ""
     prenom = nettoyer_prenom(prenom)
     if not prenom or not nom:
         return ""
     try:
-        user_prompt = f"""Trouve l'URL LinkedIn de :
-Prénom : {prenom}
-Nom : {nom}
-Société : {societe}"""
+        prompt = f"""Trouve l'URL LinkedIn exacte de cette personne :
+Prénom: {prenom}
+Nom: {nom}
+Société: {societe}
+Réponds UNIQUEMENT avec l'URL complète (ex: https://www.linkedin.com/in/prenom-nom-xxxxx/)
+Si tu n'es pas certain à 100%, réponds: NON"""
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                 json={
-                    "model": MODEL_EXTRACT,  # Haiku — extraction simple
+                    "model": "claude-sonnet-4-6",
                     "max_tokens": 200,
-                    "system": [
-                        {
-                            "type": "text",
-                            "text": SYSTEM_LINKEDIN,
-                            "cache_control": {"type": "ephemeral"}
-                        }
-                    ],
                     "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
-                    "messages": [{"role": "user", "content": user_prompt}]
+                    "messages": [{"role": "user", "content": prompt}]
                 }
             )
             print(f"[LINKEDIN] Status {r.status_code} pour {prenom} {nom}")
             if r.status_code == 200:
-                response_json = r.json()
-                log_usage("LINKEDIN", f"{prenom} {nom}", response_json)
-                all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text").strip()
+                all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
                 m = re.search(r'https?://(?:www\.)?linkedin\.com/in/[^\s\)\"\'\]]+', all_text)
                 if m:
                     url = m.group().rstrip('/')
@@ -623,8 +572,6 @@ Société : {societe}"""
         print(f"[LINKEDIN ERROR] {prenom} {nom}: {e}")
     print(f"[LINKEDIN] ❌ Pas trouvé pour {prenom} {nom}")
     return ""
-
-
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
     """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement (illimité)."""
     if not KASPR_KEY or not linkedin_url:
@@ -660,27 +607,14 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
                     return email
             elif r.status_code == 402:
                 print(f"[KASPR] Plus de crédits !")
+                _alert_api_down("Kaspr", 402, r.text[:200] if hasattr(r, 'text') else "")
             else:
                 print(f"[KASPR] Erreur {r.status_code}: {r.text[:100]}")
     except Exception as e:
         print(f"[KASPR ERROR] {prenom} {nom}: {e}")
     return ""
-
-
 async def corriger_domaine(siren: str, societe: str) -> str:
-    """Trouve le domaine officiel via : cache → Pappers → heuristique HTTP → Claude+web.
-    Met en cache le résultat (90 jours) pour ne plus re-tenter."""
-
-    # ── 1. CACHE ──────────────────────────────────────────────
-    cached = domaine_cache_get(siren)
-    if cached is not None:
-        if cached:
-            print(f"[DOMAINE CACHE HIT] {societe} → {cached}")
-        else:
-            print(f"[DOMAINE CACHE HIT] {societe} → vide (déjà tenté)")
-        return cached
-
-    # ── 2. PAPPERS (SIREN puis recherche par nom) ─────────────
+    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude."""
     if PAPPERS_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
@@ -692,7 +626,6 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                         domaine = nettoyer_domaine(d.get("domaine_url","") or d.get("site_web",""))
                         if domaine_valide(domaine):
                             print(f"[DOMAINE FIX] Pappers SIREN → {domaine} pour {societe}")
-                            domaine_cache_set(siren, domaine)
                             return domaine
                 r2 = await c.get("https://api.pappers.fr/v2/recherche",
                     params={"api_token": PAPPERS_KEY, "q": societe, "par_page": 1})
@@ -702,74 +635,33 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                         domaine = nettoyer_domaine(resultats[0].get("domaine_url","") or resultats[0].get("site_web",""))
                         if domaine_valide(domaine):
                             print(f"[DOMAINE FIX] Pappers nom → {domaine} pour {societe}")
-                            domaine_cache_set(siren, domaine)
                             return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Pappers] {e}")
-
-    # ── 3. HEURISTIQUE : générer candidats + vérifier HTTP ────
-    # Gratuit, rapide, et ça résout la majorité des cas
-    candidats = _domaine_candidates(societe)
-    if candidats:
-        print(f"[DOMAINE HEURISTIQUE] {societe} → essais : {', '.join(candidats[:5])}...")
-        # Tester en parallèle pour aller vite (5 candidats à la fois)
-        for chunk_start in range(0, len(candidats), 5):
-            chunk = candidats[chunk_start:chunk_start+5]
-            results = await asyncio.gather(
-                *(_verifier_domaine_async(c) for c in chunk),
-                return_exceptions=True
-            )
-            for cand, ok in zip(chunk, results):
-                if ok is True:
-                    print(f"[DOMAINE FIX] Heuristique HTTP → {cand} pour {societe}")
-                    domaine_cache_set(siren, cand)
-                    return cand
-
-    # ── 4. CLAUDE + WEB (filet final, Sonnet pour fiabilité) ──
     if ANTHROPIC_KEY:
         try:
-            user_prompt = f"Société française : {societe}\nDonne-moi le domaine de son site officiel."
+            prompt = f"""Quel est le nom de domaine du site web officiel de cette société française : {societe} ?
+Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans aucun autre texte."""
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
-                        "model": MODEL_ENRICH,  # Sonnet : domaine est critique pour Marie
-                        "max_tokens": 80,
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": SYSTEM_DOMAINE,
-                                "cache_control": {"type": "ephemeral"}
-                            }
-                        ],
-                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
-                        "messages": [{"role": "user", "content": user_prompt}]
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 50,
+                        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
+                        "messages": [{"role": "user", "content": prompt}]
                     }
                 )
                 if r.status_code == 200:
-                    response_json = r.json()
-                    log_usage("DOMAINE", societe, response_json)
-                    all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text").strip()
-                    # Parser robuste : extraire un domaine du texte même si Claude a ajouté du blabla
-                    domaine = _extraire_domaine_du_texte(all_text)
+                    all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text").strip()
+                    domaine = nettoyer_domaine(all_text.split()[0] if all_text else "")
                     if domaine_valide(domaine):
-                        # Vérifier que le domaine répond vraiment (évite les hallucinations)
-                        if await _verifier_domaine_async(domaine):
-                            print(f"[DOMAINE FIX] Claude+web → {domaine} pour {societe}")
-                            domaine_cache_set(siren, domaine)
-                            return domaine
-                        else:
-                            print(f"[DOMAINE FIX] Claude a proposé {domaine} mais le site ne répond pas")
+                        print(f"[DOMAINE FIX] Claude → {domaine} pour {societe}")
+                        return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Claude] {e}")
-
-    # ── ÉCHEC : on cache le vide pour ne pas re-tenter ────────
-    print(f"[DOMAINE FIX] ❌ Aucun domaine trouvé pour {societe}")
-    domaine_cache_set(siren, "")
     return ""
-
-
 # -------------------------------------------------------
 # ROUTE PASSE 1 : Pappers + Claude + Pipedrive
 # -------------------------------------------------------
@@ -789,7 +681,6 @@ async def enrich_one(request: Request):
     code_postal    = data.get("code_postal", "")
     ville          = data.get("ville", "")
     print(f"[START] {nom} | domaine={domaine} | siren={siren}")
-
     # ── CHECK PIPEDRIVE ORGANISATION ──
     if PIPEDRIVE_KEY:
         try:
@@ -814,61 +705,9 @@ async def enrich_one(request: Request):
                                 if r2.status_code == 200:
                                     persons = r2.json().get("data") or []
                                     for p in persons:
-                                        person_id = p.get("id")
                                         prenom_p = p.get("first_name", "") or ""
                                         nom_p    = p.get("last_name", "") or ""
                                         titre_p  = p.get("job_title", "") or ""
-                                        # LinkedIn : pas un champ standard Pipedrive, souvent un custom field
-                                        linkedin_p = ""
-                                        for k in ("linkedin", "linkedin_url", "linkedinUrl", "linkedin_profile"):
-                                            v = p.get(k, "")
-                                            if isinstance(v, str) and "linkedin.com" in v.lower():
-                                                linkedin_p = v.strip()
-                                                break
-
-                                        # ── FALLBACK : si titre OU linkedin manquent,
-                                        # on fetch le détail (/v1/persons/{id}) qui contient
-                                        # tous les champs y compris custom fields
-                                        if (not titre_p or not linkedin_p) and person_id:
-                                            try:
-                                                r3 = await c.get(
-                                                    f"https://api.pipedrive.com/v1/persons/{person_id}",
-                                                    params={"api_token": PIPEDRIVE_KEY},
-                                                )
-                                                if r3.status_code == 200:
-                                                    detail = r3.json().get("data", {}) or {}
-                                                    # ── Titre
-                                                    if not titre_p:
-                                                        titre_p = (detail.get("job_title") or "").strip()
-                                                        if titre_p:
-                                                            print(f"[PIPEDRIVE TITRE FALLBACK ✅] {prenom_p} {nom_p} → {titre_p!r}")
-                                                        else:
-                                                            for k, v in detail.items():
-                                                                if isinstance(v, str) and v and any(
-                                                                    kw in k.lower()
-                                                                    for kw in ("title", "post", "fonction", "role")
-                                                                ):
-                                                                    titre_p = v.strip()
-                                                                    print(f"[PIPEDRIVE TITRE CUSTOM ✅] {prenom_p} {nom_p} → {k}={titre_p!r}")
-                                                                    break
-                                                    # ── LinkedIn
-                                                    if not linkedin_p:
-                                                        # 1. Champs standards potentiels
-                                                        for k in ("linkedin", "linkedin_url", "linkedinUrl"):
-                                                            v = detail.get(k, "")
-                                                            if isinstance(v, str) and "linkedin.com" in v.lower():
-                                                                linkedin_p = v.strip()
-                                                                print(f"[PIPEDRIVE LINKEDIN ✅] {prenom_p} {nom_p} → {linkedin_p}")
-                                                                break
-                                                        # 2. Cherche n'importe quelle valeur contenant linkedin.com
-                                                        if not linkedin_p:
-                                                            for k, v in detail.items():
-                                                                if isinstance(v, str) and "linkedin.com" in v.lower():
-                                                                    linkedin_p = v.strip()
-                                                                    print(f"[PIPEDRIVE LINKEDIN CUSTOM ✅] {prenom_p} {nom_p} → {k}={linkedin_p}")
-                                                                    break
-                                            except Exception as ex:
-                                                print(f"[PIPEDRIVE FALLBACK ERROR] {prenom_p} {nom_p}: {ex}")
                                         emails_p = p.get("email", []) or []
                                         email_p  = ""
                                         for e in emails_p:
@@ -894,7 +733,6 @@ async def enrich_one(request: Request):
                                             "prenom": prenom_p, "nom": nom_p,
                                             "titre": titre_p, "email": email_p,
                                             "phone": phone_p,
-                                            "linkedin": linkedin_p,
                                             "confiance": "haute" if (email_p and phone_p) else "faible",
                                             "source": "Pipedrive",
                                             "dans_pipedrive": "oui",
@@ -908,11 +746,8 @@ async def enrich_one(request: Request):
                             break
         except Exception as e:
             print(f"[PIPEDRIVE ORG ERROR] {e}")
-
     pappers_contacts = []
     pappers_data = None
-
-    # ÉTAPE 1 : Pappers
     if PAPPERS_KEY:
         if domaine_valide(domaine):
             try:
@@ -922,6 +757,8 @@ async def enrich_one(request: Request):
                     if r.status_code == 200:
                         pappers_data = r.json()
                         print(f"[PAPPERS] Trouvé par domaine")
+                    elif r.status_code in (401, 402, 403, 429):
+                        _alert_api_down("Pappers", r.status_code, r.text[:200])
             except Exception as e:
                 print(f"[PAPPERS ERROR domaine] {e}")
         if not pappers_data and not siren:
@@ -936,6 +773,8 @@ async def enrich_one(request: Request):
                         if resultats:
                             siren = resultats[0].get("siren", "")
                             print(f"[PAPPERS] SIREN trouvé par nom : {siren}")
+                    elif r.status_code in (401, 402, 403, 429):
+                        _alert_api_down("Pappers", r.status_code, r.text[:200])
             except Exception as e:
                 print(f"[PAPPERS ERROR nom] {e}")
         if not pappers_data and siren:
@@ -945,6 +784,8 @@ async def enrich_one(request: Request):
                         params={"api_token": PAPPERS_KEY, "siren": siren})
                     if r.status_code == 200:
                         pappers_data = r.json()
+                    elif r.status_code in (401, 402, 403, 429):
+                        _alert_api_down("Pappers", r.status_code, r.text[:200])
             except Exception as e:
                 print(f"[PAPPERS ERROR siren] {e}")
         if pappers_data:
@@ -984,8 +825,6 @@ async def enrich_one(request: Request):
                     "source": "Pappers"
                 })
             print(f"[PAPPERS] {len(pappers_contacts)} représentants actifs | domaine={domaine}")
-
-    # Pré-remplir le contact connu depuis le fichier source
     if contact_prenom and contact_nom:
         contact_prenom_clean = nettoyer_prenom(contact_prenom)
         deja_present = any(
@@ -1005,34 +844,18 @@ async def enrich_one(request: Request):
             print(f"[SOURCE] Contact pré-rempli : {contact_prenom_clean} {contact_nom} ({contact_titre})")
         else:
             print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
-
-    # ÉTAPE 2 : Claude + web_search (recherche CEO/CFO opérationnels)
-    # Règle métier : on saute Claude+web si :
-    #   1) la société est déjà dans Pipedrive (contacts récupérés ci-dessus)
-    #   2) on a déjà un résultat en cache pour cette société (SIREN, TTL 60j)
     claude_contacts = []
-    skip_claude_web = False
-    skip_reason = ""
-
-    if pipedrive_org_contacts:
-        skip_claude_web = True
-        skip_reason = f"déjà dans Pipedrive ({len(pipedrive_org_contacts)} contacts)"
-        print(f"[SKIP CLAUDE+WEB] {nom} — {skip_reason}")
-
-    if not skip_claude_web:
-        cached = cache_get(siren)
-        if cached is not None:
-            claude_contacts = cached
-            skip_claude_web = True
-            skip_reason = f"cache hit SIREN {siren}"
-            print(f"[CACHE HIT] {nom} → {len(cached)} contacts (économie d'1 appel Claude+web)")
-
-    if not skip_claude_web and ANTHROPIC_KEY:
+    if ANTHROPIC_KEY:
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
-        exclusion = f"\nDirigeants déjà connus à ne PAS inclure : {', '.join(noms_deja)}" if noms_deja else ""
+        exclusion = f"\nNe pas inclure : {', '.join(noms_deja)}" if noms_deja else ""
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
-        user_prompt = f"""Société française à enrichir :
-Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN : "+siren if siren else ""}{contexte_fondateurs}{exclusion}"""
+        prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
+Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}{exclusion}
+Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
+- Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
+- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
+Réponds UNIQUEMENT avec ce JSON :
+{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
         delays = [10, 25, 45]
         for attempt in range(3):
             try:
@@ -1042,27 +865,20 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                         "https://api.anthropic.com/v1/messages",
                         headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                         json={
-                            "model": MODEL_ENRICH,  # Sonnet — qualité requise
+                            "model": "claude-sonnet-4-6",
                             "max_tokens": 1000,
-                            "system": [
-                                {
-                                    "type": "text",
-                                    "text": SYSTEM_ENRICH,
-                                    "cache_control": {"type": "ephemeral"}
-                                }
-                            ],
                             "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
-                            "messages": [{"role": "user", "content": user_prompt}]
+                            "messages": [{"role": "user", "content": prompt}]
                         }
                     )
                     print(f"[CLAUDE] Status {r.status_code} pour {nom}")
+                    if r.status_code == 401:
+                        _alert_api_down("Anthropic Claude", 401, r.text[:200])
                     if r.status_code in (429, 529):
                         await asyncio.sleep(delays[attempt])
                         continue
                     if r.status_code == 200:
-                        response_json = r.json()
-                        log_usage("ENRICH", nom, response_json)
-                        all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text")
+                        all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
                         m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
                         if m:
                             parsed = json.loads(m.group())
@@ -1076,10 +892,6 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                                     ct["_skip"] = True
                             claude_contacts = [ct for ct in parsed.get("contacts",[]) if not ct.get("_skip")]
                             print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
-                            # Mettre en cache pour 60 jours (évite de re-payer si scan futur sur la même société)
-                            if siren and claude_contacts:
-                                cache_set(siren, claude_contacts)
-                                print(f"[CACHE SET] {nom} (SIREN {siren}) → {len(claude_contacts)} contacts mis en cache")
                         break
                     else:
                         print(f"[CLAUDE ERROR DETAIL] {r.status_code}: {r.text[:300]}")
@@ -1088,17 +900,11 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                 print(f"[CLAUDE EXCEPTION] {e}")
                 if attempt < 2:
                     await asyncio.sleep(delays[attempt])
-
-    # Domaine fallback si toujours manquant
     if not domaine_valide(domaine) and siren:
         domaine = await corriger_domaine(siren, nom)
-
-    # Propager le domaine sur tous les contacts
     for ct in pappers_contacts + claude_contacts + pipedrive_org_contacts:
         if not ct.get("domaine"):
             ct["domaine"] = domaine
-
-    # ÉTAPE 3 : Pipedrive check par personne (pour les contacts qui n'ont pas d'email)
     if PIPEDRIVE_KEY:
         for ct in pappers_contacts + claude_contacts:
             if ct.get("email"):
@@ -1111,8 +917,6 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                 ct["dans_pipedrive"] = "oui"
             if pd_data.get("phone"):
                 ct["phone"] = pd_data["phone"]
-
-    # ─── FUSION ──────────────────────────────────────────────────
     existing_keys = {(c.get("prenom","").lower(), c.get("nom","").lower())
                      for c in pappers_contacts + claude_contacts
                      if c.get("prenom") or c.get("nom")}
@@ -1121,7 +925,6 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
         if key not in existing_keys and (ct.get("prenom") or ct.get("nom")):
             pappers_contacts.insert(0, ct)
             existing_keys.add(key)
-
     tous_contacts = pappers_contacts + claude_contacts
     if not tous_contacts:
         tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
@@ -1144,11 +947,6 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
         })
     print(f"[DONE] {nom} → {len(results)} contacts | domaine={domaine}")
     return {"results": results}
-
-
-# -------------------------------------------------------
-# ROUTE CLAUDE ONLY (Phase 2 standalone)
-# -------------------------------------------------------
 @app.post("/enrich_claude")
 async def enrich_claude(request: Request):
     data = await request.json()
@@ -1157,21 +955,17 @@ async def enrich_claude(request: Request):
     domaine    = nettoyer_domaine(data.get("domaine", ""))
     fondateurs = data.get("fondateurs", "")
     max_contacts = int(data.get("max_contacts", 3))
-
     if not ANTHROPIC_KEY:
         return {"contacts": []}
-
-    # Vérifier le cache avant de payer un appel
-    cached = cache_get(siren)
-    if cached is not None:
-        print(f"[CACHE HIT P2] {nom} (SIREN {siren}) → {len(cached)} contacts depuis cache")
-        return {"contacts": cached[:max_contacts]}
-
     contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
-    user_prompt = f"""Société française à enrichir :
-Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN : "+siren if siren else ""}{contexte_fondateurs}
-Retourne au maximum {max_contacts} contact(s)."""
-
+    prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
+Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}
+Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
+- Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
+- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
+- Retourne AU MAXIMUM {max_contacts} contact(s)
+Réponds UNIQUEMENT avec ce JSON :
+{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
     delays = [10, 25, 45]
     for attempt in range(3):
         try:
@@ -1181,17 +975,10 @@ Retourne au maximum {max_contacts} contact(s)."""
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
-                        "model": MODEL_ENRICH,  # Sonnet — qualité requise
+                        "model": "claude-sonnet-4-6",
                         "max_tokens": 1000,
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": SYSTEM_ENRICH,
-                                "cache_control": {"type": "ephemeral"}
-                            }
-                        ],
                         "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
-                        "messages": [{"role": "user", "content": user_prompt}]
+                        "messages": [{"role": "user", "content": prompt}]
                     }
                 )
                 print(f"[CLAUDE PHASE2] Status {r.status_code} pour {nom}")
@@ -1199,9 +986,7 @@ Retourne au maximum {max_contacts} contact(s)."""
                     await asyncio.sleep(delays[attempt])
                     continue
                 if r.status_code == 200:
-                    response_json = r.json()
-                    log_usage("ENRICH-P2", nom, response_json)
-                    all_text = " ".join(b.get("text","") for b in response_json.get("content",[]) if b.get("type")=="text")
+                    all_text = " ".join(b.get("text","") for b in r.json().get("content",[]) if b.get("type")=="text")
                     m = re.search(r'\{[\s\S]*"contacts"[\s\S]*\}', all_text)
                     if m:
                         parsed = json.loads(m.group())
@@ -1214,10 +999,6 @@ Retourne au maximum {max_contacts} contact(s)."""
                             if not est_ancien_dirigeant(ct.get("titre","")) and not est_titre_exclu(ct.get("titre","")):
                                 contacts.append(ct)
                         print(f"[CLAUDE PHASE2 OK] {len(contacts)} contacts pour {nom}")
-                        # Mettre en cache pour 60 jours
-                        if siren and contacts:
-                            cache_set(siren, contacts)
-                            print(f"[CACHE SET P2] {nom} (SIREN {siren}) → {len(contacts)} contacts mis en cache")
                         return {"contacts": contacts}
                 else:
                     print(f"[CLAUDE PHASE2 ERROR] {r.status_code}: {r.text[:200]}")
@@ -1227,11 +1008,6 @@ Retourne au maximum {max_contacts} contact(s)."""
             if attempt < 2:
                 await asyncio.sleep(delays[attempt])
     return {"contacts": []}
-
-
-# -------------------------------------------------------
-# ROUTE PIPEDRIVE CHECK standalone
-# -------------------------------------------------------
 @app.post("/check_pipedrive")
 async def check_pipedrive_route(request: Request):
     data = await request.json()
@@ -1239,11 +1015,6 @@ async def check_pipedrive_route(request: Request):
     nom    = data.get("nom","")
     result = await check_pipedrive(prenom, nom)
     return {"email": result.get("email",""), "phone": result.get("phone","")}
-
-
-# -------------------------------------------------------
-# ROUTE PASSE 2 : Kaspr + LinkedIn + Fullenrich batch
-# -------------------------------------------------------
 @app.post("/enrich_emails")
 async def enrich_emails(request: Request):
     data = await request.json()
@@ -1285,7 +1056,6 @@ async def enrich_emails(request: Request):
                     ct["source_kaspr"] = True
                     emails_result[idx] = {"email": email_kaspr, "linkedin": linkedin_url, "source": "+Kaspr"}
                     print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
-
     domaines_corriges = {}
     for ct in contacts:
         if not domaine_valide(ct.get("domaine","")):
@@ -1296,7 +1066,6 @@ async def enrich_emails(request: Request):
                 domaines_corriges[societe] = await corriger_domaine(siren, societe)
             if domaines_corriges[societe]:
                 ct["domaine"] = domaines_corriges[societe]
-
     to_enrich = []
     phase = data.get("phase","fullenrich")
     for ct in contacts:
@@ -1322,10 +1091,8 @@ async def enrich_emails(request: Request):
             "enrich_fields": ["contact.emails", "contact.phones"],
             "custom": {"idx": str(ct.get("idx",0))}
         })
-
     if not to_enrich:
         return {"emails": emails_result}
-
     print(f"[FULLENRICH BATCH] {len(to_enrich)} contacts envoyés")
     try:
         async with httpx.AsyncClient(timeout=30) as c:
@@ -1337,6 +1104,8 @@ async def enrich_emails(request: Request):
             print(f"[FULLENRICH] Status lancement : {r.status_code}")
             if r.status_code not in (200, 201):
                 print(f"[FULLENRICH ERROR] {r.text[:200]}")
+                if r.status_code in (401, 402, 403):
+                    _alert_api_down("FullEnrich", r.status_code, r.text[:200])
                 return {"emails": emails_result}
             enrichment_id = r.json().get("enrichment_id") or r.json().get("id")
             if not enrichment_id:
@@ -1388,11 +1157,6 @@ async def enrich_emails(request: Request):
     except Exception as e:
         print(f"[FULLENRICH EXCEPTION] {e}")
         return {"emails": emails_result}
-
-
-# -------------------------------------------------------
-# HELPER : Génère un Excel mis en forme en mémoire
-# -------------------------------------------------------
 def generer_excel(rows: list) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1400,11 +1164,11 @@ def generer_excel(rows: list) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Dirigeants enrichis"
-    headers  = ['Organisation','Adresse postale','Prénom','Nom','Titre (fonction)','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
-    col_map  = ['societe','adresse','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
+    headers  = ['Organisation','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
+    col_map  = ['societe','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
     thin     = Side(style='thin', color="e2e8f0")
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
-    ws.merge_cells('A1:L1')
+    ws.merge_cells('A1:I1')
     c = ws['A1']
     c.value = "Enrichissement Dirigeants"
     c.font  = Font(name='Arial', bold=True, size=14, color="FFFFFF")
@@ -1412,7 +1176,7 @@ def generer_excel(rows: list) -> bytes:
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 32
     emails_count = len([r for r in rows if r.get('email')])
-    ws.merge_cells('A2:L2')
+    ws.merge_cells('A2:I2')
     c = ws['A2']
     c.value = f"{len(rows)} contacts  |  {emails_count} emails trouvés  |  {len(rows)-emails_count} sans email"
     c.font  = Font(name='Arial', size=10, color="FFFFFF")
@@ -1462,19 +1226,13 @@ def generer_excel(rows: list) -> bytes:
                 c.font = Font(name='Arial', size=9, color="92400e", bold=True)
             else:
                 c.fill = PatternFill('solid', start_color=bg)
-    # Largeurs : Organisation, Adresse postale, Prénom, Nom, Titre, Email, Téléphone, LinkedIn, Domaine, Confiance, Source, Dans Pipedrive
-    for i, w in enumerate([22, 38, 14, 18, 22, 32, 16, 14, 20, 12, 22, 28], 1):
+    for i, w in enumerate([22,14,18,28,32,16,14,20,12,22,28], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = 'A4'
-    ws.auto_filter.ref = f"A3:L{len(rows)+3}"
+    ws.auto_filter.ref = f"A3:I{len(rows)+3}"
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
-
-
-# -------------------------------------------------------
-# ROUTE EXPORT EXCEL
-# -------------------------------------------------------
 @app.post("/export_excel")
 async def export_excel(request: Request):
     data = await request.json()
@@ -1487,11 +1245,6 @@ async def export_excel(request: Request):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=enrichissement_dirigeants.xlsx"}
     )
-
-
-# -------------------------------------------------------
-# ROUTE ENVOI EMAIL CSV
-# -------------------------------------------------------
 @app.post("/send_csv")
 async def send_csv(request: Request):
     data = await request.json()
@@ -1516,8 +1269,6 @@ Votre enrichissement est terminé.
 Fichier Excel en pièce jointe.
 Enrichisseur Dirigeants"""
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
-        # Pièce jointe Excel — MIME type officiel pour qu'Apple Mail
-        # reconnaisse le .xlsx (icône Excel + double-clic direct)
         part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         part.set_payload(excel_content)
         encoders.encode_base64(part)
@@ -1532,3 +1283,4 @@ Enrichisseur Dirigeants"""
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return {"ok": False, "error": str(e)}
+
