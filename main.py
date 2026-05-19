@@ -1,5 +1,6 @@
-import os, json, asyncio, httpx, re, smtplib, csv, io
+import os, json, asyncio, httpx, re, smtplib, csv, io, sqlite3, time
 from io import BytesIO
+from pathlib import Path
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -15,12 +16,143 @@ PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 PIPEDRIVE_KEY  = os.getenv("PIPEDRIVE_API_KEY", "")
 KASPR_KEY      = os.getenv("KASPR_API_KEY", "")
+
+# Modèles Claude — Sonnet pour la qualité, Haiku pour les tâches simples (4× moins cher)
+MODEL_SONNET = "claude-sonnet-4-6"          # enrich_one, enrich_claude (qualité critique)
+MODEL_HAIKU  = "claude-haiku-4-5-20251001"  # trouver_linkedin, corriger_domaine (extraction simple)
+
+# System prompt pour enrich_one/enrich_claude — bloc stable cachable
+# (doit faire >= 1024 tokens pour activer le prompt caching Anthropic)
+SYSTEM_ENRICH = """Tu es un assistant spécialisé dans la recherche de dirigeants opérationnels de sociétés françaises sur le web.
+
+OBJECTIF
+Identifier les vrais décideurs opérationnels (CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs) — pas les simples mandataires légaux ou représentants de holdings.
+
+CONSIGNES STRICTES
+- Cherche uniquement les dirigeants ACTUELLEMENT EN POSTE.
+- Ne jamais inclure : "ancien", "ex-", "sortant", "démissionnaire", "jusqu'au".
+- Postes à EXCLURE absolument : commissaire aux comptes, conseil de surveillance, membre du conseil, censeur, observateur, représentant permanent, liquidateur, mandataire, administrateur judiciaire.
+- Privilégie les sources officielles : site de la société (page "équipe", "à propos", "leadership"), LinkedIn, presse spécialisée (Les Échos, Maddyness, Frenchweb).
+- Si la société est une filiale d'un groupe, identifie les dirigeants de l'entité française précisément ciblée (pas ceux du groupe parent).
+
+RÈGLES EMAIL
+- Emails uniquement professionnels (domaine de la société). Jamais gmail, hotmail, yahoo, outlook.com, icloud, free, orange, wanadoo.
+- Si tu trouves l'email confirmé sur le site officiel ou une source fiable → "confiance_email": "haute"
+- Si tu déduis l'email du pattern habituel (prenom.nom@domaine, p.nom@domaine, etc.) sans confirmation → "confiance_email": "moyenne"
+- Si tu n'es pas sûr ou pattern incertain → "email": null, "confiance_email": "faible"
+
+FORMAT DE SORTIE OBLIGATOIRE
+Réponds UNIQUEMENT avec ce JSON, sans aucun texte avant ni après, sans backticks, sans markdown :
+{"contacts":[{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}]}
+
+EXEMPLES DE BONNES RÉPONSES
+
+Exemple 1 — startup tech avec dirigeants identifiables sur le site :
+Input : Société "Doctolib", site doctolib.fr
+Output : {"contacts":[{"prenom":"Stanislas","nom":"Niox-Chateau","titre":"CEO & Cofondateur","email":"stanislas.niox-chateau@doctolib.com","confiance_email":"moyenne"},{"prenom":"Olivier","nom":"Loison","titre":"COO","email":"olivier.loison@doctolib.com","confiance_email":"moyenne"}]}
+
+Exemple 2 — société avec plusieurs cofondateurs dirigeants :
+Input : Société "Mirakl", site mirakl.com
+Output : {"contacts":[{"prenom":"Adrien","nom":"Nussenbaum","titre":"CEO & Cofondateur","email":"adrien.nussenbaum@mirakl.com","confiance_email":"moyenne"},{"prenom":"Philippe","nom":"Corrot","titre":"Président & Cofondateur","email":"philippe.corrot@mirakl.com","confiance_email":"moyenne"}]}
+
+Exemple 3 — distinction ancien vs actuel dirigeant :
+Si une source dit "Jean Dupont, ancien CEO jusqu'en 2023" → NE PAS l'inclure.
+Si une source dit "Marie Martin, CEO depuis janvier 2024" → l'inclure.
+
+Exemple 4 — pas de dirigeant identifiable de manière fiable :
+Output : {"contacts":[]}
+
+Exemple 5 — distinguer dirigeant opérationnel vs représentant légal :
+Si Pappers a renvoyé "Holding Patrimoniale Dupont, représentant Jean Dupont, président" → cherche en plus le directeur général opérationnel sur le site/LinkedIn.
+
+Exemple 6 — emails à exclure systématiquement :
+{"email":"ceo@gmail.com"} → INCORRECT, mettre "email": null à la place.
+
+RÈGLE FINALE
+Ne renvoie JAMAIS de texte hors du JSON. Pas de "Voici les contacts trouvés", pas de commentaire, pas de markdown. Le premier caractère de ta réponse doit être { et le dernier }."""
 SMTP_HOST      = os.getenv("SMTP_HOST", "pro2.mail.ovh.net")
 SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER      = os.getenv("SMTP_USER", "")
 SMTP_PASS      = os.getenv("SMTP_PASS", "")
 # Destinataire des alertes "solde API à 0" et "run failed"
 ALERT_EMAIL    = os.getenv("ALERT_EMAIL", "mmoriceau@equation-sie.com")
+
+# ────────────────────────────────────────────────────────────────────
+# CACHE SQLite — économise les appels Claude/Pappers répétés
+# Utilise /var/data si Render Disk monté, sinon /tmp (perd au redéploy)
+# - Cache SIREN → contacts Claude+web (TTL 60 jours)
+# - Cache domaine SIREN → domaine officiel (TTL 90j si trouvé, 1j si vide)
+# ────────────────────────────────────────────────────────────────────
+CACHE_DIR = "/var/data" if os.path.isdir("/var/data") else "/tmp"
+Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+CACHE_DB = os.path.join(CACHE_DIR, "enrich_cache.db")
+CONTACTS_TTL_DAYS = 60
+DOMAINE_TTL_DAYS = 90
+DOMAINE_EMPTY_TTL_DAYS = 1
+
+def _init_cache():
+    with sqlite3.connect(CACHE_DB) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS contacts_cache (
+            siren TEXT PRIMARY KEY, contacts_json TEXT NOT NULL, cached_at INTEGER NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS domaine_cache (
+            siren TEXT PRIMARY KEY, domaine TEXT NOT NULL, cached_at INTEGER NOT NULL
+        )""")
+        conn.commit()
+_init_cache()
+print(f"[CACHE] Init OK → {CACHE_DB}")
+
+def _normalize_siren(siren) -> str:
+    return re.sub(r'\D', '', str(siren or ''))[:9]
+
+def cache_contacts_get(siren: str):
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9: return None
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            row = conn.execute("SELECT contacts_json, cached_at FROM contacts_cache WHERE siren=?", (siren,)).fetchone()
+            if row and (time.time() - row[1]) < CONTACTS_TTL_DAYS * 86400:
+                return json.loads(row[0])
+    except Exception as e:
+        print(f"[CACHE GET ERROR] {siren}: {e}")
+    return None
+
+def cache_contacts_set(siren: str, contacts: list):
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9 or not contacts: return
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            conn.execute("INSERT OR REPLACE INTO contacts_cache (siren, contacts_json, cached_at) VALUES (?, ?, ?)",
+                         (siren, json.dumps(contacts, ensure_ascii=False), int(time.time())))
+            conn.commit()
+    except Exception as e:
+        print(f"[CACHE SET ERROR] {siren}: {e}")
+
+def cache_domaine_get(siren: str):
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9: return None
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            row = conn.execute("SELECT domaine, cached_at FROM domaine_cache WHERE siren=?", (siren,)).fetchone()
+            if row:
+                domaine, ts = row
+                ttl = DOMAINE_TTL_DAYS if domaine else DOMAINE_EMPTY_TTL_DAYS
+                if (time.time() - ts) < ttl * 86400:
+                    return domaine
+    except Exception as e:
+        print(f"[DOMAINE CACHE GET ERROR] {siren}: {e}")
+    return None
+
+def cache_domaine_set(siren: str, domaine: str):
+    siren = _normalize_siren(siren)
+    if not siren or len(siren) != 9: return
+    try:
+        with sqlite3.connect(CACHE_DB) as conn:
+            conn.execute("INSERT OR REPLACE INTO domaine_cache (siren, domaine, cached_at) VALUES (?, ?, ?)",
+                         (siren, domaine or "", int(time.time())))
+            conn.commit()
+    except Exception as e:
+        print(f"[DOMAINE CACHE SET ERROR] {siren}: {e}")
 
 # ────────────────────────────────────────────────────────────────────
 # SYSTÈME D'ALERTES EMAIL (solde API + run failed)
@@ -554,7 +686,7 @@ Si tu n'es pas certain à 100%, réponds: NON"""
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                 json={
-                    "model": "claude-sonnet-4-6",
+                    "model": MODEL_HAIKU,  # extraction simple, Haiku suffit
                     "max_tokens": 200,
                     "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
                     "messages": [{"role": "user", "content": prompt}]
@@ -614,7 +746,15 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
         print(f"[KASPR ERROR] {prenom} {nom}: {e}")
     return ""
 async def corriger_domaine(siren: str, societe: str) -> str:
-    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude."""
+    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude.
+    Met en cache 90j (1j si vide) pour éviter les appels répétés."""
+    # CACHE : on a déjà cherché le domaine pour ce SIREN ?
+    cached = cache_domaine_get(siren)
+    if cached is not None:
+        if cached:
+            print(f"[DOMAINE CACHE HIT] {societe} → {cached}")
+        return cached
+
     if PAPPERS_KEY:
         try:
             async with httpx.AsyncClient(timeout=8) as c:
@@ -626,6 +766,7 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                         domaine = nettoyer_domaine(d.get("domaine_url","") or d.get("site_web",""))
                         if domaine_valide(domaine):
                             print(f"[DOMAINE FIX] Pappers SIREN → {domaine} pour {societe}")
+                            cache_domaine_set(siren, domaine)
                             return domaine
                 r2 = await c.get("https://api.pappers.fr/v2/recherche",
                     params={"api_token": PAPPERS_KEY, "q": societe, "par_page": 1})
@@ -635,6 +776,7 @@ async def corriger_domaine(siren: str, societe: str) -> str:
                         domaine = nettoyer_domaine(resultats[0].get("domaine_url","") or resultats[0].get("site_web",""))
                         if domaine_valide(domaine):
                             print(f"[DOMAINE FIX] Pappers nom → {domaine} pour {societe}")
+                            cache_domaine_set(siren, domaine)
                             return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Pappers] {e}")
@@ -647,7 +789,7 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
-                        "model": "claude-sonnet-4-6",
+                        "model": MODEL_HAIKU,  # extraction de domaine, Haiku suffit
                         "max_tokens": 50,
                         "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
                         "messages": [{"role": "user", "content": prompt}]
@@ -658,9 +800,12 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
                     domaine = nettoyer_domaine(all_text.split()[0] if all_text else "")
                     if domaine_valide(domaine):
                         print(f"[DOMAINE FIX] Claude → {domaine} pour {societe}")
+                        cache_domaine_set(siren, domaine)
                         return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Claude] {e}")
+    # Échec : on cache le vide (TTL 1j) pour éviter de re-tenter en boucle
+    cache_domaine_set(siren, "")
     return ""
 # -------------------------------------------------------
 # ROUTE PASSE 1 : Pappers + Claude + Pipedrive
@@ -845,17 +990,18 @@ async def enrich_one(request: Request):
         else:
             print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
     claude_contacts = []
-    if ANTHROPIC_KEY:
+    # CACHE : si on a déjà appelé Claude+web pour ce SIREN dans les 60j, on réutilise
+    cached_claude = cache_contacts_get(siren) if siren else None
+    if cached_claude is not None:
+        claude_contacts = cached_claude
+        print(f"[CACHE HIT] {nom} (SIREN {siren}) → {len(cached_claude)} contacts Claude réutilisés")
+    elif ANTHROPIC_KEY:
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
-        exclusion = f"\nNe pas inclure : {', '.join(noms_deja)}" if noms_deja else ""
+        exclusion = f"\nDirigeants déjà connus à ne PAS inclure : {', '.join(noms_deja)}" if noms_deja else ""
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
-        prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
-Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}{exclusion}
-Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
-- Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
-- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
-Réponds UNIQUEMENT avec ce JSON :
-{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
+        # Bloc dynamique uniquement (les instructions sont dans SYSTEM_ENRICH, cachées)
+        prompt = f"""Société française à enrichir :
+Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN : "+siren if siren else ""}{contexte_fondateurs}{exclusion}"""
         delays = [10, 25, 45]
         for attempt in range(3):
             try:
@@ -865,8 +1011,12 @@ Réponds UNIQUEMENT avec ce JSON :
                         "https://api.anthropic.com/v1/messages",
                         headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                         json={
-                            "model": "claude-sonnet-4-6",
+                            "model": MODEL_SONNET,
                             "max_tokens": 1000,
+                            "system": [
+                                {"type": "text", "text": SYSTEM_ENRICH,
+                                 "cache_control": {"type": "ephemeral"}}
+                            ],
                             "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
                             "messages": [{"role": "user", "content": prompt}]
                         }
@@ -892,6 +1042,10 @@ Réponds UNIQUEMENT avec ce JSON :
                                     ct["_skip"] = True
                             claude_contacts = [ct for ct in parsed.get("contacts",[]) if not ct.get("_skip")]
                             print(f"[CLAUDE OK] {len(claude_contacts)} contacts pour {nom}")
+                            # Sauve en cache pour 60 jours (économise les futurs scans)
+                            if siren and claude_contacts:
+                                cache_contacts_set(siren, claude_contacts)
+                                print(f"[CACHE SET] {nom} (SIREN {siren}) → {len(claude_contacts)} contacts")
                         break
                     else:
                         print(f"[CLAUDE ERROR DETAIL] {r.status_code}: {r.text[:300]}")
@@ -958,14 +1112,9 @@ async def enrich_claude(request: Request):
     if not ANTHROPIC_KEY:
         return {"contacts": []}
     contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
-    prompt = f"""Recherche sur le web les dirigeants ACTUELS et leurs emails pour cette société française :
-Nom: {nom}{chr(10)+"Site: "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN: "+siren if siren else ""}{contexte_fondateurs}
-Cherche : CEO, DG, CFO, DAF, CTO, COO, CMO, DRH, Président, Gérant, Partners, Associés, Fondateurs.
-- Dirigeants en poste UNIQUEMENT (pas "ancien", "ex-")
-- Emails professionnels uniquement (pas gmail/hotmail/yahoo)
-- Retourne AU MAXIMUM {max_contacts} contact(s)
-Réponds UNIQUEMENT avec ce JSON :
-{{"contacts":[{{"prenom":"...","nom":"...","titre":"...","email":"...ou null","confiance_email":"haute|moyenne|faible"}}]}}"""
+    prompt = f"""Société française à enrichir :
+Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10)+"SIREN : "+siren if siren else ""}{contexte_fondateurs}
+Retourne au maximum {max_contacts} contact(s)."""
     delays = [10, 25, 45]
     for attempt in range(3):
         try:
@@ -975,8 +1124,12 @@ Réponds UNIQUEMENT avec ce JSON :
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05", "content-type": "application/json"},
                     json={
-                        "model": "claude-sonnet-4-6",
+                        "model": MODEL_SONNET,
                         "max_tokens": 1000,
+                        "system": [
+                            {"type": "text", "text": SYSTEM_ENRICH,
+                             "cache_control": {"type": "ephemeral"}}
+                        ],
                         "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}],
                         "messages": [{"role": "user", "content": prompt}]
                     }
@@ -1283,4 +1436,3 @@ Enrichisseur Dirigeants"""
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return {"ok": False, "error": str(e)}
-
