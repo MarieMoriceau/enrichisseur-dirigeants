@@ -11,6 +11,31 @@ from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+
+# ────────────────────────────────────────────────────────────────────
+# GLOBAL EXCEPTION HANDLER — log le traceback dans les logs Render
+# et renvoie un JSON exploitable côté HF Space (au lieu d'un 500 muet)
+# ────────────────────────────────────────────────────────────────────
+import traceback
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    print(f"[FATAL ERROR] {request.url.path} | {type(exc).__name__}: {exc}")
+    print(tb)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": type(exc).__name__,
+            "message": str(exc)[:500],
+            "path": str(request.url.path),
+            "traceback_tail": tb[-1500:],
+        },
+    )
+
 ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
@@ -92,6 +117,11 @@ DOMAINE_EMPTY_TTL_DAYS = 1
 
 def _init_cache():
     with sqlite3.connect(CACHE_DB) as conn:
+        # WAL mode = écritures concurrentes sans "database is locked"
+        # (indispensable avec concurrency=5 sur enrich_one)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")  # attendre 5s si verrou
         conn.execute("""CREATE TABLE IF NOT EXISTS contacts_cache (
             siren TEXT PRIMARY KEY, contacts_json TEXT NOT NULL, cached_at INTEGER NOT NULL
         )""")
@@ -99,6 +129,15 @@ def _init_cache():
             siren TEXT PRIMARY KEY, domaine TEXT NOT NULL, cached_at INTEGER NOT NULL
         )""")
         conn.commit()
+
+
+def _sqlite_conn():
+    """Connection avec WAL + busy_timeout activés à chaque ouverture
+    (le pragma WAL n'est persistant qu'au niveau du fichier .db, mais
+    busy_timeout doit être réappliqué)."""
+    conn = sqlite3.connect(CACHE_DB, timeout=5)
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 _init_cache()
 print(f"[CACHE] Init OK → {CACHE_DB}")
 
@@ -109,7 +148,7 @@ def cache_contacts_get(siren: str):
     siren = _normalize_siren(siren)
     if not siren or len(siren) != 9: return None
     try:
-        with sqlite3.connect(CACHE_DB) as conn:
+        with _sqlite_conn() as conn:
             row = conn.execute("SELECT contacts_json, cached_at FROM contacts_cache WHERE siren=?", (siren,)).fetchone()
             if row and (time.time() - row[1]) < CONTACTS_TTL_DAYS * 86400:
                 return json.loads(row[0])
@@ -121,7 +160,7 @@ def cache_contacts_set(siren: str, contacts: list):
     siren = _normalize_siren(siren)
     if not siren or len(siren) != 9 or not contacts: return
     try:
-        with sqlite3.connect(CACHE_DB) as conn:
+        with _sqlite_conn() as conn:
             conn.execute("INSERT OR REPLACE INTO contacts_cache (siren, contacts_json, cached_at) VALUES (?, ?, ?)",
                          (siren, json.dumps(contacts, ensure_ascii=False), int(time.time())))
             conn.commit()
@@ -132,7 +171,7 @@ def cache_domaine_get(siren: str):
     siren = _normalize_siren(siren)
     if not siren or len(siren) != 9: return None
     try:
-        with sqlite3.connect(CACHE_DB) as conn:
+        with _sqlite_conn() as conn:
             row = conn.execute("SELECT domaine, cached_at FROM domaine_cache WHERE siren=?", (siren,)).fetchone()
             if row:
                 domaine, ts = row
@@ -147,7 +186,7 @@ def cache_domaine_set(siren: str, domaine: str):
     siren = _normalize_siren(siren)
     if not siren or len(siren) != 9: return
     try:
-        with sqlite3.connect(CACHE_DB) as conn:
+        with _sqlite_conn() as conn:
             conn.execute("INSERT OR REPLACE INTO domaine_cache (siren, domaine, cached_at) VALUES (?, ?, ?)",
                          (siren, domaine or "", int(time.time())))
             conn.commit()
@@ -704,6 +743,46 @@ Si tu n'es pas certain à 100%, réponds: NON"""
         print(f"[LINKEDIN ERROR] {prenom} {nom}: {e}")
     print(f"[LINKEDIN] ❌ Pas trouvé pour {prenom} {nom}")
     return ""
+def _extract_kaspr_email(d: dict) -> str:
+    """Extrait l'email pro de la réponse Kaspr (structure souvent imbriquée
+    sous 'profile')."""
+    profile = d.get("profile", d) or d  # imbriqué OU top-level
+    # 1. workEmails (B2B priorité)
+    work_emails = profile.get("workEmails", []) or profile.get("work_emails", [])
+    if isinstance(work_emails, list) and work_emails:
+        e = work_emails[0]
+        if isinstance(e, str) and "@" in e:
+            return e
+        if isinstance(e, dict):
+            val = e.get("email") or e.get("value") or ""
+            if val and "@" in val:
+                return val
+    # 2. emails (cherche celui marqué isCurrent en priorité)
+    emails = profile.get("emails", [])
+    if isinstance(emails, list) and emails:
+        current = next((e for e in emails if isinstance(e, dict) and e.get("isCurrent")), None)
+        if current:
+            val = current.get("email") or current.get("value") or ""
+            if val and "@" in val:
+                return val
+        e = emails[0]
+        if isinstance(e, str) and "@" in e:
+            return e
+        if isinstance(e, dict):
+            val = e.get("email") or e.get("value") or ""
+            if val and "@" in val:
+                return val
+    # 3. champs simples (starryWorkEmail = email garanti chez Kaspr)
+    starry = profile.get("starryWorkEmail", "")
+    if starry and isinstance(starry, str) and "@" in starry:
+        return starry
+    for k in ("workEmail", "work_email", "email"):
+        val = profile.get(k, "")
+        if val and isinstance(val, str) and "@" in val:
+            return val
+    return ""
+
+
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
     """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement (illimité)."""
     if not KASPR_KEY or not linkedin_url:
@@ -727,16 +806,14 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
             print(f"[KASPR] Status {r.status_code} pour {prenom} {nom}")
             if r.status_code == 200:
                 d = r.json()
-                emails = d.get("emails", []) or d.get("workEmails", []) or d.get("work_emails", [])
-                if isinstance(emails, list) and emails:
-                    email = emails[0] if isinstance(emails[0], str) else emails[0].get("value","")
-                    if email and "@" in email:
-                        print(f"[KASPR] ✅ Email trouvé : {email}")
-                        return email
-                email = d.get("email","") or d.get("workEmail","") or d.get("work_email","")
-                if email and "@" in email:
+                email = _extract_kaspr_email(d)
+                if email:
                     print(f"[KASPR] ✅ Email trouvé : {email}")
                     return email
+                else:
+                    # Pas d'email dans la réponse — log les clés pour debug
+                    keys = list((d.get("profile") or d).keys())[:15]
+                    print(f"[KASPR] ⚠️ Réponse 200 mais aucun email extrait. Clés profile : {keys}")
             elif r.status_code == 402:
                 print(f"[KASPR] Plus de crédits !")
                 _alert_api_down("Kaspr", 402, r.text[:200] if hasattr(r, 'text') else "")
