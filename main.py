@@ -139,6 +139,29 @@ def _init_cache():
             recipient TEXT,
             rows_json TEXT NOT NULL
         )""")
+        # ── REWORK SERVEUR : état vivant des runs orchestrés côté serveur ──
+        # Cette table porte l'état COMPLET d'un run (entrée, résultats,
+        # statut, progrès). Elle survit à un redémarrage Render : au boot,
+        # les runs EN_COURS interrompus sont remis EN_ATTENTE (cf _reload_runs_from_db).
+        conn.execute("""CREATE TABLE IF NOT EXISTS runs (
+            id TEXT PRIMARY KEY,
+            nom TEXT,
+            mode TEXT,
+            phases TEXT,
+            statut TEXT,
+            phase_courante TEXT,
+            progres_traites INTEGER,
+            progres_total INTEGER,
+            created_at INTEGER,
+            started_at INTEGER,
+            finished_at INTEGER,
+            entree_json TEXT,
+            resultats_json TEXT,
+            emails_dest TEXT,
+            erreur TEXT,
+            stop_demande INTEGER,
+            excel_filename TEXT
+        )""")
         conn.commit()
 
 
@@ -918,7 +941,7 @@ def _extract_kaspr_email(d: dict) -> str:
 _KASPR_LOCK        = asyncio.Lock()
 _KASPR_LAST        = [0.0]   # timestamp (monotonic) du dernier appel
 _KASPR_PAUSE_UNTIL = [0.0]   # pause GLOBALE jusqu'à ce timestamp
-KASPR_MIN_INTERVAL = 6.0     # secondes minimum entre 2 appels (~10/min)
+KASPR_MIN_INTERVAL = 4.0     # secondes minimum entre 2 appels (~15/min)
 KASPR_PAUSE_429    = 60.0    # pause globale de base après un 429
 KASPR_MAX_429      = 4       # nombre de 429 tolérés avant abandon
 
@@ -1070,7 +1093,11 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
 # -------------------------------------------------------
 @app.post("/enrich_one")
 async def enrich_one(request: Request):
-    data = await request.json()
+    # Fine enveloppe — la logique vit dans _enrich_one_core (réutilisée par le worker).
+    return await _enrich_one_core(await request.json())
+
+
+async def _enrich_one_core(data: dict):
     pipedrive_org_contacts = []  # rempli plus bas si l'org est trouvée dans Pipedrive
     nom            = data.get("nom", "")
     siren          = re.sub(r'\D', '', data.get("siren", ""))[:9]
@@ -1361,7 +1388,11 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
     return {"results": results}
 @app.post("/enrich_claude")
 async def enrich_claude(request: Request):
-    data = await request.json()
+    # Fine enveloppe — la logique vit dans _enrich_claude_core (réutilisée par le worker).
+    return await _enrich_claude_core(await request.json())
+
+
+async def _enrich_claude_core(data: dict):
     nom        = data.get("nom", "")
     siren      = data.get("siren", "")
     domaine    = nettoyer_domaine(data.get("domaine", ""))
@@ -1428,7 +1459,11 @@ async def check_pipedrive_route(request: Request):
     return {"email": result.get("email",""), "phone": result.get("phone","")}
 @app.post("/enrich_emails")
 async def enrich_emails(request: Request):
-    data = await request.json()
+    # Fine enveloppe — la logique vit dans _enrich_emails_core (réutilisée par le worker).
+    return await _enrich_emails_core(await request.json())
+
+
+async def _enrich_emails_core(data: dict):
     contacts = data.get("contacts", [])
     if not contacts:
         return {"emails": {}}
@@ -1735,3 +1770,606 @@ Enrichisseur Dirigeants"""
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return {"ok": False, "error": str(e)}
+
+
+# ════════════════════════════════════════════════════════════════════
+# ★ REWORK SERVEUR — orchestration des runs côté serveur
+# ════════════════════════════════════════════════════════════════════
+# AVANT : tout le run vivait dans le JavaScript de index.html. Le serveur
+#         ne savait pas qu'un run existait → 2 runs simultanés possibles,
+#         et fermer l'onglet tuait le run en cours.
+# APRÈS : un worker asyncio UNIQUE exécute les runs un par un.
+#   _RUNS         : registre en mémoire {run_id: état}   (source live)
+#   table `runs`  : persistance SQLite (survit au redémarrage Render)
+#   _run_worker   : boucle — prend le plus ancien EN_ATTENTE, l'exécute
+#
+#   « Jamais 2 à la fois » = garanti par le worker unique (séquentiel).
+#   « File d'attente »     = les runs EN_ATTENTE triés par created_at.
+#   « Survit à l'onglet »  = le run vit dans le process serveur, pas le JS.
+# ════════════════════════════════════════════════════════════════════
+import uuid as _uuid
+
+_RUNS = {}   # run_id -> dict (état live d'un run)
+
+# Délais repris à l'identique du JS d'origine (index.html) pour ne pas
+# se faire bloquer par les API en aval.
+_DELAI_SOCIETE = 8.0   # pause entre 2 sociétés (phases 1 & 2)
+_BATCH_SIZE    = 5     # contacts par lot (phases 4 & 5) — évite le timeout proxy Render
+_PAUSE_BATCH   = 5.0   # pause entre 2 lots d'emails
+
+
+# ─── Persistance SQLite ─────────────────────────────────────────────
+def _run_to_db_tuple(r: dict):
+    return (
+        r["id"], r["nom"], r["mode"], json.dumps(r["phases"]),
+        r["statut"], r["phase_courante"], r["progres_traites"],
+        r["progres_total"], r["created_at"], r["started_at"],
+        r["finished_at"], json.dumps(r["entree"], ensure_ascii=False),
+        json.dumps(r["resultats"], ensure_ascii=False),
+        json.dumps(r["emails_dest"], ensure_ascii=False),
+        r["erreur"], 1 if r["stop_demande"] else 0, r["excel_filename"],
+    )
+
+
+def _persist_run(run_id: str):
+    """Écrit l'état complet du run dans la table `runs`. Appelé à chaque
+    changement de phase / progrès → le run survit à un redémarrage."""
+    r = _RUNS.get(run_id)
+    if not r:
+        return
+    try:
+        with _sqlite_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO runs (id, nom, mode, phases, statut, "
+                "phase_courante, progres_traites, progres_total, created_at, "
+                "started_at, finished_at, entree_json, resultats_json, "
+                "emails_dest, erreur, stop_demande, excel_filename) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _run_to_db_tuple(r))
+            conn.commit()
+    except Exception as e:
+        print(f"[RUNS PERSIST ERROR] {run_id}: {e}")
+
+
+def _reload_runs_from_db():
+    """Recharge les runs depuis SQLite au démarrage. Les runs EN_COURS
+    interrompus par un redémarrage Render sont remis EN_ATTENTE (ils
+    seront ré-exécutés depuis le début par le worker)."""
+    try:
+        with _sqlite_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, nom, mode, phases, statut, phase_courante, "
+                "progres_traites, progres_total, created_at, started_at, "
+                "finished_at, entree_json, resultats_json, emails_dest, "
+                "erreur, stop_demande, excel_filename FROM runs").fetchall()
+    except Exception as e:
+        print(f"[RUNS RELOAD ERROR] {e}")
+        return
+    repris = 0
+    for row in rows:
+        (rid, nom, mode, phases, statut, phase_c, p_tr, p_tot, c_at, s_at,
+         f_at, entree_j, res_j, emails_j, erreur, stop_d, xls) = row
+        if statut == "EN_COURS":
+            statut, phase_c, p_tr, erreur = "EN_ATTENTE", "", 0, ""
+            repris += 1
+        _RUNS[rid] = {
+            "id": rid, "nom": nom or "", "mode": mode or "societes",
+            "phases": json.loads(phases) if phases else [1, 2, 3, 4, 5],
+            "statut": statut or "EN_ATTENTE", "phase_courante": phase_c or "",
+            "progres_traites": p_tr or 0, "progres_total": p_tot or 0,
+            "created_at": c_at or int(time.time()),
+            "started_at": s_at, "finished_at": f_at,
+            "entree": json.loads(entree_j) if entree_j else [],
+            "resultats": json.loads(res_j) if res_j else [],
+            "emails_dest": json.loads(emails_j) if emails_j else [],
+            "erreur": erreur or "", "stop_demande": bool(stop_d),
+            "excel_filename": xls or "",
+        }
+    print(f"[RUNS] Rechargés : {len(_RUNS)} run(s) — {repris} remis EN_ATTENTE après redémarrage")
+
+
+# ─── File d'attente (dérivée de _RUNS, pas de structure séparée) ────
+def _next_queued_run():
+    """Le plus ancien run EN_ATTENTE = tête de file. None si file vide."""
+    attente = [r for r in _RUNS.values() if r["statut"] == "EN_ATTENTE"]
+    if not attente:
+        return None
+    attente.sort(key=lambda r: r["created_at"])
+    return attente[0]
+
+
+def _run_en_cours():
+    for r in _RUNS.values():
+        if r["statut"] == "EN_COURS":
+            return r
+    return None
+
+
+def _rang_file(run: dict):
+    """Position du run dans la file d'attente (1 = prochain). None si pas EN_ATTENTE."""
+    if run["statut"] != "EN_ATTENTE":
+        return None
+    attente = sorted([r for r in _RUNS.values() if r["statut"] == "EN_ATTENTE"],
+                     key=lambda r: r["created_at"])
+    return attente.index(run) + 1
+
+
+# ─── Worker unique ──────────────────────────────────────────────────
+async def _run_worker():
+    """Boucle infinie : tant qu'aucun run EN_COURS et la file non vide,
+    prend le plus ancien et l'exécute jusqu'au bout. Un seul worker =
+    jamais 2 runs en parallèle."""
+    print("[WORKER] Démarré — en attente de runs")
+    while True:
+        try:
+            if _run_en_cours():            # ceinture + bretelles
+                await asyncio.sleep(2)
+                continue
+            run = _next_queued_run()
+            if run is None:
+                await asyncio.sleep(2)
+                continue
+            await _executer_run(run["id"])
+        except Exception as e:
+            print(f"[WORKER ERROR] {type(e).__name__}: {e}")
+            print(traceback.format_exc())
+            await asyncio.sleep(3)
+
+
+@app.on_event("startup")
+async def _startup_runs():
+    """Au démarrage Render : recharge les runs persistés, lance le worker."""
+    _reload_runs_from_db()
+    asyncio.create_task(_run_worker())
+    print("[STARTUP] Worker de runs lancé")
+
+
+# ════════════════════════════════════════════════════════════════════
+# ORCHESTRATEUR — rejoue les phases 1→5 du JS, côté serveur
+# ════════════════════════════════════════════════════════════════════
+async def _executer_run(run_id: str):
+    """Exécute un run de bout en bout : phases demandées, puis Excel +
+    email + archivage. Met à jour l'état à chaque étape (persisté)."""
+    r = _RUNS.get(run_id)
+    if not r:
+        return
+    r["statut"] = "EN_COURS"
+    r["started_at"] = int(time.time())
+    r["finished_at"] = None
+    r["erreur"] = ""
+    _persist_run(run_id)
+    print(f"[RUN {run_id}] ▶ Démarrage — {r['nom']} | mode={r['mode']} | phases={r['phases']}")
+    try:
+        # Mode « contacts importés » : l'entrée EST la liste de contacts
+        # → elle devient directement la base de résultats (pas de Pappers).
+        if r["mode"] == "contacts" and not r["resultats"]:
+            r["resultats"] = [dict(ct) for ct in r["entree"]]
+
+        for phase in r["phases"]:
+            if r["stop_demande"]:
+                break
+            if phase == 1:
+                await _run_phase1(r)
+            elif phase == 2:
+                await _run_phase2(r)
+            elif phase == 3:
+                await _run_phase3(r)
+            elif phase == 4:
+                await _run_phase_emails(r, "kaspr")
+            elif phase == 5:
+                await _run_phase_emails(r, "fullenrich")
+
+        if r["stop_demande"]:
+            r["statut"] = "ARRETE"
+            r["phase_courante"] = "Arrêté par l'utilisateur"
+            r["finished_at"] = int(time.time())
+            _persist_run(run_id)
+            print(f"[RUN {run_id}] ⏹ Arrêté par l'utilisateur")
+            return
+
+        # ── Finalisation : Excel + email + archivage /runs ──
+        r["phase_courante"] = "Finalisation (Excel + email)"
+        _persist_run(run_id)
+        await _finaliser_run(r)
+        r["statut"] = "TERMINE"
+        r["phase_courante"] = "Terminé"
+        r["finished_at"] = int(time.time())
+        _persist_run(run_id)
+        print(f"[RUN {run_id}] ✅ Terminé — {len(r['resultats'])} contacts")
+    except Exception as e:
+        r["statut"] = "ERREUR"
+        r["erreur"] = f"{type(e).__name__}: {e}"
+        r["finished_at"] = int(time.time())
+        _persist_run(run_id)
+        print(f"[RUN {run_id}] ❌ ERREUR : {e}")
+        print(traceback.format_exc())
+        try:
+            _send_alert(
+                f"🚨 [Enrichisseur] Run en échec — {r['nom']}",
+                f"Bonjour Marie,\n\nLe run « {r['nom']} » (id {run_id}) a planté.\n\n"
+                f"Erreur : {r['erreur']}\n\n"
+                f"Détail technique :\n{traceback.format_exc()[-1200:]}\n\n"
+                f"— Enrichisseur Dirigeants")
+        except Exception:
+            pass
+
+
+# ─── PHASE 1 : Pappers + Claude + Pipedrive (1 appel par société) ───
+async def _run_phase1(r: dict):
+    r["phase_courante"] = "1. Pappers + Claude"
+    rows = r["entree"]
+    r["progres_total"] = len(rows)
+    r["progres_traites"] = 0
+    r["resultats"] = []      # phase 1 reconstruit la base de résultats
+    _persist_run(r["id"])
+    for i, row in enumerate(rows):
+        if r["stop_demande"]:
+            return
+        try:
+            data = await _enrich_one_core(dict(row))
+            r["resultats"].extend(data.get("results", []))
+        except Exception as e:
+            print(f"[RUN {r['id']}] phase1 erreur sur {row.get('nom','?')}: {e}")
+            r["resultats"].append({
+                "societe": row.get("nom", ""), "siren": "", "prenom": "",
+                "nom_dg": "", "titre": "", "email": "", "confiance": "", "source": ""})
+        r["progres_traites"] = i + 1
+        _persist_run(r["id"])
+        if i < len(rows) - 1 and not r["stop_demande"]:
+            await asyncio.sleep(_DELAI_SOCIETE)
+
+
+# ─── PHASE 2 : Claude+web — complète les sociétés < 3 contacts ──────
+async def _run_phase2(r: dict):
+    r["phase_courante"] = "2. Claude + web"
+    rows = r["entree"]
+    resultats = r["resultats"]
+    societes = []
+    for x in resultats:
+        s = x.get("societe", "")
+        if s and s not in societes:
+            societes.append(s)
+    r["progres_total"] = len(societes)
+    r["progres_traites"] = 0
+    _persist_run(r["id"])
+    for i, nom_soc in enumerate(societes):
+        if r["stop_demande"]:
+            return
+        existants = [x for x in resultats if x.get("societe") == nom_soc]
+        # Skip si déjà récupérée depuis Pipedrive en phase 1
+        if any(x.get("dans_pipedrive") for x in existants):
+            r["progres_traites"] = i + 1
+            continue
+        contacts_reels = [x for x in existants if x.get("nom_dg")]
+        if len(contacts_reels) >= 3:
+            r["progres_traites"] = i + 1
+            continue
+        max_ajouter = 3 - len(contacts_reels)
+        row = dict(next((rw for rw in rows if rw.get("nom") == nom_soc),
+                        {"nom": nom_soc, "domaine": "", "siren": "", "fondateurs": ""}))
+        ex = next((x for x in resultats if x.get("societe") == nom_soc), None)
+        if ex:
+            row["siren"] = ex.get("siren") or row.get("siren", "")
+            row["domaine"] = ex.get("domaine") or row.get("domaine", "")
+        try:
+            data = await _enrich_claude_core({**row, "max_contacts": max_ajouter})
+            noms_existants = [f"{x.get('prenom','')} {x.get('nom_dg','')}".lower().strip()
+                              for x in resultats if x.get("societe") == nom_soc]
+            ajoutes = 0
+            for ct in data.get("contacts", []):
+                if ajoutes >= max_ajouter:
+                    break
+                key = f"{ct.get('prenom','')} {ct.get('nom','')}".lower().strip()
+                if key not in noms_existants:
+                    resultats.append({
+                        "org_id": row.get("org_id", ""), "societe": nom_soc,
+                        "siren": row.get("siren", ""), "domaine": row.get("domaine", ""),
+                        "prenom": ct.get("prenom", ""), "nom_dg": ct.get("nom", ""),
+                        "titre": ct.get("titre", ""), "email": ct.get("email", "") or "",
+                        "confiance": ct.get("confiance_email", "faible"),
+                        "source": "Claude+web", "linkedin": "", "dans_pipedrive": "",
+                    })
+                    ajoutes += 1
+        except Exception as e:
+            print(f"[RUN {r['id']}] phase2 erreur sur {nom_soc}: {e}")
+        r["progres_traites"] = i + 1
+        _persist_run(r["id"])
+        if i < len(societes) - 1 and not r["stop_demande"]:
+            await asyncio.sleep(_DELAI_SOCIETE)
+
+
+# ─── PHASE 3 : Pipedrive — emails des contacts déjà au CRM ──────────
+async def _run_phase3(r: dict):
+    r["phase_courante"] = "3. Pipedrive"
+    resultats = r["resultats"]
+    sans = [x for x in resultats if x.get("nom_dg") and not x.get("email")]
+    r["progres_total"] = len(sans)
+    r["progres_traites"] = 0
+    _persist_run(r["id"])
+    for i, x in enumerate(sans):
+        if r["stop_demande"]:
+            return
+        try:
+            pd = await check_pipedrive(x.get("prenom", ""), x.get("nom_dg", ""))
+            if pd.get("email"):
+                x["email"] = pd["email"]
+                x["confiance"] = "haute"
+                x["source"] = (x.get("source", "") or "") + "+Pipedrive"
+                x["dans_pipedrive"] = "oui"
+                if pd.get("phone"):
+                    x["phone"] = pd["phone"]
+        except Exception as e:
+            print(f"[RUN {r['id']}] phase3 erreur: {e}")
+        r["progres_traites"] = i + 1
+        _persist_run(r["id"])
+
+
+# ─── PHASES 4 & 5 : Kaspr / FullEnrich — enrichissement emails ──────
+# NB : _enrich_emails_core fait Kaspr PUIS FullEnrich en interne (le
+# paramètre `phase` n'est pas distinctif côté serveur — comportement
+# repris à l'identique du déployé). Ce qui diffère entre phase 4 et 5,
+# c'est le FILTRE des contacts envoyés (cf JS runEmailBatch).
+async def _run_phase_emails(r: dict, phase: str):
+    label = "Kaspr" if phase == "kaspr" else "Fullenrich"
+    r["phase_courante"] = f"{'4' if phase == 'kaspr' else '5'}. {label}"
+    resultats = r["resultats"]
+    to_enrich = []
+    for idx, x in enumerate(resultats):
+        if not x.get("nom_dg"):
+            continue
+        sans_email  = (not x.get("email")) or x.get("confiance") == "faible"
+        sans_tel_fe = (not x.get("phone")) and phase == "fullenrich"
+        if sans_email or sans_tel_fe:
+            to_enrich.append({**x, "idx": idx})
+    if not to_enrich:
+        r["progres_total"] = 0
+        r["progres_traites"] = 0
+        _persist_run(r["id"])
+        return
+    total_batches = (len(to_enrich) + _BATCH_SIZE - 1) // _BATCH_SIZE
+    r["progres_total"] = total_batches
+    r["progres_traites"] = 0
+    _persist_run(r["id"])
+    for b in range(total_batches):
+        if r["stop_demande"]:
+            return
+        batch = to_enrich[b * _BATCH_SIZE:(b + 1) * _BATCH_SIZE]
+        try:
+            data = await _enrich_emails_core({
+                "phase": phase,
+                "contacts": [{
+                    "idx": x["idx"], "prenom": x.get("prenom", ""),
+                    "nom": x.get("nom_dg", ""), "domaine": x.get("domaine", ""),
+                    "societe": x.get("societe", ""), "siren": x.get("siren", ""),
+                    "email": x.get("email", ""), "confiance": x.get("confiance", ""),
+                } for x in batch],
+            })
+            emails = data.get("emails", {})
+            for idx_str, val in emails.items():
+                idx = int(idx_str)
+                if not (0 <= idx < len(resultats)):
+                    continue
+                if isinstance(val, str):
+                    email, linkedin, phone, srctag = val, "", "", f"+{label}"
+                else:
+                    email    = val.get("email", "") if val else ""
+                    linkedin = val.get("linkedin", "") if val else ""
+                    phone    = val.get("phone", "") if val else ""
+                    srctag   = val.get("source", f"+{label}") if val else f"+{label}"
+                if phone and not resultats[idx].get("phone"):
+                    resultats[idx]["phone"] = phone
+                if email and "@" in email:
+                    resultats[idx]["email"] = email
+                    resultats[idx]["confiance"] = "haute"
+                    if linkedin:
+                        resultats[idx]["linkedin"] = linkedin
+                    src = resultats[idx].get("source", "") or ""
+                    tag = srctag.replace("+", "")
+                    if tag not in src:
+                        resultats[idx]["source"] = src + srctag
+                elif linkedin and not resultats[idx].get("linkedin"):
+                    resultats[idx]["linkedin"] = linkedin
+        except Exception as e:
+            print(f"[RUN {r['id']}] {label} lot {b+1}/{total_batches} échoué: {e}")
+        r["progres_traites"] = b + 1
+        _persist_run(r["id"])
+        if b < total_batches - 1 and not r["stop_demande"]:
+            await asyncio.sleep(_PAUSE_BATCH)
+
+
+# ─── Finalisation : Excel + email + archivage page /runs ────────────
+def _envoyer_excel_email(emails_dest: list, rows: list, filename: str):
+    """Envoi SMTP bloquant (à appeler via asyncio.to_thread)."""
+    excel_content = generer_excel([dict(x) for x in rows])
+    msg = MIMEMultipart()
+    msg['From']    = SMTP_USER
+    msg['To']      = ", ".join(emails_dest)
+    emails_count   = len([x for x in rows if x.get('email')])
+    msg['Subject'] = f"Enrichissement dirigeants — {len(rows)} contacts"
+    body = (f"Bonjour,\n\nVotre enrichissement est terminé.\n"
+            f"{len(rows)} contacts exportés dont {emails_count} emails trouvés.\n"
+            f"Fichier Excel en pièce jointe.\n\nEnrichisseur Dirigeants")
+    msg.attach(MIMEText(body, 'plain', 'utf-8'))
+    part = MIMEBase('application', 'vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    part.set_payload(excel_content)
+    encoders.encode_base64(part)
+    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+    msg.attach(part)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, emails_dest, msg.as_string())
+    print(f"[EMAIL] ✅ Excel envoyé à {', '.join(emails_dest)}")
+
+
+async def _finaliser_run(r: dict):
+    """En fin de run : envoie l'Excel par email (si destinataires) et
+    archive le run dans runs_history (pour la page /runs)."""
+    rows = r["resultats"]
+    if not rows:
+        return
+    fname = r["excel_filename"] or f"enrichissement_{r['id']}.xlsx"
+    emails_dest = [e for e in r["emails_dest"] if e and "@" in e]
+    if emails_dest and SMTP_USER and SMTP_PASS:
+        try:
+            await asyncio.to_thread(_envoyer_excel_email, emails_dest, rows, fname)
+        except Exception as e:
+            print(f"[RUN {r['id']}] envoi email échoué: {e}")
+    # Archive dans runs_history → la page /runs continue de fonctionner
+    try:
+        emails_count = len([x for x in rows if x.get("email")])
+        nb_phones    = sum(1 for x in rows if x.get("phone"))
+        with _sqlite_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO runs_history (id, created_at, filename, "
+                "total_contacts, emails_count, phones_count, recipient, rows_json) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (r["id"], int(time.time()), fname, len(rows), emails_count,
+                 nb_phones, ", ".join(emails_dest),
+                 json.dumps(rows, ensure_ascii=False)))
+            conn.commit()
+        print(f"[RUN {r['id']}] Archivé dans runs_history")
+    except Exception as e:
+        print(f"[RUN {r['id']}] archive runs_history échouée: {e}")
+
+
+# ════════════════════════════════════════════════════════════════════
+# ENDPOINTS /run/* — pilotage des runs depuis le frontend
+# ════════════════════════════════════════════════════════════════════
+def _run_public(r: dict, light: bool = True) -> dict:
+    """Vue JSON d'un run. light=True → sans entree/resultats (pour /run/list)."""
+    d = {
+        "id": r["id"], "nom": r["nom"], "mode": r["mode"], "phases": r["phases"],
+        "statut": r["statut"], "phase_courante": r["phase_courante"],
+        "progres_traites": r["progres_traites"], "progres_total": r["progres_total"],
+        "created_at": r["created_at"], "started_at": r["started_at"],
+        "finished_at": r["finished_at"], "erreur": r["erreur"],
+        "rang": _rang_file(r),
+        "nb_contacts": len(r["resultats"]),
+        "nb_emails": len([x for x in r["resultats"] if x.get("email")]),
+        "nb_telephones": len([x for x in r["resultats"] if x.get("phone")]),
+    }
+    if not light:
+        d["resultats"]   = r["resultats"]
+        d["emails_dest"] = r["emails_dest"]
+    return d
+
+
+@app.post("/run/create")
+async def run_create(request: Request):
+    """Crée un run et le met EN_ATTENTE. Le worker le prendra en charge.
+    Payload : {nom, mode:'societes'|'contacts', phases:[1..5],
+               rows:[...] (mode societes) | contacts:[...] (mode contacts),
+               emails_dest:[...] ou "a@b.com, c@d.com"}"""
+    data = await request.json()
+    mode = data.get("mode", "societes")
+    if mode not in ("societes", "contacts"):
+        mode = "societes"
+    # Phases demandées (le pas-à-pas : l'utilisateur peut n'en cocher que certaines)
+    phases = data.get("phases") or ([4, 5] if mode == "contacts" else [1, 2, 3, 4, 5])
+    phases = sorted({int(p) for p in phases if int(p) in (1, 2, 3, 4, 5)})
+    if mode == "contacts":
+        # Pas de Pappers/Claude sur des contacts déjà identifiés
+        phases = [p for p in phases if p in (3, 4, 5)] or [4, 5]
+    if not phases:
+        return JSONResponse({"error": "Aucune phase valide demandée"}, status_code=400)
+    entree = (data.get("contacts") if mode == "contacts" else data.get("rows")) or []
+    if not entree:
+        return JSONResponse({"error": "Aucune donnée en entrée"}, status_code=400)
+    emails_dest = data.get("emails_dest", []) or []
+    if isinstance(emails_dest, str):
+        emails_dest = emails_dest.split(",")
+    emails_dest = [e.strip() for e in emails_dest if e and "@" in e]
+    run_id = _uuid.uuid4().hex[:12]
+    nom_brut = (data.get("nom") or "").strip()
+    nom = nom_brut or f"run du {datetime.now().strftime('%d/%m %Hh%M')}"
+    safe = re.sub(r'[^a-zA-Z0-9_\-]', '_', nom_brut or "enrichissement")
+    today = datetime.now().strftime("%Y-%m-%d")
+    r = {
+        "id": run_id, "nom": nom, "mode": mode, "phases": phases,
+        "statut": "EN_ATTENTE", "phase_courante": "", "progres_traites": 0,
+        "progres_total": len(entree), "created_at": int(time.time()),
+        "started_at": None, "finished_at": None, "entree": entree,
+        "resultats": [], "emails_dest": emails_dest, "erreur": "",
+        "stop_demande": False,
+        "excel_filename": f"enrichissement_{safe}_{today}.xlsx",
+    }
+    _RUNS[run_id] = r
+    _persist_run(run_id)
+    rang = _rang_file(r)
+    print(f"[RUN {run_id}] Créé — {nom} | mode={mode} | phases={phases} | rang file={rang}")
+    return {"ok": True, "run_id": run_id, "rang": rang}
+
+
+@app.get("/run/list")
+async def run_list():
+    """Liste les 50 runs les plus récents (vue légère, pour le polling)."""
+    runs = sorted(_RUNS.values(), key=lambda r: r["created_at"], reverse=True)
+    return {"runs": [_run_public(r, light=True) for r in runs[:50]]}
+
+
+@app.get("/run/{run_id}")
+async def run_get(run_id: str):
+    """État complet d'un run, résultats inclus (pour réafficher le tableau)."""
+    r = _RUNS.get(run_id)
+    if not r:
+        return JSONResponse({"error": "Run introuvable"}, status_code=404)
+    return _run_public(r, light=False)
+
+
+@app.post("/run/{run_id}/stop")
+async def run_stop(run_id: str):
+    """Demande l'arrêt d'un run. EN_ATTENTE → annulé direct. EN_COURS →
+    le worker s'arrête proprement à la prochaine vérification."""
+    r = _RUNS.get(run_id)
+    if not r:
+        return JSONResponse({"error": "Run introuvable"}, status_code=404)
+    if r["statut"] == "EN_ATTENTE":
+        r["statut"] = "ARRETE"
+        r["phase_courante"] = "Annulé avant démarrage"
+        r["finished_at"] = int(time.time())
+    elif r["statut"] == "EN_COURS":
+        r["stop_demande"] = True
+    _persist_run(run_id)
+    return {"ok": True, "statut": r["statut"]}
+
+
+@app.get("/run/{run_id}/excel")
+async def run_excel(run_id: str):
+    """Télécharge l'Excel d'un run (régénéré depuis ses résultats)."""
+    r = _RUNS.get(run_id)
+    if not r or not r["resultats"]:
+        return JSONResponse({"error": "Run introuvable ou sans résultats"}, status_code=404)
+    content = generer_excel([dict(x) for x in r["resultats"]])
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{r["excel_filename"]}"'})
+
+
+@app.post("/run/{run_id}/continue")
+async def run_continue(run_id: str, request: Request):
+    """Pas-à-pas serveur : relance un run terminé/arrêté avec d'autres
+    phases, en repartant de ses résultats actuels (ex : lancer Kaspr+
+    FullEnrich après n'avoir fait que Pappers+Claude)."""
+    r = _RUNS.get(run_id)
+    if not r:
+        return JSONResponse({"error": "Run introuvable"}, status_code=404)
+    if r["statut"] not in ("TERMINE", "ERREUR", "ARRETE"):
+        return JSONResponse({"error": "Run encore actif — attendez la fin"}, status_code=400)
+    data = await request.json()
+    phases = sorted({int(p) for p in (data.get("phases") or []) if int(p) in (1, 2, 3, 4, 5)})
+    if not phases:
+        return JSONResponse({"error": "Aucune phase valide demandée"}, status_code=400)
+    r["phases"] = phases
+    r["statut"] = "EN_ATTENTE"
+    r["phase_courante"] = ""
+    r["progres_traites"] = 0
+    r["progres_total"] = 0
+    r["erreur"] = ""
+    r["stop_demande"] = False
+    r["finished_at"] = None
+    r["created_at"] = int(time.time())   # repart en fin de file
+    _persist_run(run_id)
+    print(f"[RUN {run_id}] ↻ Relancé (pas-à-pas) avec phases {phases}")
+    return {"ok": True, "run_id": run_id, "rang": _rang_file(r)}
