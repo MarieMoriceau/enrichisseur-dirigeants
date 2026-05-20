@@ -958,7 +958,7 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
     # (sinon : pauses de 180s en boucle qui figent le run et le bouton Stop).
     if time.monotonic() < _KASPR_QUOTA_KO_UNTIL[0]:
         restant = int((_KASPR_QUOTA_KO_UNTIL[0] - time.monotonic()) // 60)
-        print(f"[KASPR] ⛔ Quota épuisé — appel sauté pour {prenom} {nom} (réessai dans ~{restant} min)")
+        print(f"[KASPR] ⛔ Limite de requêtes atteinte — appel sauté pour {prenom} {nom} (réessai dans ~{restant} min)")
         return ""
     n_429 = 0
     while True:
@@ -1022,9 +1022,16 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
                     if remaining == "0" or ra_sec > 600:
                         coupe = min(ra_sec, 86400.0) if ra_sec else 3600.0
                         _KASPR_QUOTA_KO_UNTIL[0] = time.monotonic() + coupe
-                        print(f"[KASPR] ⛔ Quota épuisé → Kaspr coupé ~{int(coupe // 60)} min")
-                        _alert_api_down("Kaspr (quota)", 429,
-                                        f"x-ratelimit-remaining={remaining}, Retry-After={retry_after}")
+                        print(f"[KASPR] ⛔ Limite de requêtes atteinte → Kaspr coupé ~{int(coupe // 60)} min")
+                        _send_alert(
+                            "⏱️ [Enrichisseur] Kaspr — limite de requêtes API atteinte",
+                            "Bonjour Marie,\n\nKaspr a atteint sa limite de requêtes API "
+                            "pour la fenêtre en cours (~250 appels / 24 h d'après ses en-têtes).\n\n"
+                            "⚠️ Ce n'est PAS un problème de crédits ni de facturation : tes "
+                            "crédits B2B email restent illimités. C'est uniquement un plafond "
+                            "de débit imposé par l'API Kaspr.\n\nLes enrichissements Kaspr se "
+                            "mettent en pause et reprendront après remise à zéro (sous 24 h). "
+                            "FullEnrich continue normalement.\n\n— Enrichisseur Dirigeants")
                         return ""
                     if n_429 >= KASPR_MAX_429:
                         print(f"[KASPR] ⛔ Abandon {prenom} {nom} : 429 persistant ({n_429}×)")
@@ -1523,7 +1530,7 @@ async def _enrich_emails_core(data: dict):
                 print("[KASPR] ⏹ Arrêt demandé — boucle Kaspr interrompue")
                 break
             if time.monotonic() < _KASPR_QUOTA_KO_UNTIL[0]:
-                print("[KASPR] ⛔ Quota épuisé — boucle Kaspr de ce lot sautée")
+                print("[KASPR] ⛔ Limite de requêtes atteinte — boucle Kaspr de ce lot sautée")
                 break
             prenom = nettoyer_prenom(ct.get("prenom",""))
             nom_ct = ct.get("nom","")
@@ -1544,8 +1551,16 @@ async def _enrich_emails_core(data: dict):
                                           "source": "+dedup"}
                     print(f"[DEDUP] {cle} → email Kaspr déjà trouvé, réutilisé")
                 continue
-            print(f"[KASPR] Recherche LinkedIn pour {prenom} {nom_ct}")
-            linkedin_url = await trouver_linkedin(prenom, nom_ct, societe_ct)
+            # Si le fichier importé fournit déjà une URL LinkedIn valide, on
+            # l'utilise directement → pas de recherche Claude (plus rapide,
+            # moins cher, plus fiable). Levier identifié dans la passation.
+            linkedin_fichier = (ct.get("linkedin", "") or "").strip()
+            if "linkedin.com/in/" in linkedin_fichier.lower():
+                linkedin_url = linkedin_fichier
+                print(f"[KASPR] LinkedIn fourni par le fichier — {prenom} {nom_ct} → {linkedin_url}")
+            else:
+                print(f"[KASPR] Recherche LinkedIn pour {prenom} {nom_ct}")
+                linkedin_url = await trouver_linkedin(prenom, nom_ct, societe_ct)
             resultat = {"email": "", "linkedin": linkedin_url or ""}
             if linkedin_url:
                 if idx not in emails_result:
@@ -2203,6 +2218,7 @@ async def _run_phase_emails(r: dict, phase: str):
                 "contacts": [{
                     "idx": x["idx"], "prenom": x.get("prenom", ""),
                     "nom": x.get("nom_dg", ""), "domaine": x.get("domaine", ""),
+                    "linkedin": x.get("linkedin", ""),
                     "societe": x.get("societe", ""), "siren": x.get("siren", ""),
                     "email": x.get("email", ""), "confiance": x.get("confiance", ""),
                 } for x in batch],
