@@ -128,6 +128,17 @@ def _init_cache():
         conn.execute("""CREATE TABLE IF NOT EXISTS domaine_cache (
             siren TEXT PRIMARY KEY, domaine TEXT NOT NULL, cached_at INTEGER NOT NULL
         )""")
+        # Historique des runs (= Excel finaux pour re-téléchargement)
+        conn.execute("""CREATE TABLE IF NOT EXISTS runs_history (
+            id TEXT PRIMARY KEY,
+            created_at INTEGER NOT NULL,
+            filename TEXT,
+            total_contacts INTEGER,
+            emails_count INTEGER,
+            phones_count INTEGER,
+            recipient TEXT,
+            rows_json TEXT NOT NULL
+        )""")
         conn.commit()
 
 
@@ -545,6 +556,118 @@ async def aide():
 
 
 # -------------------------------------------------------
+# ROUTE HISTORIQUE — Liste des runs passés + re-téléchargement
+# Visible sur https://enrichisseur-dirigeants.onrender.com/runs
+# -------------------------------------------------------
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_list():
+    """Liste les 50 derniers enrichissements terminés avec lien de re-téléchargement."""
+    try:
+        with _sqlite_conn() as conn:
+            rows = conn.execute(
+                "SELECT id, created_at, filename, total_contacts, emails_count, "
+                "phones_count, recipient FROM runs_history "
+                "ORDER BY created_at DESC LIMIT 50"
+            ).fetchall()
+    except Exception as e:
+        return HTMLResponse(f"<p>Erreur lecture historique : {e}</p>", status_code=500)
+
+    items_html = ""
+    for r in rows:
+        run_id, ts, fname, total, emails_n, phones_n, recipient = r
+        date_str = datetime.fromtimestamp(ts).strftime("%d/%m/%Y à %Hh%M")
+        pct = (100 * emails_n // max(1, total)) if total else 0
+        items_html += f"""
+        <div class="run-card">
+          <div class="run-head">
+            <div class="run-title">📊 {fname or 'enrichissement'}</div>
+            <div class="run-date">{date_str}</div>
+          </div>
+          <div class="run-stats">
+            <span class="stat"><b>{total}</b> contacts</span>
+            <span class="stat email"><b>{emails_n}</b> emails ({pct}%)</span>
+            <span class="stat phone"><b>{phones_n}</b> téléphones</span>
+            <span class="stat recipient">📧 {recipient or '—'}</span>
+          </div>
+          <a class="dl-btn" href="/runs/{run_id}/download">⬇️ Télécharger l'Excel</a>
+          <span class="run-id">id : {run_id}</span>
+        </div>"""
+
+    if not items_html:
+        items_html = '<p class="empty">Aucun run terminé encore. Lancez un enrichissement depuis la page principale.</p>'
+
+    html = f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8">
+<title>Historique des runs — Enrichisseur</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #f1f5f9; min-height: 100vh; }}
+.header {{ background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); color: white; padding: 24px 32px; }}
+.header h1 {{ font-size: 22px; font-weight: 800; }}
+.header p {{ font-size: 13px; opacity: 0.8; margin-top: 4px; }}
+.container {{ max-width: 1100px; margin: 0 auto; padding: 20px; }}
+.run-card {{
+  background: white; border-radius: 10px; padding: 18px 22px; margin-bottom: 12px;
+  border: 1px solid #e2e8f0;
+}}
+.run-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }}
+.run-title {{ font-size: 14px; font-weight: 700; color: #1e3a5f; }}
+.run-date {{ font-size: 12px; color: #64748b; }}
+.run-stats {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12px; color: #475569; }}
+.stat b {{ color: #1e3a5f; font-size: 14px; }}
+.stat.email b {{ color: #2563eb; }}
+.stat.phone b {{ color: #059669; }}
+.stat.recipient {{ color: #64748b; }}
+.dl-btn {{
+  display: inline-block; padding: 8px 16px; background: #059669; color: white;
+  text-decoration: none; border-radius: 6px; font-size: 13px; font-weight: 600;
+}}
+.dl-btn:hover {{ background: #047857; }}
+.run-id {{ font-size: 10px; color: #94a3b8; margin-left: 12px; font-family: monospace; }}
+.empty {{ text-align: center; color: #64748b; padding: 40px; background: white; border-radius: 10px; }}
+.back-link {{ display: inline-block; margin-top: 16px; color: white; text-decoration: none; font-size: 13px; opacity: 0.8; }}
+.back-link:hover {{ opacity: 1; }}
+</style>
+</head><body>
+<div class="header">
+  <h1>📋 Historique des enrichissements</h1>
+  <p>Les 50 derniers runs terminés — re-téléchargeable même 30 jours plus tard</p>
+  <a href="/" class="back-link">← Retour à l'enrichisseur</a>
+</div>
+<div class="container">{items_html}</div>
+</body></html>"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/runs/{run_id}/download")
+async def runs_download(run_id: str):
+    """Re-génère et sert l'Excel d'un run passé."""
+    try:
+        with _sqlite_conn() as conn:
+            row = conn.execute(
+                "SELECT rows_json, filename FROM runs_history WHERE id = ?",
+                (run_id,)
+            ).fetchone()
+    except Exception as e:
+        return JSONResponse({"error": f"DB error: {e}"}, status_code=500)
+
+    if not row:
+        return JSONResponse({"error": "Run introuvable"}, status_code=404)
+
+    try:
+        rows_data = json.loads(row[0])
+        filename = row[1] or f"run_{run_id}.xlsx"
+        content = generer_excel(rows_data)
+        return StreamingResponse(
+            BytesIO(content),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"Generation error: {e}"}, status_code=500)
+
+
+# -------------------------------------------------------
 # ROUTE ALERTE — Envoi d'un email d'alerte générique
 # Appelée par le HF Space quand un run plante (mais utilisable
 # pour n'importe quelle notification)
@@ -783,45 +906,79 @@ def _extract_kaspr_email(d: dict) -> str:
     return ""
 
 
+# ────────────────────────────────────────────────────────────────────
+# Throttle Kaspr — l'API limite le débit (HTTP 429). On espace les
+# appels d'au moins KASPR_MIN_INTERVAL secondes et on réessaie sur 429.
+# ────────────────────────────────────────────────────────────────────
+_KASPR_LOCK = asyncio.Lock()
+_KASPR_LAST = [0.0]
+KASPR_MIN_INTERVAL = 2.5  # secondes minimum entre 2 appels Kaspr
+
+
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
-    """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement (illimité)."""
+    """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement.
+    Espace les appels (anti-429) et réessaie en cas de débit dépassé."""
     if not KASPR_KEY or not linkedin_url:
         return ""
-    try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            print(f"[KASPR] Appel pour {prenom} {nom} — {linkedin_url}")
-            r = await c.post(
-                "https://api.developers.kaspr.io/profile/linkedin",
-                headers={
-                    "Authorization": f"Bearer {KASPR_KEY}",
-                    "Content-Type": "application/json",
-                    "accept-version": "v2.0"
-                },
-                json={
-                    "name": f"{prenom} {nom}",
-                    "id": linkedin_url,
-                    "dataToGet": ["workEmail"]
-                }
-            )
-            print(f"[KASPR] Status {r.status_code} pour {prenom} {nom}")
-            if r.status_code == 200:
-                d = r.json()
-                email = _extract_kaspr_email(d)
-                if email:
-                    print(f"[KASPR] ✅ Email trouvé : {email}")
-                    return email
-                else:
+    delais_retry = [10, 25, 50]  # backoff progressif après un 429
+    tentative = 0
+    while True:
+        # --- espacement minimal entre 2 appels Kaspr (anti-429) ---
+        async with _KASPR_LOCK:
+            ecoule = time.monotonic() - _KASPR_LAST[0]
+            if ecoule < KASPR_MIN_INTERVAL:
+                await asyncio.sleep(KASPR_MIN_INTERVAL - ecoule)
+            _KASPR_LAST[0] = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=20) as c:
+                print(f"[KASPR] Appel pour {prenom} {nom} — {linkedin_url}")
+                r = await c.post(
+                    "https://api.developers.kaspr.io/profile/linkedin",
+                    headers={
+                        "Authorization": f"Bearer {KASPR_KEY}",
+                        "Content-Type": "application/json",
+                        "accept-version": "v2.0"
+                    },
+                    json={
+                        "name": f"{prenom} {nom}",
+                        "id": linkedin_url,
+                        "dataToGet": ["workEmail"]
+                    }
+                )
+                print(f"[KASPR] Status {r.status_code} pour {prenom} {nom}")
+                if r.status_code == 200:
+                    d = r.json()
+                    email = _extract_kaspr_email(d)
+                    if email:
+                        print(f"[KASPR] ✅ Email trouvé : {email}")
+                        return email
                     # Pas d'email dans la réponse — log les clés pour debug
                     keys = list((d.get("profile") or d).keys())[:15]
                     print(f"[KASPR] ⚠️ Réponse 200 mais aucun email extrait. Clés profile : {keys}")
-            elif r.status_code == 402:
-                print(f"[KASPR] Plus de crédits !")
-                _alert_api_down("Kaspr", 402, r.text[:200] if hasattr(r, 'text') else "")
-            else:
-                print(f"[KASPR] Erreur {r.status_code}: {r.text[:100]}")
-    except Exception as e:
-        print(f"[KASPR ERROR] {prenom} {nom}: {e}")
-    return ""
+                    return ""
+                elif r.status_code == 429:
+                    if tentative < len(delais_retry):
+                        attente = delais_retry[tentative]
+                        tentative += 1
+                        print(f"[KASPR] 429 (débit dépassé) — nouvelle tentative dans {attente}s "
+                              f"({tentative}/{len(delais_retry)}) — {prenom} {nom}")
+                        await asyncio.sleep(attente)
+                        continue
+                    print(f"[KASPR] ⛔ Abandon {prenom} {nom} : 429 persistant "
+                          f"après {len(delais_retry)} tentatives")
+                    return ""
+                elif r.status_code == 402:
+                    print(f"[KASPR] Plus de crédits !")
+                    _alert_api_down("Kaspr", 402, r.text[:200] if hasattr(r, 'text') else "")
+                    return ""
+                else:
+                    print(f"[KASPR] Erreur {r.status_code}: {r.text[:100]}")
+                    return ""
+        except Exception as e:
+            print(f"[KASPR ERROR] {prenom} {nom}: {e}")
+            return ""
+
+
 async def corriger_domaine(siren: str, societe: str) -> str:
     """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude.
     Met en cache 90j (1j si vide) pour éviter les appels répétés."""
@@ -1509,6 +1666,26 @@ Enrichisseur Dirigeants"""
             server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(SMTP_USER, emails_dest, msg.as_string())
         print(f"[EMAIL] ✅ Excel envoyé à {', '.join(emails_dest)}")
+
+        # ─── HISTORIQUE : sauvegarde le run pour re-téléchargement futur ──
+        try:
+            import uuid
+            run_id = uuid.uuid4().hex[:12]
+            nb_phones = sum(1 for r in rows if r.get('phone'))
+            with _sqlite_conn() as conn:
+                conn.execute(
+                    "INSERT INTO runs_history (id, created_at, filename, "
+                    "total_contacts, emails_count, phones_count, recipient, rows_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (run_id, int(time.time()), filename, len(rows), emails_count,
+                     nb_phones, ", ".join(emails_dest),
+                     json.dumps(rows, ensure_ascii=False))
+                )
+                conn.commit()
+            print(f"[RUNS] ✅ Run sauvegardé : {run_id} ({len(rows)} contacts)")
+        except Exception as e:
+            print(f"[RUNS SAVE ERROR] {e}")
+
         return {"ok": True}
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
