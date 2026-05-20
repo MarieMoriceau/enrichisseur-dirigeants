@@ -18,24 +18,8 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f1f5f9; min-
 .zone input { display: none; }
 .btn { border: none; border-radius: 8px; padding: 10px 18px; font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.2s; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-pappers  { background: #2563eb; color: white; }
-.btn-claude   { background: #7c3aed; color: white; }
-.btn-pipedrive{ background: #f59e0b; color: white; }
-.btn-kaspr    { background: #0891b2; color: white; }
-.btn-fullenrich{ background: #059669; color: white; }
-.btn-all      { background: linear-gradient(135deg, #1e3a5f, #7c3aed); color: white; padding: 10px 22px; font-size: 13px; }
-.btn-stop     { background: #ef4444; color: white; display: none; }
-.btn-export   { background: #059669; color: white; display: none; }
+.btn-all { background: linear-gradient(135deg, #1e3a5f, #7c3aed); color: white; padding: 10px 22px; font-size: 13px; }
 .phases { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; align-items: center; }
-.phase-divider { color: #94a3b8; font-size: 14px; }
-.progress-bar { height: 6px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin-top: 12px; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, #2563eb, #7c3aed); border-radius: 99px; transition: width 0.3s; width: 0%; }
-.status-bar { display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
-.phase-status { font-size: 11px; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
-.phase-idle    { background: #f1f5f9; color: #64748b; }
-.phase-running { background: #fef9c3; color: #854d0e; }
-.phase-done    { background: #dcfce7; color: #166534; }
-.phase-error   { background: #fee2e2; color: #991b1b; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { background: #f8fafc; color: #475569; font-weight: 700; padding: 10px 12px; text-align: left; border-bottom: 2px solid #e2e8f0; }
 td { padding: 9px 12px; border-bottom: 1px solid #f1f5f9; color: #334155; }
@@ -53,6 +37,36 @@ tr:hover td { background: #f8fafc; }
 .src-fullenrich{ background: #dcfce7; color: #166534; }
 .info { font-size: 12px; color: #059669; font-weight: 600; margin-top: 8px; }
 .stat { font-size: 12px; color: #64748b; }
+
+/* ─── Sélecteur de phases ────────────────────────────────── */
+.phase-pick { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.phase-pick label { font-size: 12px; color: #475569; display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.phase-pick input:disabled + span { opacity: 0.4; }
+
+/* ─── Panneau Runs ───────────────────────────────────────── */
+.runs-empty { text-align: center; color: #94a3b8; font-size: 13px; padding: 24px; }
+.run-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; transition: all 0.15s; cursor: pointer; }
+.run-card:hover { border-color: #cbd5e1; background: #f8fafc; }
+.run-card.selected { border-color: #2563eb; background: #eff6ff; }
+.run-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.run-name { font-size: 13px; font-weight: 700; color: #1e293b; }
+.run-badge { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 99px; white-space: nowrap; }
+.b-attente { background: #f1f5f9; color: #475569; }
+.b-cours   { background: #fef9c3; color: #854d0e; }
+.b-termine { background: #dcfce7; color: #166534; }
+.b-erreur  { background: #fee2e2; color: #991b1b; }
+.b-arrete  { background: #e2e8f0; color: #475569; }
+.run-meta { font-size: 11px; color: #64748b; margin-top: 6px; }
+.run-prog-bar { height: 5px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin-top: 8px; }
+.run-prog-fill { height: 100%; background: linear-gradient(90deg, #2563eb, #7c3aed); transition: width 0.3s; }
+.run-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.run-btn { border: none; border-radius: 6px; padding: 5px 11px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.rb-stop { background: #ef4444; color: white; }
+.rb-dl   { background: #059669; color: white; text-decoration: none; display: inline-block; }
+.rb-view { background: #2563eb; color: white; }
+.rb-redo { background: #7c3aed; color: white; }
+.run-continue { margin-top: 8px; padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; display: none; }
+.run-continue.open { display: block; }
 
 /* ─── Mode d'emploi ──────────────────────────────────────── */
 .aide details { cursor: pointer; }
@@ -93,6 +107,9 @@ tr:hover td { background: #f8fafc; }
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 9px;
 }
+.s-pappers { background: #2563eb; } .s-claude { background: #7c3aed; }
+.s-pipedrive { background: #f59e0b; } .s-kaspr { background: #0891b2; }
+.s-fullenrich { background: #059669; }
 .aide-arrow { color: #94a3b8; font-size: 13px; }
 .aide-warn {
   background: #fffbea; border: 1px solid #facc15; border-radius: 8px;
@@ -109,7 +126,7 @@ tr:hover td { background: #f8fafc; }
 <body>
 <div class="header">
   <h1>🔍 Enrichisseur Dirigeants</h1>
-  <p>Pappers → Claude → Pipedrive → Kaspr → Fullenrich</p>
+  <p>Pappers → Claude → Pipedrive → Kaspr → Fullenrich — runs côté serveur</p>
 </div>
 <div class="container">
   <div class="card">
@@ -133,7 +150,7 @@ tr:hover td { background: #f8fafc; }
       </button>
       <div style="font-size:11px;color:#94a3b8;margin-top:5px">
         Importe un fichier « Dirigeants enrichis » (1 ligne = 1 contact, colonnes Prénom / Nom).
-        Charge les contacts et active directement Kaspr + Fullenrich, sans repasser par Pappers.
+        Le run se limitera alors à Pipedrive + Kaspr + Fullenrich.
       </div>
     </div>
     <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -142,30 +159,24 @@ tr:hover td { background: #f8fafc; }
         style="border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;font-size:12px;width:300px;outline:none">
       <span style="font-size:11px;color:#94a3b8">Plusieurs adresses séparées par des virgules</span>
     </div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px dashed #cbd5e1">
+      <div style="font-size:12px;font-weight:600;color:#475569;margin-bottom:4px">
+        ⚙️ Phases à exécuter <span style="font-weight:400;color:#94a3b8">— décoche pour un run partiel</span>
+      </div>
+      <div class="phase-pick" id="phasePick">
+        <label><input type="checkbox" class="ph" value="1" checked><span>1. Pappers</span></label>
+        <label><input type="checkbox" class="ph" value="2" checked><span>2. Claude+web</span></label>
+        <label><input type="checkbox" class="ph" value="3" checked><span>3. Pipedrive</span></label>
+        <label><input type="checkbox" class="ph" value="4" checked><span>4. Kaspr</span></label>
+        <label><input type="checkbox" class="ph" value="5" checked><span>5. Fullenrich</span></label>
+      </div>
+    </div>
     <div class="phases">
-      <button class="btn btn-all" id="btnAll" onclick="runAll()" disabled>⚡ Tout lancer</button>
-      <div class="phase-divider">ou étape par étape →</div>
-      <button class="btn btn-pappers"   id="btn1" onclick="runPhase1()" disabled>1. Pappers</button>
-      <button class="btn btn-claude"    id="btn2" onclick="runPhase2()" disabled>2. Claude+web</button>
-      <button class="btn btn-pipedrive" id="btn3" onclick="runPhase3()" disabled>3. Pipedrive</button>
-      <button class="btn btn-kaspr"     id="btn4" onclick="runPhase4()" disabled>4. Kaspr</button>
-      <button class="btn btn-fullenrich"id="btn5" onclick="runPhase5()" disabled>5. Fullenrich</button>
-      <div class="phase-divider">|</div>
-      <button class="btn btn-stop"   id="btnStop"   onclick="stopAll()">⏹ Stop</button>
-      <button class="btn btn-export" id="btnExport" onclick="exportExcel()">⬇️ Excel</button>
+      <button class="btn btn-all" id="btnLancer" onclick="launchRun()" disabled>⚡ Lancer l'enrichissement</button>
       <a class="btn" href="/template" download="template_enrichisseur.xlsx"
          style="background:#64748b;color:white;text-decoration:none;padding:10px 18px">📥 Template</a>
       <span class="stat" id="statLabel"></span>
     </div>
-    <div class="status-bar" id="statusBar">
-      <span class="phase-status phase-idle" id="s1">1. Pappers</span>
-      <span class="phase-status phase-idle" id="s2">2. Claude</span>
-      <span class="phase-status phase-idle" id="s3">3. Pipedrive</span>
-      <span class="phase-status phase-idle" id="s4">4. Kaspr</span>
-      <span class="phase-status phase-idle" id="s5">5. Fullenrich</span>
-    </div>
-    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-    <div style="font-size:11px;color:#94a3b8;margin-top:6px" id="progressLabel"></div>
   </div>
 
   <!-- ─── MODE D'EMPLOI (collapsible) ─────────────────────── -->
@@ -174,35 +185,25 @@ tr:hover td { background: #f8fafc; }
       <summary>📖 Mode d'emploi — comment lancer un enrichissement</summary>
       <div class="aide-content">
         <ol>
-          <li><strong>Télécharge le template Excel</strong> en cliquant sur <code>📥 Template</code> (bouton gris à droite). Tu auras un fichier prêt à remplir avec les bonnes colonnes.</li>
-          <li><strong>Remplis 1 ligne par société</strong> dans le template :
-            <ul>
-              <li>🟢 <code>nom</code> = obligatoire (nom commercial de la société)</li>
-              <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>person_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>contact_linkedin</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
-            </ul>
-          </li>
-          <li><strong>Glisse ton fichier</strong> dans la zone <code>📂 Glissez votre fichier ici</code> (ou clique pour parcourir). Tu peux ensuite vérifier le mapping des colonnes proposé.</li>
-          <li><strong>Saisis ton email</strong> dans <code>📧 Recevoir l'Excel par email</code> (vérifie aussi tes spams). Tu peux mettre plusieurs adresses séparées par des virgules.</li>
-          <li><strong>Choisis ton mode de lancement</strong> :
-            <ul>
-              <li><code>⚡ Tout lancer</code> = enchaîne automatiquement les 5 étapes du pipeline (recommandé)</li>
-              <li><strong>Étape par étape</strong> = lance manuellement chaque étape (utile pour debug ou pour ne faire qu'une partie)</li>
-            </ul>
-          </li>
-          <li><strong>Reçois l'Excel par email</strong> à la fin (ou télécharge-le directement avec <code>⬇️ Excel</code>).</li>
+          <li><strong>Télécharge le template Excel</strong> via <code>📥 Template</code>, puis <strong>remplis 1 ligne par société</strong> (<code>nom</code> obligatoire ; <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>code_postal</code>, <code>ville</code>… optionnels mais utiles).</li>
+          <li><strong>Glisse ton fichier</strong> dans la zone <code>📂</code> et vérifie le mapping des colonnes proposé.</li>
+          <li><strong>Saisis ton email</strong> (vérifie aussi tes spams) — plusieurs adresses possibles, séparées par des virgules.</li>
+          <li><strong>Choisis tes phases</strong> : par défaut les 5 sont cochées. Décoche-en pour un run partiel (debug, ou ne faire qu'une partie du pipeline).</li>
+          <li><strong>Clique sur <code>⚡ Lancer</code></strong> : le run part <strong>sur le serveur</strong>. Tu peux fermer l'onglet, il continue tout seul.</li>
+          <li><strong>Suis-le dans le panneau « Runs »</strong> : en cours, en attente, terminés. L'Excel arrive par email et reste téléchargeable depuis le panneau.</li>
         </ol>
 
         <div style="margin-top:18px;font-weight:700;color:#1e3a5f">🔄 Le pipeline en détail</div>
         <div class="aide-pipeline">
-          <div class="aide-step btn-pappers"><span class="num">1</span>Pappers</div>
+          <div class="aide-step s-pappers"><span class="num">1</span>Pappers</div>
           <span class="aide-arrow">→</span>
-          <div class="aide-step btn-claude"><span class="num">2</span>Claude+web</div>
+          <div class="aide-step s-claude"><span class="num">2</span>Claude+web</div>
           <span class="aide-arrow">→</span>
-          <div class="aide-step btn-pipedrive"><span class="num">3</span>Pipedrive</div>
+          <div class="aide-step s-pipedrive"><span class="num">3</span>Pipedrive</div>
           <span class="aide-arrow">→</span>
-          <div class="aide-step btn-kaspr"><span class="num">4</span>Kaspr</div>
+          <div class="aide-step s-kaspr"><span class="num">4</span>Kaspr</div>
           <span class="aide-arrow">→</span>
-          <div class="aide-step btn-fullenrich"><span class="num">5</span>Fullenrich</div>
+          <div class="aide-step s-fullenrich"><span class="num">5</span>Fullenrich</div>
         </div>
         <ul style="padding-left:22px;font-size:12.5px;color:#475569">
           <li><strong>Pappers</strong> : base légale française (SIREN, domaine, représentants légaux actifs)</li>
@@ -213,36 +214,56 @@ tr:hover td { background: #f8fafc; }
         </ul>
 
         <div class="aide-tip">
-          <strong>💡 Conseil</strong> : plus tu fournis d'infos en entrée (SIREN, domaine, code postal, ville), moins l'enrichisseur tâtonne et plus le résultat est précis. Si tu connais déjà un contact (Prénom + Nom + Titre), remplis-le aussi : il sera enrichi en priorité.
+          <strong>💡 Conseil</strong> : plus tu fournis d'infos en entrée (SIREN, domaine, code postal, ville), moins l'enrichisseur tâtonne et plus le résultat est précis.
         </div>
-
         <div class="aide-warn">
-          <strong>⏱️ Patience</strong> : un fichier de 50 sociétés prend ~15-30 min, 200 sociétés ~1-2 h. Le pipeline est volontairement séquentiel pour ne pas se faire bloquer par les API en aval. Tu peux fermer l'onglet, l'email arrivera à la fin.
+          <strong>⏱️ Patience</strong> : ~15-30 min pour 50 sociétés, ~1-2 h pour 200. Les runs s'exécutent <strong>un par un</strong> : si tu en lances un 2ᵉ, il attend son tour dans la file. Fermer l'onglet ne tue plus rien.
         </div>
-
         <div class="aide-tip">
-          <strong>🎯 Filtres automatiques</strong> : les anciens dirigeants (ex-CEO, démissionnaires…) et les rôles non-opérationnels (commissaire aux comptes, censeur, liquidateur, mandataire…) sont automatiquement exclus.
+          <strong>↻ Pas-à-pas</strong> : un run terminé peut être <strong>relancé sur d'autres phases</strong> (bouton « Relancer des phases ») en repartant de ses résultats actuels.
         </div>
-
         <div class="aide-warn">
-          <strong>🚫 Cas qui peuvent rater</strong> : société radiée (signalée en rouge dans l'Excel), sociétés sans aucun dirigeant identifiable (renvoyée vide), domaine introuvable (Fullenrich sera skip). Ce n'est pas un bug, juste des limites des sources de données.
+          <strong>🚫 Cas qui peuvent rater</strong> : société radiée (signalée en rouge dans l'Excel), sociétés sans dirigeant identifiable (renvoyée vide), domaine introuvable (Fullenrich skip). Limites des sources de données, pas un bug.
         </div>
       </div>
     </details>
   </div>
 
+  <!-- ─── PANNEAU RUNS (serveur) ───────────────────────────── -->
   <div class="card">
-    <h2>✅ Résultats</h2>
+    <h2>🗂️ Runs — enrichissements côté serveur</h2>
+    <div style="font-size:11px;color:#94a3b8;margin-bottom:12px">
+      Les runs tournent sur le serveur : tu peux fermer l'onglet, ils continuent.
+      Un seul run s'exécute à la fois — les autres attendent dans la file. Mise à jour auto toutes les 4 s.
+    </div>
+    <div id="runsPanel"><div class="runs-empty">Aucun run pour l'instant. Lance un enrichissement ci-dessus.</div></div>
+  </div>
+
+  <!-- ─── RÉSULTATS (du run sélectionné) ───────────────────── -->
+  <div class="card">
+    <h2>✅ Résultats <span id="resultsRunLabel" style="font-weight:400;color:#94a3b8;font-size:12px"></span></h2>
     <div style="overflow-x:auto">
     <table>
       <thead><tr><th>Société</th><th>Prénom</th><th>Nom</th><th>Titre</th><th>Email</th><th>Téléphone</th><th>LinkedIn</th><th>Domaine</th><th>Confiance</th><th>Source</th><th>Pipedrive</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     </div>
+    <div id="resultsEmpty" class="runs-empty">Clique sur « 👁 Voir » d'un run pour afficher ses résultats ici.</div>
   </div>
 </div>
 <script>
-let rows = [], results = [], running = false, stopFlag = false, sourceFileName = '', contactsOnlyMode = false;
+// ════════════════════════════════════════════════════════════════
+// CLIENT LÉGER — l'orchestration vit désormais sur le serveur.
+// Ici on ne fait que : parser le fichier, mapper les colonnes,
+// POSTer /run/create, et afficher l'état des runs (polling).
+// ════════════════════════════════════════════════════════════════
+let rows = [];               // sociétés mappées (mode 'societes')
+let contactsLoaded = [];     // contacts importés (mode 'contacts')
+let contactsOnlyMode = false;
+let sourceFileName = '';
+let selectedRunId = null;    // run affiché dans le tableau Résultats
+let _lastRunsJSON = '';      // anti-flicker du panneau Runs
+
 // ── File handling ──────────────────────────────────────────────
 function handleDrop(e) {
   e.preventDefault();
@@ -250,15 +271,15 @@ function handleDrop(e) {
   if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 }
 function handleFile(file) {
+  if (!file) return;
   contactsOnlyMode = false;
+  contactsLoaded = [];
   sourceFileName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '_');
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext === 'csv') {
-    // Lire en binaire pour détecter l'encoding
     const sniffer = new FileReader();
     sniffer.onload = e => {
       const bytes = new Uint8Array(e.target.result.slice(0, 3));
-      // BOM UTF-8 = EF BB BF
       const isUtf8Bom = bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF;
       const encoding = isUtf8Bom ? 'UTF-8' : 'windows-1252';
       const reader = new FileReader();
@@ -272,11 +293,6 @@ function handleFile(file) {
     reader.readAsArrayBuffer(file);
   }
   document.getElementById('fileInfo').textContent = `✅ ${file.name}`;
-}
-function normalizeHeader(h) {
-  return h.trim().toLowerCase()
-    .normalize("NFD").replace(/[̀-ͯ]/g, "")  // enlève accents
-    .replace(/\s+/g, ' ');
 }
 function parseCSV(text) {
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
@@ -313,7 +329,6 @@ function doParseXLSX(buffer) {
   showMappingScreen();
 }
 // ── Import direct de contacts déjà identifiés ──────────────────
-// Permet de lancer Kaspr + Fullenrich seuls, sans repasser par Pappers.
 function handleContactsFile(file) {
   if (!file) return;
   contactsOnlyMode = true;
@@ -355,8 +370,8 @@ function parseContactsCSV(text) {
     text.trim().split('\n').map(line => line.split(sep).map(c => c.trim().replace(/^"|"$/g,'')))
   );
 }
-// Construit `results` depuis une matrice de lignes brutes, en détectant
-// la vraie ligne d'en-têtes (gère les 2 lignes de titre du format export).
+// Construit la liste de contacts depuis une matrice brute (gère les
+// lignes de titre du format export "Dirigeants enrichis").
 function loadContactsFromMatrix(matrix) {
   const norm = s => String(s||'').trim().toLowerCase()
     .normalize("NFD").replace(/[̀-ͯ]/g,"");
@@ -384,12 +399,12 @@ function loadContactsFromMatrix(matrix) {
   const iSrc  = find('source');
   const iPipe = find('dans pipedrive','pipedrive');
   const at = (row,i) => (i>=0 && row[i]!=null) ? String(row[i]).trim() : '';
-  results = [];
+  const out = [];
   for (let r = headerIdx+1; r < matrix.length; r++) {
     const row = matrix[r]||[];
     const prenom = at(row,iPre), nom = at(row,iNom);
-    if (!nom) continue;  // ligne vide ou sans nom de famille → inexploitable
-    results.push({
+    if (!nom) continue;
+    out.push({
       societe:        at(row,iSoc),
       siren:          '',
       prenom:         prenom,
@@ -404,23 +419,24 @@ function loadContactsFromMatrix(matrix) {
       dans_pipedrive: at(row,iPipe),
     });
   }
-  if (!results.length) {
+  if (!out.length) {
     alert('⚠️ Aucun contact exploitable dans ce fichier.');
     contactsOnlyMode = false;
     return;
   }
+  contactsLoaded = out;
   rows = [];
   const ms = document.getElementById('mappingScreen');
   if (ms) ms.remove();
-  renderResults();
-  ['btnAll','btn1','btn2','btn3'].forEach(id => document.getElementById(id).disabled = true);
-  ['btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
-  ['s1','s2','s3'].forEach(id => { document.getElementById(id).className = 'phase-status phase-idle'; });
-  const sansEmail = results.filter(r => !r.email).length;
+  renderResults(contactsLoaded);
+  document.getElementById('resultsRunLabel').textContent = '— aperçu du fichier importé';
+  setPhasesForMode('contacts');
+  document.getElementById('btnLancer').disabled = false;
+  const sansEmail = contactsLoaded.filter(r => !r.email).length;
   document.getElementById('fileInfo').textContent =
-    `📇 ${results.length} contact(s) chargé(s) — ${sansEmail} sans email`;
+    `📇 ${contactsLoaded.length} contact(s) chargé(s) — ${sansEmail} sans email`;
   document.getElementById('statLabel').textContent =
-    `✅ Prêt — clique sur « 4. Kaspr » puis « 5. Fullenrich »`;
+    `✅ Prêt — clique sur « ⚡ Lancer » (Pipedrive + Kaspr + Fullenrich)`;
 }
 function cleanDomain(url) {
   if (!url) return '';
@@ -428,369 +444,213 @@ function cleanDomain(url) {
 }
 function cleanSiren(val) {
   if (!val) return '';
-  // "331191825-00099" → "331191825" (9 premiers chiffres)
   return val.replace(/\D/g, '').substring(0, 9);
 }
-function normalizeRow(r) {
-  const get = (...keys) => { for (const k of keys) { if (r[k] && r[k] !== '—' && r[k] !== 'nan' && r[k] !== 'NaN') return r[k]; } return ''; };
-  return {
-    // Nom de la SOCIÉTÉ — ne jamais prendre "nom" tout seul (c'est souvent le nom de famille)
-    nom:            get('nom commercial','nom legal','organisation','societe','company','entreprise','name'),
-    siren:          cleanSiren(get('siret/siren','siren','siret')),
-    domaine:        cleanDomain(get('url du site internet','site web','domaine','domain','website','site','url')),
-    org_id:         get('id entreprise pipedrive','org id','org_id','id'),
-    fondateurs:     get('fondateurs','founders','fondateur'),
-    // Infos CONTACT déjà connues
-    contact_prenom: get('prenom','contact prenom','prenom contact'),
-    contact_nom:    get('nom','contact nom','nom contact'),  // nom de famille
-    contact_titre:  get('poste occupe','fonction','titre','poste'),
-    contact_email:  '',  // ignoré volontairement — on cherche l'email via notre process
-    code_postal:    get('code postal','cp','code_postal'),
-    ville:          get('ville','city'),
-    adresse:        get('adresse du siege complete','adresse complete','adresse','rue'),
-  };
-}
-function onRowsParsed() { /* remplacé par applyMapping() */ }
-// ── Status helpers ─────────────────────────────────────────────
-function setStatus(n, state, label) {
-  const el = document.getElementById(`s${n}`);
-  el.className = `phase-status phase-${state}`;
-  el.textContent = label || el.textContent;
-}
-function setRunning(on) {
-  running = on;
-  document.getElementById('btnStop').style.display = on ? 'inline-block' : 'none';
-  document.getElementById('btnExport').style.display = on ? 'none' : 'inline-block';
-  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => {
-    // En mode « contacts importés », seuls Kaspr + Fullenrich restent actifs
-    const horsMode = contactsOnlyMode && id !== 'btn4' && id !== 'btn5';
-    document.getElementById(id).disabled = on || horsMode;
+// ── Sélecteur de phases ────────────────────────────────────────
+function setPhasesForMode(mode) {
+  // Mode 'contacts' : Pappers (1) et Claude (2) n'ont pas de sens sur
+  // des contacts déjà identifiés → on les décoche et on les désactive.
+  document.querySelectorAll('.ph').forEach(cb => {
+    const isPappersClaude = (cb.value === '1' || cb.value === '2');
+    if (mode === 'contacts' && isPappersClaude) {
+      cb.checked = false; cb.disabled = true;
+    } else {
+      cb.disabled = false; cb.checked = true;
+    }
   });
 }
-// ── PHASE 1 : Pappers + Claude ─────────────────────────────────
-async function runPhase1() {
-  if (running) return;
-  setRunning(true);
-  stopFlag = false;
-  results = [];
-  document.getElementById('tbody').innerHTML = '';
-  setStatus(1, 'running', '1. Pappers ⏳');
-  for (let i = 0; i < rows.length; i++) {
-    if (stopFlag) break;
-    document.getElementById('progressFill').style.width = Math.round(i/rows.length*100) + '%';
-    document.getElementById('progressLabel').textContent = `${i+1}/${rows.length} — ${rows[i].nom}`;
-    document.getElementById('statLabel').textContent = `⏳ ${rows[i].nom}`;
-    try {
-      const resp = await fetch('/enrich_one', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(rows[i])
-      });
-      const data = await resp.json();
-      if (data.results) { results.push(...data.results); renderResults(); }
-    } catch(e) {
-      results.push({societe:rows[i].nom,siren:'',prenom:'',nom_dg:'',titre:'',email:'',confiance:'',source:''});
-    }
-    if (i < rows.length - 1 && !stopFlag) await sleep(8000);
-  }
-  document.getElementById('progressFill').style.width = '100%';
-  setStatus(1, 'done', `1. Pappers ✅ (${results.filter(r=>r.nom_dg).length} dirigeants)`);
-  document.getElementById('statLabel').textContent = `✅ ${results.filter(r=>r.nom_dg).length} dirigeants trouvés`;
-  document.getElementById('progressLabel').textContent = `${results.length} contacts`;
-  setRunning(false);
-  // Activer phases suivantes
-  ['btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
+function getCheckedPhases() {
+  return [...document.querySelectorAll('.ph')]
+    .filter(cb => cb.checked && !cb.disabled)
+    .map(cb => parseInt(cb.value));
 }
-// ── PHASE 2 : Claude+web ─────────────────────────────────────
-async function runPhase2() {
-  if (running || !results.length) return;
-  setRunning(true);
-  stopFlag = false;
-  setStatus(2, 'running', '2. Claude ⏳');
-  const societes = [...new Set(results.map(r => r.societe))];
-  let totalFound = 0;
-  for (let i = 0; i < societes.length; i++) {
-    if (stopFlag) break;
-    const nomSociete = societes[i];
-    const existants = results.filter(r => r.societe === nomSociete);
-    // Skip si société déjà récupérée depuis Pipedrive en phase 1
-    if (existants.some(r => r.dans_pipedrive === 'oui' || (r.dans_pipedrive && r.dans_pipedrive.length > 0))) {
-      console.log(`[PHASE2] Skip ${nomSociete} — déjà dans Pipedrive`);
-      continue;
-    }
-    // Skip si on a déjà 3 contacts pour cette société
-    const contactsReels = existants.filter(r => r.nom_dg);
-    if (contactsReels.length >= 3) {
-      console.log(`[PHASE2] Skip ${nomSociete} — déjà ${contactsReels.length} contacts`);
-      continue;
-    }
-    const maxAjouter = 3 - contactsReels.length; // combien Claude peut encore ajouter
-    const row = rows.find(r => r.nom === nomSociete) || {nom: nomSociete, domaine:'', siren:'', fondateurs:''};
-    const existing = results.find(r => r.societe === nomSociete);
-    if (existing) { row.siren = existing.siren || row.siren; row.domaine = existing.domaine || row.domaine; }
-    document.getElementById('progressFill').style.width = Math.round(i/societes.length*100) + '%';
-    document.getElementById('progressLabel').textContent = `${i+1}/${societes.length} — ${nomSociete}`;
-    document.getElementById('statLabel').textContent = `⏳ Claude — ${nomSociete}`;
-    try {
-      const resp = await fetch('/enrich_claude', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({...row, max_contacts: maxAjouter})
-      });
-      const data = await resp.json();
-      if (data.contacts && data.contacts.length > 0) {
-        const noms_existants = results.filter(r => r.societe === nomSociete).map(r => `${r.prenom} ${r.nom_dg}`.toLowerCase().trim());
-        let ajoutes = 0;
-        for (const ct of data.contacts) {
-          if (ajoutes >= maxAjouter) break;  // stop quand on a atteint 3 contacts total
-          const key = `${ct.prenom} ${ct.nom}`.toLowerCase().trim();
-          if (!noms_existants.includes(key)) {
-            results.push({
-              org_id: row.org_id||'', societe: nomSociete,
-              siren: row.siren||'', domaine: row.domaine||'',
-              prenom: ct.prenom, nom_dg: ct.nom, titre: ct.titre,
-              email: ct.email||'', confiance: ct.confiance_email||'faible',
-              source: 'Claude+web', linkedin: '', dans_pipedrive: ''
-            });
-            totalFound++;
-            ajoutes++;
-          }
-        }
-        renderResults();
-      }
-    } catch(e) { console.error('Claude error:', e); }
-    if (i < societes.length - 1 && !stopFlag) await sleep(8000);
-  }
-  document.getElementById('progressFill').style.width = '100%';
-  setStatus(2, 'done', `2. Claude ✅ (${totalFound} nouveaux)`);
-  document.getElementById('statLabel').textContent = `✅ Claude : ${totalFound} contacts ajoutés`;
-  setRunning(false);
-}
-// ── PHASE 3 : Pipedrive ──────────────────────────────────────
-async function runPhase3() {
-  if (running || !results.length) return;
-  setRunning(true);
-  setStatus(3, 'running', '3. Pipedrive ⏳');
-  const sans = results.filter(r => r.nom_dg && !r.email);
-  document.getElementById('statLabel').textContent = `⏳ Pipedrive — ${sans.length} contacts à vérifier`;
-  let found = 0;
-  for (const r of sans) {
-    if (stopFlag) break;
-    try {
-      const resp = await fetch('/check_pipedrive', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({prenom: r.prenom, nom: r.nom_dg})
-      });
-      const data = await resp.json();
-      if (data.email) {
-        const idx = results.indexOf(r);
-        results[idx].email = data.email;
-        results[idx].confiance = 'haute';
-        results[idx].source = (results[idx].source||'') + '+Pipedrive';
-        results[idx].dans_pipedrive = 'oui';
-        if (data.phone) results[idx].phone = data.phone;
-        found++;
-        renderResults();
-      }
-    } catch(e) {}
-  }
-  setStatus(3, 'done', `3. Pipedrive ✅ (${found} emails)`);
-  document.getElementById('statLabel').textContent = `✅ Pipedrive : ${found} emails`;
-  setRunning(false);
-}
-// ── PHASE 4 : Kaspr ────────────────────────────────────────────
-// FIX : fromRunAll bypass le guard "running" pour éviter le race condition
-async function runPhase4(fromRunAll = false) {
-  if (running && !fromRunAll) return;
-  if (!results.length) return;
-  setRunning(true);
-  setStatus(4, 'running', '4. Kaspr ⏳');
-  await runEmailBatch('kaspr');
-  setRunning(false);
-}
-// ── PHASE 5 : Fullenrich ───────────────────────────────────────
-// FIX : fromRunAll bypass le guard "running" pour éviter le race condition
-async function runPhase5(fromRunAll = false) {
-  if (running && !fromRunAll) return;
-  if (!results.length) return;
-  setRunning(true);
-  setStatus(5, 'running', '5. Fullenrich ⏳');
-  await runEmailBatch('fullenrich');
-  setRunning(false);
-}
-// ── Batch email enrichment (Kaspr + Fullenrich) ────────────────
-// Découpage en lots de 5 contacts → évite le timeout proxy Render (100s)
-// sur des gros volumes (200+ contacts).
-async function runEmailBatch(phase) {
-  const toEnrich = results
-    .map((r, idx) => ({...r, idx}))
-    .filter(r => r.nom_dg && (
-      !r.email || r.confiance === 'faible'  // sans email
-      || (!r.phone && phase === 'fullenrich') // avec email mais sans tel → Fullenrich seulement
-    ));
-  if (!toEnrich.length) {
-    if (phase === 'kaspr') setStatus(4, 'done', '4. Kaspr ✅ (rien à faire)');
-    else setStatus(5, 'done', '5. Fullenrich ✅ (rien à faire)');
-    document.getElementById('statLabel').textContent = '✅ Tous les emails déjà trouvés';
+// ── Lancer un run sur le serveur ───────────────────────────────
+async function launchRun() {
+  let mode, payload;
+  if (contactsOnlyMode && contactsLoaded.length) {
+    mode = 'contacts';
+    payload = { contacts: contactsLoaded };
+  } else if (rows.length) {
+    mode = 'societes';
+    payload = { rows: rows };
+  } else {
+    alert('Charge d\'abord un fichier.');
     return;
   }
-  const BATCH_SIZE = 5;       // 5 contacts par requête → ~30-60s par batch, OK pour proxy
-  const PAUSE_MS   = 5000;    // 5s entre 2 lots, laisse souffler Render
-  const totalBatches = Math.ceil(toEnrich.length / BATCH_SIZE);
-  let totalFound = 0;
-  const phaseLabel = phase === 'kaspr' ? 'Kaspr' : 'Fullenrich';
-  for (let b = 0; b < totalBatches; b++) {
-    if (stopFlag) break;
-    const start = b * BATCH_SIZE;
-    const batch = toEnrich.slice(start, start + BATCH_SIZE);
-    document.getElementById('progressFill').style.width = Math.round(b/totalBatches*100) + '%';
-    document.getElementById('progressLabel').textContent =
-      `${phaseLabel} — lot ${b+1}/${totalBatches} (${batch.length} contacts)`;
-    document.getElementById('statLabel').textContent =
-      `⏳ ${phaseLabel} — lot ${b+1}/${totalBatches}, ${totalFound} emails trouvés`;
-    try {
-      const resp = await fetch('/enrich_emails', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ contacts: batch.map(r => ({
-          idx: r.idx, prenom: r.prenom, nom: r.nom_dg,
-          domaine: r.domaine, societe: r.societe, siren: r.siren,
-          email: r.email, confiance: r.confiance
-        })), phase })
-      });
-      const data = await resp.json();
-      const emails = data.emails || {};
-      for (const [idxStr, val] of Object.entries(emails)) {
-        const idx = parseInt(idxStr);
-        if (idx >= 0 && idx < results.length) {
-          const email   = typeof val === 'string' ? val : (val && val.email ? val.email : '');
-          const linkedin = val && val.linkedin ? val.linkedin : '';
-          const phone   = val && val.phone ? val.phone : '';
-          const srcTag  = val && val.source ? val.source : `+${phaseLabel}`;
-          if (phone && !results[idx].phone) results[idx].phone = phone;
-          if (email && email.includes('@')) {
-            results[idx].email = email;
-            results[idx].confiance = 'haute';
-            if (linkedin) results[idx].linkedin = linkedin;
-            const src = results[idx].source || '';
-            const tag = srcTag.replace('+','');
-            if (!src.includes(tag)) results[idx].source = src + srcTag;
-            totalFound++;
-          } else if (linkedin && !results[idx].linkedin) {
-            results[idx].linkedin = linkedin;
-          }
-        }
-      }
-      renderResults();
-    } catch(e) {
-      console.warn(`${phaseLabel} batch ${b+1} échoué :`, e);
-      // On continue avec le lot suivant — pas d'abandon global
-    }
-    // Pause entre les lots (sauf dernier)
-    if (b < totalBatches - 1 && !stopFlag) {
-      await sleep(PAUSE_MS);
-    }
-  }
-  document.getElementById('progressFill').style.width = '100%';
-  if (phase === 'kaspr') setStatus(4, 'done', `4. Kaspr ✅ (${totalFound} emails)`);
-  else setStatus(5, 'done', `5. Fullenrich ✅ (${totalFound} emails)`);
-  document.getElementById('statLabel').textContent =
-    `✅ ${phaseLabel} : ${totalFound} emails sur ${toEnrich.length} contacts`;
-}
-// ── TOUT LANCER ────────────────────────────────────────────────
-async function runAll() {
-  if (running) return;
-  stopFlag = false;
-  // Phase 1 : Pappers
-  await runPhase1();
-  if (stopFlag) return;
-  await sleep(500); // laisse results se stabiliser avant Phase 2
-  // Phase 2 : Claude+web (ajoute les dirigeants non légaux)
-  await runPhase2();
-  if (stopFlag) return;
-  await sleep(500); // laisse results se stabiliser avant Phase 3
-  // Phase 3 : Pipedrive check
-  await runPhase3();
-  if (stopFlag) return;
-  await sleep(500); // laisse results se stabiliser avant Phase 4
-  // Phase 4 : Kaspr — fromRunAll=true pour bypasser le race condition sur "running"
-  await runPhase4(true);
-  if (stopFlag) return;
-  await sleep(500); // laisse results se stabiliser avant Phase 5
-  // Phase 5 : Fullenrich — fromRunAll=true pour bypasser le race condition sur "running"
-  await runPhase5(true);
-  // Envoi email si adresse(s) renseignée(s)
+  const phases = getCheckedPhases();
+  if (!phases.length) { alert('Coche au moins une phase à exécuter.'); return; }
   const emailRaw = document.getElementById('emailDest').value.trim();
-  if (emailRaw && results.length) {
-    const emails = emailRaw.split(',').map(e => e.trim()).filter(e => e.includes('@'));
-    if (emails.length) {
-      document.getElementById('statLabel').textContent = `📧 Envoi Excel à ${emails.join(', ')}...`;
-      try {
-        const r = await fetch('/send_csv', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ emails: emails, rows: results, filename: `enrichissement_${sourceFileName}_${new Date().toISOString().slice(0,10)}.xlsx` })
-        });
-        const d = await r.json();
-        if (d.ok) {
-          document.getElementById('statLabel').textContent = `✅ Excel envoyé à ${emails.join(', ')}`;
-        } else {
-          document.getElementById('statLabel').textContent = `❌ Erreur envoi email : ${d.error}`;
-        }
-      } catch(e) {
-        document.getElementById('statLabel').textContent = `❌ Erreur envoi email`;
-      }
+  const emails = emailRaw.split(',').map(e => e.trim()).filter(e => e.includes('@'));
+  const btn = document.getElementById('btnLancer');
+  btn.disabled = true;
+  document.getElementById('statLabel').textContent = '⏳ Création du run…';
+  try {
+    const resp = await fetch('/run/create', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ...payload, mode, phases, emails_dest: emails, nom: sourceFileName })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      document.getElementById('statLabel').textContent =
+        `✅ Run lancé — position ${data.rang} dans la file. Suis-le dans « Runs » ci-dessous.`;
+      selectedRunId = data.run_id;
+      _lastRunsJSON = '';   // force le rafraîchissement du panneau
+      pollRuns();
+    } else {
+      document.getElementById('statLabel').textContent = `❌ ${data.error || 'Erreur'}`;
     }
+  } catch(e) {
+    document.getElementById('statLabel').textContent = '❌ Erreur réseau — le serveur répond ?';
   }
+  btn.disabled = false;
 }
-function stopAll() {
-  stopFlag = true;
-  document.getElementById('btnStop').style.display = 'none';
+// ── Polling du panneau Runs ────────────────────────────────────
+async function pollRuns() {
+  try {
+    const resp = await fetch('/run/list');
+    const data = await resp.json();
+    renderRunsPanel(data.runs || []);
+  } catch(e) { /* serveur injoignable — on retentera */ }
+  if (selectedRunId) refreshRunDetail();
 }
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-// ── Render ─────────────────────────────────────────────────────
-function renderResults() {
-  const withEmail = results.filter(r => r.email).length;
-  document.getElementById('statLabel').textContent = `✉️ ${withEmail} emails | 👤 ${results.filter(r=>r.nom_dg).length} dirigeants`;
-  document.getElementById('tbody').innerHTML = results.map(r => {
+function renderRunsPanel(runs) {
+  // Anti-flicker : on ne re-rend que si la liste a réellement changé
+  // (sinon un panneau « Relancer » ouvert se refermerait à chaque tick).
+  const sig = JSON.stringify(runs.map(r => [r.id, r.statut, r.phase_courante,
+    r.progres_traites, r.progres_total, r.rang])) + '|' + selectedRunId;
+  if (sig === _lastRunsJSON) return;
+  _lastRunsJSON = sig;
+  const panel = document.getElementById('runsPanel');
+  if (!runs.length) {
+    panel.innerHTML = '<div class="runs-empty">Aucun run pour l\'instant. Lance un enrichissement ci-dessus.</div>';
+    return;
+  }
+  panel.innerHTML = runs.map(runCardHTML).join('');
+}
+function runCardHTML(r) {
+  const badges = {
+    EN_ATTENTE: ['b-attente','⏳ En attente'],
+    EN_COURS:   ['b-cours','🟢 En cours'],
+    TERMINE:    ['b-termine','✅ Terminé'],
+    ERREUR:     ['b-erreur','❌ Erreur'],
+    ARRETE:     ['b-arrete','⏹ Arrêté'],
+  };
+  const [bc, bl] = badges[r.statut] || ['b-attente', r.statut];
+  const pct = r.progres_total ? Math.round(r.progres_traites / r.progres_total * 100)
+                              : (r.statut === 'TERMINE' ? 100 : 0);
+  let meta;
+  if (r.statut === 'EN_COURS')        meta = `${r.phase_courante || '…'} — ${r.progres_traites}/${r.progres_total}`;
+  else if (r.statut === 'EN_ATTENTE') meta = `Position ${r.rang || '?'} dans la file`;
+  else if (r.statut === 'ERREUR')     meta = `⚠️ ${r.erreur || 'erreur inconnue'}`;
+  else                                meta = `${r.nb_contacts} contacts · ${r.nb_emails} emails · ${r.nb_telephones} tél.`;
+  const sel = (r.id === selectedRunId) ? ' selected' : '';
+  const fini = ['TERMINE','ERREUR','ARRETE'].includes(r.statut);
+  let actions = `<button class="run-btn rb-view" onclick="event.stopPropagation();selectRun('${r.id}')">👁 Voir</button>`;
+  if (r.statut === 'EN_COURS' || r.statut === 'EN_ATTENTE')
+    actions += `<button class="run-btn rb-stop" onclick="event.stopPropagation();stopRun('${r.id}')">⏹ Stop</button>`;
+  if (fini && r.nb_contacts > 0) {
+    actions += `<a class="run-btn rb-dl" href="/run/${r.id}/excel">⬇️ Excel</a>`;
+    actions += `<button class="run-btn rb-redo" onclick="event.stopPropagation();toggleContinue('${r.id}')">↻ Relancer des phases</button>`;
+  }
+  const showBar = (r.statut === 'EN_COURS' || r.statut === 'TERMINE');
+  const contPick = [1,2,3,4,5].map(p =>
+    `<label><input type="checkbox" class="phc-${r.id}" value="${p}"><span>${p}</span></label>`).join('');
+  return `<div class="run-card${sel}" onclick="selectRun('${r.id}')">
+    <div class="run-top">
+      <span class="run-name">${escapeHtml(r.nom)}</span>
+      <span class="run-badge ${bc}">${bl}</span>
+    </div>
+    <div class="run-meta">${escapeHtml(meta)} · phases ${r.phases.join('-')}</div>
+    ${showBar ? `<div class="run-prog-bar"><div class="run-prog-fill" style="width:${pct}%"></div></div>` : ''}
+    <div class="run-actions">${actions}</div>
+    <div class="run-continue" id="cont-${r.id}">
+      <div style="font-size:11px;color:#475569;margin-bottom:4px">Phases à relancer (repart des résultats actuels) :</div>
+      <div class="phase-pick">${contPick}
+        <button class="run-btn rb-redo" onclick="event.stopPropagation();doContinue('${r.id}')">▶ Relancer ces phases</button>
+      </div>
+    </div>
+  </div>`;
+}
+function escapeHtml(s) {
+  return String(s||'').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function selectRun(id) {
+  selectedRunId = id;
+  _lastRunsJSON = '';   // force le re-rendu pour marquer la carte sélectionnée
+  pollRuns();
+}
+async function stopRun(id) {
+  if (!confirm('Arrêter ce run ?')) return;
+  try {
+    await fetch(`/run/${id}/stop`, { method: 'POST' });
+    _lastRunsJSON = '';
+    pollRuns();
+  } catch(e) { alert('Erreur réseau'); }
+}
+function toggleContinue(id) {
+  const el = document.getElementById('cont-' + id);
+  if (el) el.classList.toggle('open');
+}
+async function doContinue(id) {
+  const phases = [...document.querySelectorAll('.phc-' + id)]
+    .filter(cb => cb.checked).map(cb => parseInt(cb.value));
+  if (!phases.length) { alert('Coche au moins une phase à relancer.'); return; }
+  try {
+    const resp = await fetch(`/run/${id}/continue`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ phases })
+    });
+    const data = await resp.json();
+    if (data.ok) { _lastRunsJSON = ''; pollRuns(); }
+    else alert('❌ ' + (data.error || 'Erreur'));
+  } catch(e) { alert('Erreur réseau'); }
+}
+// ── Détail du run sélectionné → tableau Résultats ──────────────
+async function refreshRunDetail() {
+  try {
+    const resp = await fetch(`/run/${selectedRunId}`);
+    if (!resp.ok) return;
+    const r = await resp.json();
+    renderResults(r.resultats || []);
+    document.getElementById('resultsRunLabel').textContent =
+      `— ${escapeHtml(r.nom)} (${r.statut})`;
+  } catch(e) { /* on retentera au prochain tick */ }
+}
+// ── Rendu du tableau de résultats ──────────────────────────────
+function renderResults(list) {
+  list = list || [];
+  const empty = document.getElementById('resultsEmpty');
+  if (!list.length) {
+    document.getElementById('tbody').innerHTML = '';
+    if (empty) empty.style.display = 'block';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  document.getElementById('tbody').innerHTML = list.map(r => {
     const conf = r.confiance || '';
     const src  = r.source || '';
     let srcClass = 'src-claude';
-    if (src.includes('Fullenrich')) srcClass = 'src-fullenrich';
-    else if (src.includes('Kaspr'))     srcClass = 'src-kaspr';
-    else if (src.includes('Pipedrive')) srcClass = 'src-pipedrive';
+    if (src.includes('Fullenrich'))      srcClass = 'src-fullenrich';
+    else if (src.includes('Kaspr'))      srcClass = 'src-kaspr';
+    else if (src.includes('Pipedrive'))  srcClass = 'src-pipedrive';
     else if (src.includes('Pappers') && !src.includes('Claude')) srcClass = 'src-pappers';
     return `<tr>
-      <td><strong>${r.societe||'—'}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${r.org_id}</span>`:''}</td>
-      <td>${r.prenom||'—'}</td>
-      <td>${r.nom_dg||'—'}</td>
-      <td>${r.titre||'—'}</td>
-      <td>${r.email?`<span class="email-ok">${r.email}</span>`:`<span class="no-email">—</span>`}</td>
-      <td>${r.phone?`<span style="color:#059669;font-size:11px">${r.phone}</span>`:'—'}</td>
-      <td>${r.linkedin?`<a href="${r.linkedin}" target="_blank" style="color:#0077b5;font-size:11px">🔗 LinkedIn</a>`:'—'}</td>
-      <td>${r.domaine?`<span style="font-size:11px;color:#64748b">${r.domaine}</span>`:'—'}</td>
+      <td><strong>${escapeHtml(r.societe||'—')}</strong>${r.org_id?`<br><span style="font-size:10px;color:#7c3aed">ID ${escapeHtml(r.org_id)}</span>`:''}</td>
+      <td>${escapeHtml(r.prenom||'—')}</td>
+      <td>${escapeHtml(r.nom_dg||'—')}</td>
+      <td>${escapeHtml(r.titre||'—')}</td>
+      <td>${r.email?`<span class="email-ok">${escapeHtml(r.email)}</span>`:`<span class="no-email">—</span>`}</td>
+      <td>${r.phone?`<span style="color:#059669;font-size:11px">${escapeHtml(r.phone)}</span>`:'—'}</td>
+      <td>${r.linkedin?`<a href="${escapeHtml(r.linkedin)}" target="_blank" style="color:#0077b5;font-size:11px">🔗 LinkedIn</a>`:'—'}</td>
+      <td>${r.domaine?`<span style="font-size:11px;color:#64748b">${escapeHtml(r.domaine)}</span>`:'—'}</td>
       <td>${conf?`<span class="badge ${conf}">${conf}</span>`:'—'}</td>
-      <td>${src?`<span class="badge ${srcClass}">${src}</span>`:'—'}</td>
+      <td>${src?`<span class="badge ${srcClass}">${escapeHtml(src)}</span>`:'—'}</td>
       <td>${r.dans_pipedrive?`<span class="badge" style="background:#fef3c7;color:#92400e">✅ Pipedrive</span>`:'—'}</td>
     </tr>`;
   }).join('');
 }
-// ── Export Excel ───────────────────────────────────────────────
-async function exportExcel() {
-  if (!results.length) return;
-  try {
-    const today = new Date().toISOString().slice(0,10);
-    const filename = `enrichissement_${sourceFileName}_${today}.xlsx`;
-    const resp = await fetch('/export_excel', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ rows: results, filename: filename })
-    });
-    const blob = await resp.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
-  } catch(e) {
-    console.error('Export Excel error:', e);
-  }
-}
-// ── Champs cibles du template ──────────────────────────────────
+// ── Champs cibles du template + mapping ────────────────────────
 const CHAMPS_CIBLES = [
   { key: 'nom',            label: '🏢 Nom société',         required: true  },
   { key: 'siren',          label: '🔢 SIREN/SIRET',         required: false },
@@ -806,12 +666,10 @@ const CHAMPS_CIBLES = [
   { key: 'ville',          label: '🏙️ Ville',               required: false },
   { key: 'adresse',        label: '📍 Adresse complète',    required: false },
 ];
-// Colonnes brutes du fichier uploadé (avant normalisation)
 let rawHeaders = [];
 let rawData    = [];
-let mapping    = {}; // { champ_cible: colonne_brute }
+let mapping    = {};
 function showMappingScreen() {
-  // Auto-détecter le mapping probable
   mapping = {};
   const AUTO = {
     nom:            ['nom commercial','nom legal','organisation','societe','société','company','entreprise','name'],
@@ -837,13 +695,11 @@ function showMappingScreen() {
       if (idx >= 0) { mapping[key] = rawHeaders[idx]; break; }
     }
   });
-  // Construire l'écran de mapping
   const html = `
     <div id="mappingScreen" style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin-top:12px">
       <div style="font-size:14px;font-weight:800;color:#1e293b;margin-bottom:4px">🗂️ Mapper les colonnes</div>
       <div style="font-size:12px;color:#64748b;margin-bottom:16px">
         Vérifiez que chaque champ pointe vers la bonne colonne de votre fichier.
-        Les colonnes reconnues automatiquement sont pré-remplies.
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         ${CHAMPS_CIBLES.map(({key, label, required}) => `
@@ -862,19 +718,16 @@ function showMappingScreen() {
         <span style="font-size:11px;color:#94a3b8">* champ obligatoire</span>
       </div>
     </div>`;
-
   const existing = document.getElementById('mappingScreen');
   if (existing) existing.remove();
   document.getElementById('fileInfo').insertAdjacentHTML('afterend', html);
-  // Désactiver les boutons jusqu'à validation
-  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = true);
+  document.getElementById('btnLancer').disabled = true;
 }
 function applyMapping() {
   if (!mapping['nom']) {
     alert('⚠️ Le champ "Nom société" est obligatoire — veuillez le mapper.');
     return;
   }
-  // Appliquer le mapping sur rawData → rows
   rows = rawData.map(r => {
     const mapped = {};
     Object.entries(mapping).forEach(([cible, source]) => {
@@ -882,7 +735,6 @@ function applyMapping() {
     });
     return applyTransforms(mapped);
   }).filter(r => r.nom);
-  // Dédupliquer
   const seen = new Set();
   rows = rows.filter(r => {
     const key = r.siren || r.nom.toLowerCase().trim();
@@ -891,9 +743,13 @@ function applyMapping() {
     return true;
   });
   document.getElementById('mappingScreen').remove();
-  document.getElementById('fileInfo').textContent = document.getElementById('fileInfo').textContent.replace(/ — .*/, '') + ` — ${rows.length} société(s)`;
-  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
-  document.getElementById('statLabel').textContent = `${rows.length} sociétés prêtes`;
+  document.getElementById('fileInfo').textContent =
+    document.getElementById('fileInfo').textContent.replace(/ — .*/, '') + ` — ${rows.length} société(s)`;
+  contactsOnlyMode = false;
+  contactsLoaded = [];
+  setPhasesForMode('societes');
+  document.getElementById('btnLancer').disabled = false;
+  document.getElementById('statLabel').textContent = `${rows.length} sociétés prêtes — clique sur « ⚡ Lancer »`;
 }
 function applyTransforms(r) {
   return {
@@ -913,6 +769,9 @@ function applyTransforms(r) {
     adresse:        r.adresse || '',
   };
 }
+// ── Démarrage du polling ───────────────────────────────────────
+pollRuns();
+setInterval(pollRuns, 4000);
 </script>
 </body>
 </html>
