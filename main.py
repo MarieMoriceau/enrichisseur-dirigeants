@@ -1376,6 +1376,12 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                 print(f"[CLAUDE EXCEPTION] {e}")
                 if attempt < 2:
                     await asyncio.sleep(delays[attempt])
+    # Les emails devinés par Claude sont presque toujours faux → on ne les
+    # conserve JAMAIS (vaut aussi pour les entrées de cache antérieures).
+    # Claude identifie la PERSONNE ; l'email vient de Pipedrive/Kaspr/FullEnrich.
+    for _ct in claude_contacts:
+        _ct["email"] = ""
+        _ct["confiance_email"] = ""
     if not domaine_valide(domaine) and siren:
         domaine = await corriger_domaine(siren, nom)
     for ct in pappers_contacts + claude_contacts + pipedrive_org_contacts:
@@ -1478,10 +1484,9 @@ Retourne au maximum {max_contacts} contact(s)."""
                         parsed = json.loads(m.group())
                         contacts = []
                         for ct in parsed.get("contacts",[]):
-                            email = ct.get("email","") or ""
-                            if any(x in email for x in ["gmail","hotmail","yahoo","outlook.com"]):
-                                ct["email"] = ""
-                                ct["confiance_email"] = "faible"
+                            # Emails devinés par Claude jamais conservés (quasi tous faux).
+                            ct["email"] = ""
+                            ct["confiance_email"] = ""
                             if not est_ancien_dirigeant(ct.get("titre","")) and not est_titre_exclu(ct.get("titre","")):
                                 contacts.append(ct)
                         print(f"[CLAUDE PHASE2 OK] {len(contacts)} contacts pour {nom}")
