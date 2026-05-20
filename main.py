@@ -944,12 +944,21 @@ _KASPR_PAUSE_UNTIL = [0.0]   # pause GLOBALE jusqu'à ce timestamp
 KASPR_MIN_INTERVAL = 4.0     # secondes minimum entre 2 appels (~15/min)
 KASPR_PAUSE_429    = 60.0    # pause globale de base après un 429
 KASPR_MAX_429      = 4       # nombre de 429 tolérés avant abandon
+# Quota Kaspr épuisé (429 + x-ratelimit-remaining=0) : on coupe Kaspr jusqu'à
+# ce timestamp monotonic, au lieu de réessayer en boucle avec des pauses de 180s.
+_KASPR_QUOTA_KO_UNTIL = [0.0]
 
 
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
     """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement.
     Débit régulé + pause GLOBALE sur 429 (tous les appels Kaspr attendent)."""
     if not KASPR_KEY or not linkedin_url:
+        return ""
+    # Quota journalier Kaspr épuisé → on rend la main tout de suite
+    # (sinon : pauses de 180s en boucle qui figent le run et le bouton Stop).
+    if time.monotonic() < _KASPR_QUOTA_KO_UNTIL[0]:
+        restant = int((_KASPR_QUOTA_KO_UNTIL[0] - time.monotonic()) // 60)
+        print(f"[KASPR] ⛔ Quota épuisé — appel sauté pour {prenom} {nom} (réessai dans ~{restant} min)")
         return ""
     n_429 = 0
     while True:
@@ -1002,6 +1011,21 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
                           if "ratelimit" in k.lower() or "rate-limit" in k.lower()}
                     print(f"[KASPR] 429 #{n_429} — Retry-After={retry_after or 'absent'} | "
                           f"{rl or 'pas d en-tete rate-limit'}")
+                    # QUOTA ÉPUISÉ (≠ simple pic de débit) : x-ratelimit-remaining=0
+                    # ou Retry-After très long → on coupe Kaspr pour tout le reste
+                    # du run, plutôt que de boucler sur des pauses de 180s.
+                    remaining = r.headers.get("x-ratelimit-remaining", "")
+                    try:
+                        ra_sec = float(retry_after) if retry_after else 0.0
+                    except ValueError:
+                        ra_sec = 0.0
+                    if remaining == "0" or ra_sec > 600:
+                        coupe = min(ra_sec, 86400.0) if ra_sec else 3600.0
+                        _KASPR_QUOTA_KO_UNTIL[0] = time.monotonic() + coupe
+                        print(f"[KASPR] ⛔ Quota épuisé → Kaspr coupé ~{int(coupe // 60)} min")
+                        _alert_api_down("Kaspr (quota)", 429,
+                                        f"x-ratelimit-remaining={remaining}, Retry-After={retry_after}")
+                        return ""
                     if n_429 >= KASPR_MAX_429:
                         print(f"[KASPR] ⛔ Abandon {prenom} {nom} : 429 persistant ({n_429}×)")
                         return ""
@@ -1275,12 +1299,18 @@ async def _enrich_one_core(data: dict):
         else:
             print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
     claude_contacts = []
-    # CACHE : si on a déjà appelé Claude+web pour ce SIREN dans les 60j, on réutilise
-    cached_claude = cache_contacts_get(siren) if siren else None
+    # Société déjà dans Pipedrive → on garde uniquement ses contacts CRM ;
+    # inutile de payer une recherche Claude (cf règle "max 4 / sauf Pipedrive").
+    if pipedrive_org_contacts:
+        print(f"[PIPEDRIVE ORG] {nom} dans le CRM → recherche Claude sautée")
+        cached_claude = None
+    else:
+        # CACHE : si on a déjà appelé Claude+web pour ce SIREN dans les 60j, on réutilise
+        cached_claude = cache_contacts_get(siren) if siren else None
     if cached_claude is not None:
         claude_contacts = cached_claude
         print(f"[CACHE HIT] {nom} (SIREN {siren}) → {len(cached_claude)} contacts Claude réutilisés")
-    elif ANTHROPIC_KEY:
+    elif ANTHROPIC_KEY and not pipedrive_org_contacts:
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
         exclusion = f"\nDirigeants déjà connus à ne PAS inclure : {', '.join(noms_deja)}" if noms_deja else ""
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
@@ -1344,7 +1374,7 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
     for ct in pappers_contacts + claude_contacts + pipedrive_org_contacts:
         if not ct.get("domaine"):
             ct["domaine"] = domaine
-    if PIPEDRIVE_KEY:
+    if PIPEDRIVE_KEY and not pipedrive_org_contacts:
         for ct in pappers_contacts + claude_contacts:
             if ct.get("email"):
                 continue
@@ -1356,15 +1386,22 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                 ct["dans_pipedrive"] = "oui"
             if pd_data.get("phone"):
                 ct["phone"] = pd_data["phone"]
-    existing_keys = {(c.get("prenom","").lower(), c.get("nom","").lower())
-                     for c in pappers_contacts + claude_contacts
-                     if c.get("prenom") or c.get("nom")}
-    for ct in pipedrive_org_contacts:
-        key = (ct.get("prenom","").lower(), ct.get("nom","").lower())
-        if key not in existing_keys and (ct.get("prenom") or ct.get("nom")):
-            pappers_contacts.insert(0, ct)
-            existing_keys.add(key)
-    tous_contacts = pappers_contacts + claude_contacts
+    # ── Plafond de contacts par société ──────────────────────────────
+    # Règle métier : 4 contacts maximum par société.
+    # EXCEPTION : si la société est déjà dans Pipedrive (contacts CRM
+    # trouvés), on garde UNIQUEMENT ses contacts Pipedrive — sans plafond,
+    # et sans y mêler Pappers/Claude.
+    if pipedrive_org_contacts:
+        tous_contacts = pipedrive_org_contacts
+        print(f"[LIMITE] {nom} dans Pipedrive → {len(tous_contacts)} contact(s) CRM "
+              f"conservés (Pappers/Claude ignorés)")
+    else:
+        # Priorité de conservation : contact du fichier → Pappers → Claude.
+        # (Le contact du fichier est déjà inséré en tête de pappers_contacts.)
+        total_trouve = len(pappers_contacts) + len(claude_contacts)
+        tous_contacts = (pappers_contacts + claude_contacts)[:4]
+        if total_trouve > 4:
+            print(f"[LIMITE] {nom} → {total_trouve} contacts trouvés, plafonné à 4")
     if not tous_contacts:
         tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
     results = []
@@ -1397,7 +1434,7 @@ async def _enrich_claude_core(data: dict):
     siren      = data.get("siren", "")
     domaine    = nettoyer_domaine(data.get("domaine", ""))
     fondateurs = data.get("fondateurs", "")
-    max_contacts = int(data.get("max_contacts", 3))
+    max_contacts = int(data.get("max_contacts", 4))
     if not ANTHROPIC_KEY:
         return {"contacts": []}
     contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
@@ -1467,12 +1504,27 @@ async def _enrich_emails_core(data: dict):
     contacts = data.get("contacts", [])
     if not contacts:
         return {"emails": {}}
+    # phase : 'kaspr' = Kaspr uniquement · 'fullenrich' = FullEnrich uniquement ·
+    # absent/autre = les deux (compat anciens appels). Les phases 4 et 5 du run
+    # passent explicitement l'une ou l'autre → elles sont enfin distinctes.
+    phase = data.get("phase", "")
+    faire_kaspr      = phase in ("", "kaspr")
+    faire_fullenrich = phase in ("", "fullenrich")
+    # Callable optionnel fourni par le worker → permet d'interrompre
+    # proprement le traitement quand l'utilisateur clique sur « Stop ».
+    stop_check = data.get("_stop_check")
     emails_result = {}
     kaspr_par_nom = {}  # résultats Kaspr déjà obtenus dans ce batch (anti-doublon)
-    if KASPR_KEY:
+    if KASPR_KEY and faire_kaspr:
         # On cherche un email Kaspr pour TOUS les contacts. Les emails devinés
         # par Claude ne sont pas fiables : on ne s'en sert plus pour zapper Kaspr.
         for ct in contacts:
+            if stop_check and stop_check():
+                print("[KASPR] ⏹ Arrêt demandé — boucle Kaspr interrompue")
+                break
+            if time.monotonic() < _KASPR_QUOTA_KO_UNTIL[0]:
+                print("[KASPR] ⛔ Quota épuisé — boucle Kaspr de ce lot sautée")
+                break
             prenom = nettoyer_prenom(ct.get("prenom",""))
             nom_ct = ct.get("nom","")
             societe_ct = ct.get("societe","")
@@ -1509,6 +1561,9 @@ async def _enrich_emails_core(data: dict):
                     resultat["email"] = email_kaspr
                     print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
             kaspr_par_nom[cle] = resultat
+    # Phase « Kaspr uniquement », ou arrêt demandé → on s'arrête ici.
+    if not faire_fullenrich or (stop_check and stop_check()):
+        return {"emails": emails_result}
     domaines_corriges = {}
     for ct in contacts:
         if not domaine_valide(ct.get("domaine","")):
@@ -1561,6 +1616,9 @@ async def _enrich_emails_core(data: dict):
                 return {"emails": emails_result}
             print(f"[FULLENRICH] enrichment_id={enrichment_id}")
             for attempt in range(36):
+                if stop_check and stop_check():
+                    print("[FULLENRICH] ⏹ Arrêt demandé — attente du résultat interrompue")
+                    return {"emails": emails_result}
                 await asyncio.sleep(5)
                 r2 = await c.get(
                     f"https://app.fullenrich.com/api/v1/contact/enrich/bulk/{enrichment_id}",
@@ -1850,8 +1908,12 @@ def _reload_runs_from_db():
         (rid, nom, mode, phases, statut, phase_c, p_tr, p_tot, c_at, s_at,
          f_at, entree_j, res_j, emails_j, erreur, stop_d, xls) = row
         if statut == "EN_COURS":
-            statut, phase_c, p_tr, erreur = "EN_ATTENTE", "", 0, ""
-            repris += 1
+            if stop_d:
+                # Un arrêt avait été demandé avant le redémarrage → on le respecte.
+                statut, phase_c = "ARRETE", "Arrêté (interrompu par un redémarrage)"
+            else:
+                statut, phase_c, p_tr, erreur = "EN_ATTENTE", "", 0, ""
+                repris += 1
         _RUNS[rid] = {
             "id": rid, "nom": nom or "", "mode": mode or "societes",
             "phases": json.loads(phases) if phases else [1, 2, 3, 4, 5],
@@ -2041,10 +2103,10 @@ async def _run_phase2(r: dict):
             r["progres_traites"] = i + 1
             continue
         contacts_reels = [x for x in existants if x.get("nom_dg")]
-        if len(contacts_reels) >= 3:
+        if len(contacts_reels) >= 4:
             r["progres_traites"] = i + 1
             continue
-        max_ajouter = 3 - len(contacts_reels)
+        max_ajouter = 4 - len(contacts_reels)
         row = dict(next((rw for rw in rows if rw.get("nom") == nom_soc),
                         {"nom": nom_soc, "domaine": "", "siren": "", "fondateurs": ""}))
         ex = next((x for x in resultats if x.get("societe") == nom_soc), None)
@@ -2105,10 +2167,10 @@ async def _run_phase3(r: dict):
 
 
 # ─── PHASES 4 & 5 : Kaspr / FullEnrich — enrichissement emails ──────
-# NB : _enrich_emails_core fait Kaspr PUIS FullEnrich en interne (le
-# paramètre `phase` n'est pas distinctif côté serveur — comportement
-# repris à l'identique du déployé). Ce qui diffère entre phase 4 et 5,
-# c'est le FILTRE des contacts envoyés (cf JS runEmailBatch).
+# phase 'kaspr'      → _enrich_emails_core ne fait QUE Kaspr.
+# phase 'fullenrich' → _enrich_emails_core ne fait QUE FullEnrich.
+# Les deux phases sont donc bien distinctes (le pas-à-pas est honnête).
+# Le FILTRE des contacts envoyés diffère aussi entre 4 et 5 (cf JS runEmailBatch).
 async def _run_phase_emails(r: dict, phase: str):
     label = "Kaspr" if phase == "kaspr" else "Fullenrich"
     r["phase_courante"] = f"{'4' if phase == 'kaspr' else '5'}. {label}"
@@ -2137,6 +2199,7 @@ async def _run_phase_emails(r: dict, phase: str):
         try:
             data = await _enrich_emails_core({
                 "phase": phase,
+                "_stop_check": lambda: r["stop_demande"],
                 "contacts": [{
                     "idx": x["idx"], "prenom": x.get("prenom", ""),
                     "nom": x.get("nom_dg", ""), "domaine": x.get("domaine", ""),
