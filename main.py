@@ -1409,28 +1409,33 @@ async def enrich_emails(request: Request):
     if not contacts:
         return {"emails": {}}
     emails_result = {}
-    emails_par_nom = {}
+    kaspr_par_nom = {}  # résultats Kaspr déjà obtenus dans ce batch (anti-doublon)
     if KASPR_KEY:
+        # On cherche un email Kaspr pour TOUS les contacts. Les emails devinés
+        # par Claude ne sont pas fiables : on ne s'en sert plus pour zapper Kaspr.
         for ct in contacts:
-            email = ct.get("email","")
-            if email and "*" not in email:
-                emails_par_nom[f"{ct.get('prenom','')} {ct.get('nom','')}".lower().strip()] = email
-                continue
-            prenom_clean = nettoyer_prenom(ct.get("prenom",""))
-            cle = f"{prenom_clean} {ct.get('nom','')}".lower().strip()
-            if cle in emails_par_nom:
-                idx = str(ct.get("idx",0))
-                emails_result[idx] = {"email": emails_par_nom[cle], "source": "+dedup"}
-                print(f"[DEDUP] {cle} → email déjà trouvé, skip Kaspr")
-                continue
             prenom = nettoyer_prenom(ct.get("prenom",""))
             nom_ct = ct.get("nom","")
             societe_ct = ct.get("societe","")
             idx = str(ct.get("idx",0))
             if not prenom or not nom_ct:
                 continue
+            cle = f"{prenom} {nom_ct}".lower().strip()
+            # Même personne déjà traitée dans ce batch → on réutilise le résultat
+            if cle in kaspr_par_nom:
+                cached = kaspr_par_nom[cle]
+                if cached.get("email"):
+                    ct["email"] = cached["email"]
+                    ct["linkedin"] = cached.get("linkedin","")
+                    ct["source_kaspr"] = True
+                    emails_result[idx] = {"email": cached["email"],
+                                          "linkedin": cached.get("linkedin",""),
+                                          "source": "+dedup"}
+                    print(f"[DEDUP] {cle} → email Kaspr déjà trouvé, réutilisé")
+                continue
             print(f"[KASPR] Recherche LinkedIn pour {prenom} {nom_ct}")
             linkedin_url = await trouver_linkedin(prenom, nom_ct, societe_ct)
+            resultat = {"email": "", "linkedin": linkedin_url or ""}
             if linkedin_url:
                 if idx not in emails_result:
                     emails_result[idx] = {"email": "", "linkedin": linkedin_url, "source": ""}
@@ -1442,7 +1447,9 @@ async def enrich_emails(request: Request):
                     ct["linkedin"] = linkedin_url
                     ct["source_kaspr"] = True
                     emails_result[idx] = {"email": email_kaspr, "linkedin": linkedin_url, "source": "+Kaspr"}
+                    resultat["email"] = email_kaspr
                     print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
+            kaspr_par_nom[cle] = resultat
     domaines_corriges = {}
     for ct in contacts:
         if not domaine_valide(ct.get("domaine","")):
@@ -1454,14 +1461,10 @@ async def enrich_emails(request: Request):
             if domaines_corriges[societe]:
                 ct["domaine"] = domaines_corriges[societe]
     to_enrich = []
-    phase = data.get("phase","fullenrich")
     for ct in contacts:
-        email = ct.get("email","")
-        confiance = ct.get("confiance","")
-        phone = ct.get("phone","")
-        if email and confiance not in ("faible","") and phone:
-            continue
-        if phase == "kaspr" and email and confiance not in ("faible",""):
+        # On envoie TOUS les contacts à FullEnrich, sauf ceux dont Kaspr a
+        # déjà trouvé l'email (résultat fiable — inutile de payer un crédit).
+        if ct.get("source_kaspr"):
             continue
         if not ct.get("prenom") or not ct.get("nom"):
             continue
@@ -1545,6 +1548,24 @@ async def enrich_emails(request: Request):
         print(f"[FULLENRICH EXCEPTION] {e}")
         return {"emails": emails_result}
 def generer_excel(rows: list) -> bytes:
+    # ── Fiabilité des emails ───────────────────────────────────────
+    # Les emails seulement devinés par Claude sont trop souvent faux.
+    # On ne conserve un email que s'il a été confirmé par une source
+    # vérifiée : Kaspr, Fullenrich ou Pipedrive (CRM). Sinon on le vide
+    # (mieux vaut une case vide qu'un faux email → bounce / réputation).
+    SOURCES_FIABLES = ("kaspr", "dedup", "fullenrich", "pipedrive")
+    nb_vides = 0
+    for r in rows:
+        email = (r.get("email") or "").strip()
+        src   = (r.get("source") or "").lower()
+        if email and not any(s in src for s in SOURCES_FIABLES):
+            r["email"]     = ""
+            r["confiance"] = ""
+            if "non vérifié" not in (r.get("source") or ""):
+                r["source"] = (r.get("source") or "") + " (non vérifié)"
+            nb_vides += 1
+    if nb_vides:
+        print(f"[EXCEL] {nb_vides} email(s) non vérifié(s) vidé(s) — devinés par Claude")
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
