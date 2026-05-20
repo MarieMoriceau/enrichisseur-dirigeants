@@ -166,7 +166,7 @@ tr:hover td { background: #f8fafc; }
           <li><strong>Remplis 1 ligne par société</strong> dans le template :
             <ul>
               <li>🟢 <code>nom</code> = obligatoire (nom commercial de la société)</li>
-              <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>contact_linkedin</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
+              <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>person_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>contact_linkedin</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
             </ul>
           </li>
           <li><strong>Glisse ton fichier</strong> dans la zone <code>📂 Glissez votre fichier ici</code> (ou clique pour parcourir). Tu peux ensuite vérifier le mapping des colonnes proposé.</li>
@@ -669,6 +669,7 @@ const CHAMPS_CIBLES = [
   { key: 'siren',          label: '🔢 SIREN/SIRET',         required: false },
   { key: 'domaine',        label: '🌐 Domaine web',         required: false },
   { key: 'org_id',         label: '🔗 ID Pipedrive org',    required: false },
+  { key: 'person_id',      label: '🔗 ID Pipedrive contact',required: false },
   { key: 'fondateurs',     label: '👥 Fondateurs',          required: false },
   { key: 'contact_prenom', label: '👤 Prénom contact',      required: false },
   { key: 'contact_nom',    label: '👤 Nom contact',         required: false },
@@ -690,11 +691,12 @@ function showMappingScreen() {
     siren:          ['siret/siren','siren','siret'],
     domaine:        ['url du site internet','site web','domaine','domain','website','site','url'],
     org_id:         ['id entreprise pipedrive','org id','org_id','id'],
+    person_id:      ['id personne pipedrive','id contact pipedrive','id pipedrive contact','person id','person_id','contact id'],
     fondateurs:     ['fondateurs','founders','fondateur'],
     contact_prenom: ['prenom','prénom','contact prenom','contact prénom','prenom contact'],
     contact_nom:    ['nom','contact nom','nom contact'],
     contact_titre:  ['poste occupe','poste occupé','fonction','titre','poste'],
-    contact_linkedin: ['linkedin','linkedin url','url linkedin','profil linkedin','lien linkedin','linkedin contact'],
+    contact_linkedin: ['contact_linkedin','linkedin','linkedin url','url linkedin','profil linkedin','lien linkedin','linkedin contact'],
     code_postal:    ['code postal','cp','code_postal'],
     ville:          ['ville','city'],
     adresse:        ['adresse du siege complete','adresse complète','adresse complete','adresse','rue'],
@@ -772,6 +774,7 @@ function applyTransforms(r) {
     siren:          cleanSiren(r.siren || ''),
     domaine:        cleanDomain(r.domaine || ''),
     org_id:         r.org_id || '',
+    person_id:      r.person_id || '',
     fondateurs:     r.fondateurs || '',
     contact_prenom: r.contact_prenom || '',
     contact_nom:    r.contact_nom || '',
