@@ -166,7 +166,7 @@ tr:hover td { background: #f8fafc; }
           <li><strong>Remplis 1 ligne par société</strong> dans le template :
             <ul>
               <li>🟢 <code>nom</code> = obligatoire (nom commercial de la société)</li>
-              <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
+              <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>contact_linkedin</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
             </ul>
           </li>
           <li><strong>Glisse ton fichier</strong> dans la zone <code>📂 Glissez votre fichier ici</code> (ou clique pour parcourir). Tu peux ensuite vérifier le mapping des colonnes proposé.</li>
@@ -490,6 +490,8 @@ async function runPhase5(fromRunAll = false) {
   setRunning(false);
 }
 // ── Batch email enrichment (Kaspr + Fullenrich) ────────────────
+// Découpage en lots de 5 contacts → évite le timeout proxy Render (100s)
+// sur des gros volumes (200+ contacts).
 async function runEmailBatch(phase) {
   const toEnrich = results
     .map((r, idx) => ({...r, idx}))
@@ -503,50 +505,67 @@ async function runEmailBatch(phase) {
     document.getElementById('statLabel').textContent = '✅ Tous les emails déjà trouvés';
     return;
   }
-  document.getElementById('statLabel').textContent = `⏳ ${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'} — ${toEnrich.length} contacts…`;
-  try {
-    const resp = await fetch('/enrich_emails', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ contacts: toEnrich.map(r => ({
-        idx: r.idx, prenom: r.prenom, nom: r.nom_dg,
-        domaine: r.domaine, societe: r.societe, siren: r.siren,
-        email: r.email, confiance: r.confiance
-      })), phase })
-    });
-    const data = await resp.json();
-    const emails = data.emails || {};
-    let found = 0;
-    for (const [idxStr, val] of Object.entries(emails)) {
-      const idx = parseInt(idxStr);
-      if (idx >= 0 && idx < results.length) {
-        const email   = typeof val === 'string' ? val : (val && val.email ? val.email : '');
-        const linkedin = val && val.linkedin ? val.linkedin : '';
-        const phone   = val && val.phone ? val.phone : '';
-        const srcTag  = val && val.source ? val.source : `+${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'}`;
-        // Mettre à jour le téléphone quelle que soit la situation
-        if (phone && !results[idx].phone) results[idx].phone = phone;
-        if (email && email.includes('@')) {
-          results[idx].email = email;
-          results[idx].confiance = 'haute';
-          if (linkedin) results[idx].linkedin = linkedin;
-          const src = results[idx].source || '';
-          const tag = srcTag.replace('+','');
-          if (!src.includes(tag)) results[idx].source = src + srcTag;
-          found++;
-        } else if (linkedin && !results[idx].linkedin) {
-          results[idx].linkedin = linkedin;
+  const BATCH_SIZE = 5;       // 5 contacts par requête → ~30-60s par batch, OK pour proxy
+  const PAUSE_MS   = 5000;    // 5s entre 2 lots, laisse souffler Render
+  const totalBatches = Math.ceil(toEnrich.length / BATCH_SIZE);
+  let totalFound = 0;
+  const phaseLabel = phase === 'kaspr' ? 'Kaspr' : 'Fullenrich';
+  for (let b = 0; b < totalBatches; b++) {
+    if (stopFlag) break;
+    const start = b * BATCH_SIZE;
+    const batch = toEnrich.slice(start, start + BATCH_SIZE);
+    document.getElementById('progressFill').style.width = Math.round(b/totalBatches*100) + '%';
+    document.getElementById('progressLabel').textContent =
+      `${phaseLabel} — lot ${b+1}/${totalBatches} (${batch.length} contacts)`;
+    document.getElementById('statLabel').textContent =
+      `⏳ ${phaseLabel} — lot ${b+1}/${totalBatches}, ${totalFound} emails trouvés`;
+    try {
+      const resp = await fetch('/enrich_emails', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ contacts: batch.map(r => ({
+          idx: r.idx, prenom: r.prenom, nom: r.nom_dg,
+          domaine: r.domaine, societe: r.societe, siren: r.siren,
+          email: r.email, confiance: r.confiance
+        })), phase })
+      });
+      const data = await resp.json();
+      const emails = data.emails || {};
+      for (const [idxStr, val] of Object.entries(emails)) {
+        const idx = parseInt(idxStr);
+        if (idx >= 0 && idx < results.length) {
+          const email   = typeof val === 'string' ? val : (val && val.email ? val.email : '');
+          const linkedin = val && val.linkedin ? val.linkedin : '';
+          const phone   = val && val.phone ? val.phone : '';
+          const srcTag  = val && val.source ? val.source : `+${phaseLabel}`;
+          if (phone && !results[idx].phone) results[idx].phone = phone;
+          if (email && email.includes('@')) {
+            results[idx].email = email;
+            results[idx].confiance = 'haute';
+            if (linkedin) results[idx].linkedin = linkedin;
+            const src = results[idx].source || '';
+            const tag = srcTag.replace('+','');
+            if (!src.includes(tag)) results[idx].source = src + srcTag;
+            totalFound++;
+          } else if (linkedin && !results[idx].linkedin) {
+            results[idx].linkedin = linkedin;
+          }
         }
       }
+      renderResults();
+    } catch(e) {
+      console.warn(`${phaseLabel} batch ${b+1} échoué :`, e);
+      // On continue avec le lot suivant — pas d'abandon global
     }
-    renderResults();
-    if (phase === 'kaspr') setStatus(4, 'done', `4. Kaspr ✅ (${found} emails)`);
-    else setStatus(5, 'done', `5. Fullenrich ✅ (${found} emails)`);
-    document.getElementById('statLabel').textContent = `✅ ${phase === 'kaspr' ? 'Kaspr' : 'Fullenrich'} : ${found} emails`;
-  } catch(e) {
-    if (phase === 'kaspr') setStatus(4, 'error', '4. Kaspr ❌');
-    else setStatus(5, 'error', '5. Fullenrich ❌');
-    document.getElementById('statLabel').textContent = `❌ Erreur ${phase}`;
+    // Pause entre les lots (sauf dernier)
+    if (b < totalBatches - 1 && !stopFlag) {
+      await sleep(PAUSE_MS);
+    }
   }
+  document.getElementById('progressFill').style.width = '100%';
+  if (phase === 'kaspr') setStatus(4, 'done', `4. Kaspr ✅ (${totalFound} emails)`);
+  else setStatus(5, 'done', `5. Fullenrich ✅ (${totalFound} emails)`);
+  document.getElementById('statLabel').textContent =
+    `✅ ${phaseLabel} : ${totalFound} emails sur ${toEnrich.length} contacts`;
 }
 // ── TOUT LANCER ────────────────────────────────────────────────
 async function runAll() {
@@ -654,6 +673,7 @@ const CHAMPS_CIBLES = [
   { key: 'contact_prenom', label: '👤 Prénom contact',      required: false },
   { key: 'contact_nom',    label: '👤 Nom contact',         required: false },
   { key: 'contact_titre',  label: '💼 Poste contact',       required: false },
+  { key: 'contact_linkedin', label: '🔗 LinkedIn contact',  required: false },
   { key: 'code_postal',    label: '📮 Code postal',         required: false },
   { key: 'ville',          label: '🏙️ Ville',               required: false },
   { key: 'adresse',        label: '📍 Adresse complète',    required: false },
@@ -674,6 +694,7 @@ function showMappingScreen() {
     contact_prenom: ['prenom','prénom','contact prenom','contact prénom','prenom contact'],
     contact_nom:    ['nom','contact nom','nom contact'],
     contact_titre:  ['poste occupe','poste occupé','fonction','titre','poste'],
+    contact_linkedin: ['linkedin','linkedin url','url linkedin','profil linkedin','lien linkedin','linkedin contact'],
     code_postal:    ['code postal','cp','code_postal'],
     ville:          ['ville','city'],
     adresse:        ['adresse du siege complete','adresse complète','adresse complete','adresse','rue'],
@@ -755,6 +776,7 @@ function applyTransforms(r) {
     contact_prenom: r.contact_prenom || '',
     contact_nom:    r.contact_nom || '',
     contact_titre:  r.contact_titre || '',
+    contact_linkedin: r.contact_linkedin || '',
     contact_email:  '',
     code_postal:    r.code_postal || '',
     ville:          r.ville || '',
