@@ -442,7 +442,7 @@ AIDE_HTML = """<!DOCTYPE html>
       <li><strong>Remplis 1 ligne par société</strong> dans le template :
         <ul>
           <li>🟢 <code>nom</code> = obligatoire (nom commercial de la société, ex : <em>Grenke Location</em>)</li>
-          <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
+          <li>🟣 <code>siren</code>, <code>domaine</code>, <code>org_id</code>, <code>person_id</code>, <code>fondateurs</code>, <code>contact_prenom</code>, <code>contact_nom</code>, <code>contact_titre</code>, <code>contact_linkedin</code>, <code>code_postal</code>, <code>ville</code>, <code>adresse</code> = optionnels (mais plus tu remplis, meilleurs sont les résultats)</li>
         </ul>
       </li>
       <li><strong>Glisse ton fichier</strong> dans la zone <code>📂 Glissez votre fichier ici</code> (ou clique pour parcourir).</li>
@@ -719,10 +719,12 @@ async def get_template():
         ("siren",          False, "SIREN ou SIRET (9 ou 14 chiffres)",   "428616734"),
         ("domaine",        False, "Domaine du site web",                 "grenke.fr"),
         ("org_id",         False, "ID Pipedrive de l'organisation",      "17136"),
+        ("person_id",      False, "ID Pipedrive du contact (personne)",  "29481"),
         ("fondateurs",     False, "Fondateurs connus (contexte Claude)", "Jean Dupont, Marie Martin"),
         ("contact_prenom", False, "Prénom du contact principal",         "Nathalie"),
         ("contact_nom",    False, "Nom de famille du contact",           "Seyller"),
         ("contact_titre",  False, "Poste / fonction du contact",         "CFO"),
+        ("contact_linkedin",False,"URL du profil LinkedIn du contact",   "https://www.linkedin.com/in/n-seyller"),
         ("code_postal",    False, "Code postal du siège",                "75008"),
         ("ville",          False, "Ville du siège",                      "Paris"),
         ("adresse",        False, "Adresse complète du siège",           "9 Rue de Lisbonne 75008 Paris"),
