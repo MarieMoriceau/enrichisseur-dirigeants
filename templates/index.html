@@ -124,6 +124,18 @@ tr:hover td { background: #f8fafc; }
       <div style="font-size:11px;margin-top:4px;color:#94a3b8">CSV — colonnes : Nom, Site web, Fondateurs, siren, domaine</div>
     </div>
     <div class="info" id="fileInfo"></div>
+    <div style="margin-top:10px;padding-top:12px;border-top:1px dashed #cbd5e1">
+      <input type="file" id="contactsInput" accept=".csv,.xlsx,.xls" style="display:none"
+             onchange="handleContactsFile(this.files[0])">
+      <button class="btn" id="btnContacts" onclick="document.getElementById('contactsInput').click()"
+        style="background:#0ea5e9;color:white;padding:8px 16px;font-size:12px">
+        📇 J'ai déjà mes contacts → enrichir les emails seulement
+      </button>
+      <div style="font-size:11px;color:#94a3b8;margin-top:5px">
+        Importe un fichier « Dirigeants enrichis » (1 ligne = 1 contact, colonnes Prénom / Nom).
+        Charge les contacts et active directement Kaspr + Fullenrich, sans repasser par Pappers.
+      </div>
+    </div>
     <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <label style="font-size:12px;font-weight:600;color:#475569">📧 Recevoir l'Excel par email :</label>
       <input type="text" id="emailDest" placeholder="email1@ex.com, email2@ex.com"
@@ -230,7 +242,7 @@ tr:hover td { background: #f8fafc; }
   </div>
 </div>
 <script>
-let rows = [], results = [], running = false, stopFlag = false, sourceFileName = '';
+let rows = [], results = [], running = false, stopFlag = false, sourceFileName = '', contactsOnlyMode = false;
 // ── File handling ──────────────────────────────────────────────
 function handleDrop(e) {
   e.preventDefault();
@@ -238,6 +250,7 @@ function handleDrop(e) {
   if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 }
 function handleFile(file) {
+  contactsOnlyMode = false;
   sourceFileName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '_');
   const ext = file.name.split('.').pop().toLowerCase();
   if (ext === 'csv') {
@@ -299,6 +312,116 @@ function doParseXLSX(buffer) {
   });
   showMappingScreen();
 }
+// ── Import direct de contacts déjà identifiés ──────────────────
+// Permet de lancer Kaspr + Fullenrich seuls, sans repasser par Pappers.
+function handleContactsFile(file) {
+  if (!file) return;
+  contactsOnlyMode = true;
+  sourceFileName = file.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (ext === 'csv') {
+    const sniffer = new FileReader();
+    sniffer.onload = e => {
+      const bytes = new Uint8Array(e.target.result.slice(0, 3));
+      const isUtf8Bom = bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF;
+      const reader = new FileReader();
+      reader.onload = e2 => parseContactsCSV(e2.target.result);
+      reader.readAsText(file, isUtf8Bom ? 'UTF-8' : 'windows-1252');
+    };
+    sniffer.readAsArrayBuffer(file.slice(0, 3));
+  } else {
+    const reader = new FileReader();
+    reader.onload = e => {
+      if (!window.XLSX) {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+        s.onload = () => doParseContactsXLSX(e.target.result);
+        document.head.appendChild(s);
+      } else doParseContactsXLSX(e.target.result);
+    };
+    reader.readAsArrayBuffer(file);
+  }
+}
+function doParseContactsXLSX(buffer) {
+  const wb = window.XLSX.read(buffer, {type:'array'});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  loadContactsFromMatrix(window.XLSX.utils.sheet_to_json(ws, {header:1, defval:''}));
+}
+function parseContactsCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const firstLine = text.split('\n')[0];
+  const sep = firstLine.split(';').length > firstLine.split(',').length ? ';' : ',';
+  loadContactsFromMatrix(
+    text.trim().split('\n').map(line => line.split(sep).map(c => c.trim().replace(/^"|"$/g,'')))
+  );
+}
+// Construit `results` depuis une matrice de lignes brutes, en détectant
+// la vraie ligne d'en-têtes (gère les 2 lignes de titre du format export).
+function loadContactsFromMatrix(matrix) {
+  const norm = s => String(s||'').trim().toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g,"");
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(matrix.length, 12); i++) {
+    const cells = (matrix[i]||[]).map(norm);
+    if (cells.includes('prenom') && cells.includes('nom')) { headerIdx = i; break; }
+  }
+  if (headerIdx < 0) {
+    alert('⚠️ Fichier non reconnu.\nIl faut au minimum les colonnes « Prénom » et « Nom ».');
+    contactsOnlyMode = false;
+    return;
+  }
+  const headers = (matrix[headerIdx]||[]).map(norm);
+  const find = (...names) => { for (const n of names) { const i = headers.indexOf(n); if (i>=0) return i; } return -1; };
+  const iSoc  = find('organisation','societe','company','entreprise','raison sociale');
+  const iPre  = find('prenom');
+  const iNom  = find('nom');
+  const iTit  = find('titre','poste','fonction');
+  const iMail = find('email','e-mail','mail','courriel');
+  const iTel  = find('telephone','tel','phone');
+  const iLink = find('linkedin');
+  const iDom  = find('domaine','domain','site web','site');
+  const iConf = find('confiance');
+  const iSrc  = find('source');
+  const iPipe = find('dans pipedrive','pipedrive');
+  const at = (row,i) => (i>=0 && row[i]!=null) ? String(row[i]).trim() : '';
+  results = [];
+  for (let r = headerIdx+1; r < matrix.length; r++) {
+    const row = matrix[r]||[];
+    const prenom = at(row,iPre), nom = at(row,iNom);
+    if (!nom) continue;  // ligne vide ou sans nom de famille → inexploitable
+    results.push({
+      societe:        at(row,iSoc),
+      siren:          '',
+      prenom:         prenom,
+      nom_dg:         nom,
+      titre:          at(row,iTit) || 'Contact',
+      email:          at(row,iMail),
+      phone:          at(row,iTel),
+      linkedin:       at(row,iLink),
+      domaine:        cleanDomain(at(row,iDom)),
+      confiance:      at(row,iConf),
+      source:         at(row,iSrc) || 'Fichier importé',
+      dans_pipedrive: at(row,iPipe),
+    });
+  }
+  if (!results.length) {
+    alert('⚠️ Aucun contact exploitable dans ce fichier.');
+    contactsOnlyMode = false;
+    return;
+  }
+  rows = [];
+  const ms = document.getElementById('mappingScreen');
+  if (ms) ms.remove();
+  renderResults();
+  ['btnAll','btn1','btn2','btn3'].forEach(id => document.getElementById(id).disabled = true);
+  ['btn4','btn5'].forEach(id => document.getElementById(id).disabled = false);
+  ['s1','s2','s3'].forEach(id => { document.getElementById(id).className = 'phase-status phase-idle'; });
+  const sansEmail = results.filter(r => !r.email).length;
+  document.getElementById('fileInfo').textContent =
+    `📇 ${results.length} contact(s) chargé(s) — ${sansEmail} sans email`;
+  document.getElementById('statLabel').textContent =
+    `✅ Prêt — clique sur « 4. Kaspr » puis « 5. Fullenrich »`;
+}
 function cleanDomain(url) {
   if (!url) return '';
   return url.toLowerCase().replace('https://','').replace('http://','').replace('www.','').split('/')[0].trim();
@@ -338,7 +461,11 @@ function setRunning(on) {
   running = on;
   document.getElementById('btnStop').style.display = on ? 'inline-block' : 'none';
   document.getElementById('btnExport').style.display = on ? 'none' : 'inline-block';
-  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => document.getElementById(id).disabled = on);
+  ['btnAll','btn1','btn2','btn3','btn4','btn5'].forEach(id => {
+    // En mode « contacts importés », seuls Kaspr + Fullenrich restent actifs
+    const horsMode = contactsOnlyMode && id !== 'btn4' && id !== 'btn5';
+    document.getElementById(id).disabled = on || horsMode;
+  });
 }
 // ── PHASE 1 : Pappers + Claude ─────────────────────────────────
 async function runPhase1() {
