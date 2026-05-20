@@ -909,25 +909,38 @@ def _extract_kaspr_email(d: dict) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────
-# Throttle Kaspr — l'API limite le débit (HTTP 429). On espace les
-# appels d'au moins KASPR_MIN_INTERVAL secondes et on réessaie sur 429.
+# Throttle Kaspr — l'API limite le DÉBIT (HTTP 429), indépendamment des
+# crédits (B2B email = illimité). On espace les appels ET, dès qu'un 429
+# arrive, on met TOUTE l'activité Kaspr en pause — pas juste un contact.
+# Sinon les appels parallèles continuent de saturer l'API et le 429
+# ne se libère jamais.
 # ────────────────────────────────────────────────────────────────────
-_KASPR_LOCK = asyncio.Lock()
-_KASPR_LAST = [0.0]
-KASPR_MIN_INTERVAL = 2.5  # secondes minimum entre 2 appels Kaspr
+_KASPR_LOCK        = asyncio.Lock()
+_KASPR_LAST        = [0.0]   # timestamp (monotonic) du dernier appel
+_KASPR_PAUSE_UNTIL = [0.0]   # pause GLOBALE jusqu'à ce timestamp
+KASPR_MIN_INTERVAL = 6.0     # secondes minimum entre 2 appels (~10/min)
+KASPR_PAUSE_429    = 60.0    # pause globale de base après un 429
+KASPR_MAX_429      = 4       # nombre de 429 tolérés avant abandon
 
 
 async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
     """Récupère l'email via Kaspr avec une URL LinkedIn — B2B uniquement.
-    Espace les appels (anti-429) et réessaie en cas de débit dépassé."""
+    Débit régulé + pause GLOBALE sur 429 (tous les appels Kaspr attendent)."""
     if not KASPR_KEY or not linkedin_url:
         return ""
-    delais_retry = [10, 25, 50]  # backoff progressif après un 429
-    tentative = 0
+    n_429 = 0
     while True:
-        # --- espacement minimal entre 2 appels Kaspr (anti-429) ---
+        # ── Régulation du débit (verrou global) ──
         async with _KASPR_LOCK:
-            ecoule = time.monotonic() - _KASPR_LAST[0]
+            now = time.monotonic()
+            # une pause globale est en cours (déclenchée par un 429) ?
+            if _KASPR_PAUSE_UNTIL[0] > now:
+                attente = _KASPR_PAUSE_UNTIL[0] - now
+                print(f"[KASPR] ⏸️ Pause globale {attente:.0f}s avant {prenom} {nom}")
+                await asyncio.sleep(attente)
+                now = time.monotonic()
+            # espacement minimal entre 2 appels
+            ecoule = now - _KASPR_LAST[0]
             if ecoule < KASPR_MIN_INTERVAL:
                 await asyncio.sleep(KASPR_MIN_INTERVAL - ecoule)
             _KASPR_LAST[0] = time.monotonic()
@@ -959,16 +972,25 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
                     print(f"[KASPR] ⚠️ Réponse 200 mais aucun email extrait. Clés profile : {keys}")
                     return ""
                 elif r.status_code == 429:
-                    if tentative < len(delais_retry):
-                        attente = delais_retry[tentative]
-                        tentative += 1
-                        print(f"[KASPR] 429 (débit dépassé) — nouvelle tentative dans {attente}s "
-                              f"({tentative}/{len(delais_retry)}) — {prenom} {nom}")
-                        await asyncio.sleep(attente)
-                        continue
-                    print(f"[KASPR] ⛔ Abandon {prenom} {nom} : 429 persistant "
-                          f"après {len(delais_retry)} tentatives")
-                    return ""
+                    n_429 += 1
+                    # En-têtes utiles pour calibrer la vraie limite de Kaspr
+                    retry_after = r.headers.get("Retry-After", "")
+                    rl = {k: v for k, v in r.headers.items()
+                          if "ratelimit" in k.lower() or "rate-limit" in k.lower()}
+                    print(f"[KASPR] 429 #{n_429} — Retry-After={retry_after or 'absent'} | "
+                          f"{rl or 'pas d en-tete rate-limit'}")
+                    if n_429 >= KASPR_MAX_429:
+                        print(f"[KASPR] ⛔ Abandon {prenom} {nom} : 429 persistant ({n_429}×)")
+                        return ""
+                    # Pause GLOBALE : tous les appels Kaspr vont attendre
+                    try:
+                        pause = float(retry_after) if retry_after else KASPR_PAUSE_429 * n_429
+                    except ValueError:
+                        pause = KASPR_PAUSE_429 * n_429
+                    pause = min(pause, 180.0)
+                    _KASPR_PAUSE_UNTIL[0] = time.monotonic() + pause
+                    print(f"[KASPR] ⏸️ Débit dépassé → pause globale de {pause:.0f}s")
+                    continue
                 elif r.status_code == 402:
                     print(f"[KASPR] Plus de crédits !")
                     _alert_api_down("Kaspr", 402, r.text[:200] if hasattr(r, 'text') else "")
