@@ -293,7 +293,7 @@ ANCIENS_KEYWORDS = [
 ]
 TITRES_EXCLUS = [
     "commissaire aux comptes", "commissaire", "conseil de surveillance",
-    "membre du conseil", "membre du directoire observateur",
+    "membre du conseil", "membre du directoire",
     "censeur", "observateur", "représentant permanent",
     "liquidateur", "mandataire", "administrateur judiciaire",
 ]
@@ -1141,6 +1141,7 @@ async def _enrich_one_core(data: dict):
     contact_email  = data.get("contact_email", "")
     code_postal    = data.get("code_postal", "")
     ville          = data.get("ville", "")
+    adresse        = data.get("adresse", "")   # adresse mappée → reportée dans la sortie
     print(f"[START] {nom} | domaine={domaine} | siren={siren}")
     # ── CHECK PIPEDRIVE ORGANISATION ──
     if PIPEDRIVE_KEY:
@@ -1268,7 +1269,7 @@ async def _enrich_one_core(data: dict):
         if pappers_data:
             if pappers_data.get("entreprise_cessee") or pappers_data.get("statut_rcs","").lower() == "radié" or pappers_data.get("statut_consolide","").lower() == "radié":
                 print(f"[RADIÉE] {nom} — arrêt")
-                return {"results": [{"org_id":org_id,"societe":nom,"siren":siren,"domaine":domaine,"prenom":"","nom_dg":"","titre":"⚠️ Société radiée","email":"","confiance":"","source":"Pappers"}]}
+                return {"results": [{"org_id":org_id,"societe":nom,"siren":siren,"domaine":domaine,"adresse":adresse,"prenom":"","nom_dg":"","titre":"⚠️ Société radiée","email":"","confiance":"","source":"Pappers"}]}
             for rep in pappers_data.get("representants", []):
                 if rep.get("personne_morale"):
                     continue
@@ -1306,10 +1307,15 @@ async def _enrich_one_core(data: dict):
         else:
             print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
     claude_contacts = []
-    # Société déjà dans Pipedrive → on garde uniquement ses contacts CRM ;
-    # inutile de payer une recherche Claude (cf règle "max 4 / sauf Pipedrive").
+    # Recherche web Claude = FALLBACK. On ne la lance que si NI Pipedrive NI
+    # Pappers n'ont donné de dirigeant exploitable (membres du directoire déjà
+    # écartés). Si Pappers a livré, on économise l'appel Claude. La phase 2
+    # « Claude+web » reste, elle, un complément lancé à la demande.
     if pipedrive_org_contacts:
         print(f"[PIPEDRIVE ORG] {nom} dans le CRM → recherche Claude sautée")
+        cached_claude = None
+    elif pappers_contacts:
+        print(f"[CLAUDE] {nom} — {len(pappers_contacts)} dirigeant(s) Pappers → recherche web sautée")
         cached_claude = None
     else:
         # CACHE : si on a déjà appelé Claude+web pour ce SIREN dans les 60j, on réutilise
@@ -1317,7 +1323,7 @@ async def _enrich_one_core(data: dict):
     if cached_claude is not None:
         claude_contacts = cached_claude
         print(f"[CACHE HIT] {nom} (SIREN {siren}) → {len(cached_claude)} contacts Claude réutilisés")
-    elif ANTHROPIC_KEY and not pipedrive_org_contacts:
+    elif ANTHROPIC_KEY and not pipedrive_org_contacts and not pappers_contacts:
         noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
         exclusion = f"\nDirigeants déjà connus à ne PAS inclure : {', '.join(noms_deja)}" if noms_deja else ""
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
@@ -1424,6 +1430,7 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
             "societe":        nom,
             "siren":          siren,
             "domaine":        domaine,
+            "adresse":        adresse,
             "prenom":         ct.get("prenom",""),
             "nom_dg":         ct.get("nom",""),
             "titre":          ct.get("titre",""),
@@ -1709,11 +1716,11 @@ def generer_excel(rows: list) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Dirigeants enrichis"
-    headers  = ['Organisation','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
-    col_map  = ['societe','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
+    headers  = ['Organisation','Adresse','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
+    col_map  = ['societe','adresse','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
     thin     = Side(style='thin', color="e2e8f0")
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
-    ws.merge_cells('A1:I1')
+    ws.merge_cells(f'A1:{get_column_letter(len(headers))}1')
     c = ws['A1']
     c.value = "Enrichissement Dirigeants"
     c.font  = Font(name='Arial', bold=True, size=14, color="FFFFFF")
@@ -1721,7 +1728,7 @@ def generer_excel(rows: list) -> bytes:
     c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 32
     emails_count = len([r for r in rows if r.get('email')])
-    ws.merge_cells('A2:I2')
+    ws.merge_cells(f'A2:{get_column_letter(len(headers))}2')
     c = ws['A2']
     c.value = f"{len(rows)} contacts  |  {emails_count} emails trouvés  |  {len(rows)-emails_count} sans email"
     c.font  = Font(name='Arial', size=10, color="FFFFFF")
@@ -1771,10 +1778,10 @@ def generer_excel(rows: list) -> bytes:
                 c.font = Font(name='Arial', size=9, color="92400e", bold=True)
             else:
                 c.fill = PatternFill('solid', start_color=bg)
-    for i, w in enumerate([22,14,18,28,32,16,14,20,12,22,28], 1):
+    for i, w in enumerate([22,34,14,18,28,32,16,14,20,12,22,28], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = 'A4'
-    ws.auto_filter.ref = f"A3:I{len(rows)+3}"
+    ws.auto_filter.ref = f"A3:{get_column_letter(len(headers))}{len(rows)+3}"
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -2146,6 +2153,7 @@ async def _run_phase2(r: dict):
                     resultats.append({
                         "org_id": row.get("org_id", ""), "societe": nom_soc,
                         "siren": row.get("siren", ""), "domaine": row.get("domaine", ""),
+                        "adresse": row.get("adresse", ""),
                         "prenom": ct.get("prenom", ""), "nom_dg": ct.get("nom", ""),
                         "titre": ct.get("titre", ""), "email": ct.get("email", "") or "",
                         "confiance": ct.get("confiance_email", "faible"),
