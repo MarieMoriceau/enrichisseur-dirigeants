@@ -295,7 +295,7 @@ TITRES_EXCLUS = [
     "commissaire aux comptes", "commissaire", "conseil de surveillance",
     "membre du conseil", "membre du directoire",
     "censeur", "observateur", "représentant permanent",
-    "liquidateur", "mandataire", "administrateur judiciaire",
+    "liquidateur", "mandataire", "administrateur",
 ]
 def nettoyer_prenom(prenom: str) -> str:
     """Supprime civilités et prénoms composés Pappers : 'M Denis' → 'Denis', 'Florian, Paul' → 'Florian'."""
@@ -849,8 +849,20 @@ async def check_pipedrive(prenom: str, nom: str) -> dict:
                             ph = phones[0]
                             phone = ph if isinstance(ph, str) else ph.get("value", "")
                         if email and "@" in email:
-                            print(f"[PIPEDRIVE] ✅ {terme} → {email} | tél: {phone}")
-                            return {"email": email, "phone": phone}
+                            # Poste Pipedrive : pas toujours dans le résultat de
+                            # recherche → on le complète via /persons/{id}.
+                            poste = person.get("job_title", "") or ""
+                            if not poste and person.get("id"):
+                                try:
+                                    rp = await c.get(
+                                        f"https://api.pipedrive.com/v1/persons/{person.get('id')}",
+                                        params={"api_token": PIPEDRIVE_KEY})
+                                    if rp.status_code == 200:
+                                        poste = (rp.json().get("data") or {}).get("job_title", "") or ""
+                                except Exception:
+                                    pass
+                            print(f"[PIPEDRIVE] ✅ {terme} → {email} | tél: {phone} | poste: {poste or '—'}")
+                            return {"email": email, "phone": phone, "job_title": poste}
     except Exception as e:
         print(f"[PIPEDRIVE ERROR] {terme}: {e}")
     return {}
@@ -1405,6 +1417,8 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
                 ct["dans_pipedrive"] = "oui"
             if pd_data.get("phone"):
                 ct["phone"] = pd_data["phone"]
+            if pd_data.get("job_title"):
+                ct["titre"] = pd_data["job_title"]   # le poste du CRM Pipedrive prime
     # ── Plafond de contacts par société ──────────────────────────────
     # Règle métier : 4 contacts maximum par société.
     # EXCEPTION : si la société est déjà dans Pipedrive (contacts CRM
@@ -1512,7 +1526,8 @@ async def check_pipedrive_route(request: Request):
     prenom = data.get("prenom","")
     nom    = data.get("nom","")
     result = await check_pipedrive(prenom, nom)
-    return {"email": result.get("email",""), "phone": result.get("phone","")}
+    return {"email": result.get("email",""), "phone": result.get("phone",""),
+            "job_title": result.get("job_title","")}
 @app.post("/enrich_emails")
 async def enrich_emails(request: Request):
     # Fine enveloppe — la logique vit dans _enrich_emails_core (réutilisée par le worker).
@@ -2188,6 +2203,8 @@ async def _run_phase3(r: dict):
                 x["dans_pipedrive"] = "oui"
                 if pd.get("phone"):
                     x["phone"] = pd["phone"]
+                if pd.get("job_title"):
+                    x["titre"] = pd["job_title"]   # le poste du CRM Pipedrive prime
         except Exception as e:
             print(f"[RUN {r['id']}] phase3 erreur: {e}")
         r["progres_traites"] = i + 1
