@@ -1706,7 +1706,7 @@ async def _enrich_emails_core(data: dict):
     except Exception as e:
         print(f"[FULLENRICH EXCEPTION] {e}")
         return {"emails": emails_result}
-def generer_excel(rows: list) -> bytes:
+def generer_excel(rows: list, rayon=None, effectif: str = "") -> bytes:
     # ── Fiabilité des emails ───────────────────────────────────────
     # Les emails seulement devinés par Claude sont trop souvent faux.
     # On ne conserve un email que s'il a été confirmé par une source
@@ -1737,7 +1737,15 @@ def generer_excel(rows: list) -> bytes:
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
     ws.merge_cells(f'A1:{get_column_letter(len(headers))}1')
     c = ws['A1']
-    c.value = "Enrichissement Dirigeants"
+    _titre = "Enrichissement Dirigeants"
+    _crit = []
+    if rayon:
+        _crit.append(f"rayon {rayon} m")
+    if effectif:
+        _crit.append(f"effectif {effectif}")
+    if _crit:
+        _titre += " — recherche : " + "  ·  ".join(_crit)
+    c.value = _titre
     c.font  = Font(name='Arial', bold=True, size=14, color="FFFFFF")
     c.fill  = PatternFill('solid', start_color="1e3a5f")
     c.alignment = Alignment(horizontal='center', vertical='center')
@@ -1819,12 +1827,14 @@ async def send_csv(request: Request):
     emails_dest = [e.strip() for e in emails_raw if e and "@" in e]
     rows        = data.get("rows", [])
     filename    = data.get("filename", "enrichissement_dirigeants.xlsx")
+    rayon       = data.get("rayon")
+    effectif    = data.get("effectif", "")
     if not emails_dest or not rows:
         return {"ok": False, "error": "Email(s) ou données manquants"}
     if not SMTP_USER or not SMTP_PASS:
         return {"ok": False, "error": "SMTP non configuré"}
     try:
-        excel_content = generer_excel(rows)
+        excel_content = generer_excel(rows, rayon=rayon, effectif=effectif)
         msg = MIMEMultipart()
         msg['From']    = SMTP_USER
         msg['To']      = ", ".join(emails_dest)
