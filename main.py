@@ -1069,8 +1069,135 @@ async def kaspr_email(prenom: str, nom: str, linkedin_url: str) -> str:
             return ""
 
 
+# ────────────────────────────────────────────────────────────────────
+# RECHERCHE-ENTREPRISES (data.gouv) — SOURCE PRIMAIRE des dirigeants
+# API publique gratuite, lit la même base RNE que Pappers (dirigeants
+# identiques, vérifié le 22/05/2026 sur DIAC). Donne aussi l'état
+# administratif (actif/radié). Pappers ne sert plus que de filet de
+# secours. Throttle ~0,5 s entre appels — l'API limite le débit.
+# ────────────────────────────────────────────────────────────────────
+_RECH_ENT_URL     = "https://recherche-entreprises.api.gouv.fr/search"
+_RECH_ENT_LOCK    = asyncio.Lock()
+_RECH_ENT_LAST    = [0.0]   # timestamp (monotonic) du dernier appel
+RECH_ENT_INTERVAL = 0.5     # secondes minimum entre 2 appels (~2 req/s)
+
+
+def _norm_nom_propre(s: str) -> str:
+    """recherche-entreprises renvoie noms/prénoms en CAPITALES.
+    'CHATAIN' → 'Chatain', 'JEAN-PIERRE' → 'Jean-Pierre'. Une chaîne
+    déjà en casse mixte (cas Pappers) est laissée telle quelle.
+    Retire le nom d'usage entre parenthèses :
+    'KADOUCH-CHASSAING (KADOUCH)' → 'Kadouch-Chassaing'."""
+    s = (s or "").strip()
+    s = re.sub(r'\s*\([^)]*\)', '', s).strip()
+    if not s:
+        return ""
+    return s.title() if s == s.upper() else s
+
+
+def _prenom_recherche_entreprises(prenoms: str) -> str:
+    """Le champ `prenoms` liste tous les prénoms d'état civil
+    ('VALÉRIE FRANÇOISE MARIE'). On ne garde que le premier, en casse
+    normale → 'Valérie'."""
+    tokens = (prenoms or "").replace(",", " ").split()
+    return _norm_nom_propre(tokens[0]) if tokens else ""
+
+
+def _dirigeants_vers_contacts(res: dict) -> list:
+    """Transforme le bloc `dirigeants[]` de recherche-entreprises en
+    contacts, avec les MÊMES filtres que la voie Pappers : on écarte
+    les personnes morales (holdings, commissaires aux comptes), les
+    anciens dirigeants et les titres exclus (administrateurs, etc.)."""
+    contacts = []
+    for d in res.get("dirigeants", []) or []:
+        if d.get("type_dirigeant") != "personne physique":
+            continue
+        titre = (d.get("qualite") or "").strip() or "Représentant légal"
+        if est_ancien_dirigeant(titre) or est_titre_exclu(titre):
+            continue
+        nom_d = _norm_nom_propre(d.get("nom", ""))
+        if not nom_d:
+            continue
+        contacts.append({
+            "prenom":    _prenom_recherche_entreprises(d.get("prenoms", "")),
+            "nom":       nom_d,
+            "titre":     titre,
+            "email":     "",
+            "confiance": "",
+            "source":    "recherche-entreprises",
+        })
+    return contacts
+
+
+async def _recherche_entreprises(siren: str = "", nom: str = "",
+                                 code_postal: str = "", ville: str = ""):
+    """Interroge recherche-entreprises.api.gouv.fr/search.
+    Recherche par SIREN si disponible (résultat fiable), sinon par nom
+    (filtré sur le code postal + contrôle `noms_similaires`, départage
+    par ville). Retourne le résultat brut de l'API (dict) ou None."""
+    siren_norm = _normalize_siren(siren)
+    q = siren_norm or (nom or "").strip()
+    if not q:
+        return None
+    params = {"q": q, "per_page": 5, "page": 1}
+    if not siren_norm and code_postal:
+        cp = re.sub(r'\D', '', str(code_postal))[:5]
+        if cp:
+            params["code_postal"] = cp
+    delays = [4, 12]
+    for attempt in range(3):
+        # ── Throttle global : ~0,5 s entre 2 appels (verrou partagé) ──
+        async with _RECH_ENT_LOCK:
+            ecoule = time.monotonic() - _RECH_ENT_LAST[0]
+            if ecoule < RECH_ENT_INTERVAL:
+                await asyncio.sleep(RECH_ENT_INTERVAL - ecoule)
+            _RECH_ENT_LAST[0] = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=12) as c:
+                r = await c.get(_RECH_ENT_URL, params=params)
+            if r.status_code == 200:
+                results = r.json().get("results", []) or []
+                if not results:
+                    print(f"[RECH-ENT] Aucun résultat pour '{q}'")
+                    return None
+                if siren_norm:
+                    return results[0]   # recherche par SIREN → résultat fiable
+                # Recherche par nom → on garde les résultats au nom similaire,
+                # puis on départage par ville si elle est connue.
+                similaires = [
+                    res for res in results
+                    if noms_similaires(nom, res.get("nom_complet")
+                                       or res.get("nom_raison_sociale") or "")
+                ]
+                if not similaires:
+                    print(f"[RECH-ENT] '{nom}' : aucun résultat au nom similaire")
+                    return None
+                if ville:
+                    v = ville.strip().lower()
+                    for res in similaires:
+                        commune = ((res.get("siege") or {}).get("libelle_commune") or "")
+                        if v and v in commune.lower():
+                            return res
+                return similaires[0]
+            if r.status_code in (429, 502, 503, 504):
+                if attempt < 2:
+                    print(f"[RECH-ENT] {r.status_code} pour '{q}' — retry dans {delays[attempt]}s")
+                    await asyncio.sleep(delays[attempt])
+                    continue
+                print(f"[RECH-ENT] {r.status_code} persistant pour '{q}' — abandon")
+                return None
+            print(f"[RECH-ENT] Status {r.status_code} pour '{q}'")
+            return None
+        except Exception as e:
+            print(f"[RECH-ENT ERROR] '{q}': {e}")
+            if attempt < 2:
+                await asyncio.sleep(delays[attempt])
+    return None
+
+
 async def corriger_domaine(siren: str, societe: str) -> str:
-    """Tente de trouver le vrai domaine via Pappers (SIREN ou nom) puis Claude.
+    """Tente de trouver le vrai domaine via la recherche web Claude
+    (voie gratuite, priorité), puis Pappers en dernier recours.
     Met en cache 90j (1j si vide) pour éviter les appels répétés."""
     # CACHE : on a déjà cherché le domaine pour ce SIREN ?
     cached = cache_domaine_get(siren)
@@ -1079,31 +1206,7 @@ async def corriger_domaine(siren: str, societe: str) -> str:
             print(f"[DOMAINE CACHE HIT] {societe} → {cached}")
         return cached
 
-    if PAPPERS_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=8) as c:
-                if siren:
-                    r = await c.get("https://api.pappers.fr/v2/entreprise",
-                        params={"api_token": PAPPERS_KEY, "siren": siren})
-                    if r.status_code == 200:
-                        d = r.json()
-                        domaine = nettoyer_domaine(d.get("domaine_url","") or d.get("site_web",""))
-                        if domaine_valide(domaine):
-                            print(f"[DOMAINE FIX] Pappers SIREN → {domaine} pour {societe}")
-                            cache_domaine_set(siren, domaine)
-                            return domaine
-                r2 = await c.get("https://api.pappers.fr/v2/recherche",
-                    params={"api_token": PAPPERS_KEY, "q": societe, "par_page": 1})
-                if r2.status_code == 200:
-                    resultats = r2.json().get("resultats", [])
-                    if resultats:
-                        domaine = nettoyer_domaine(resultats[0].get("domaine_url","") or resultats[0].get("site_web",""))
-                        if domaine_valide(domaine):
-                            print(f"[DOMAINE FIX] Pappers nom → {domaine} pour {societe}")
-                            cache_domaine_set(siren, domaine)
-                            return domaine
-        except Exception as e:
-            print(f"[DOMAINE FIX ERROR Pappers] {e}")
+    # ── 1. VOIE GRATUITE : recherche web Claude (priorité) ──
     if ANTHROPIC_KEY:
         try:
             prompt = f"""Quel est le nom de domaine du site web officiel de cette société française : {societe} ?
@@ -1128,6 +1231,34 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
                         return domaine
         except Exception as e:
             print(f"[DOMAINE FIX ERROR Claude] {e}")
+
+    # ── 2. FILET DE SECOURS : Pappers (payant), seulement si Claude a échoué ──
+    if PAPPERS_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=8) as c:
+                if siren:
+                    r = await c.get("https://api.pappers.fr/v2/entreprise",
+                        params={"api_token": PAPPERS_KEY, "siren": siren})
+                    if r.status_code == 200:
+                        d = r.json()
+                        domaine = nettoyer_domaine(d.get("domaine_url","") or d.get("site_web",""))
+                        if domaine_valide(domaine):
+                            print(f"[DOMAINE FIX] Pappers SIREN (filet de secours) → {domaine} pour {societe}")
+                            cache_domaine_set(siren, domaine)
+                            return domaine
+                r2 = await c.get("https://api.pappers.fr/v2/recherche",
+                    params={"api_token": PAPPERS_KEY, "q": societe, "par_page": 1})
+                if r2.status_code == 200:
+                    resultats = r2.json().get("resultats", [])
+                    if resultats:
+                        domaine = nettoyer_domaine(resultats[0].get("domaine_url","") or resultats[0].get("site_web",""))
+                        if domaine_valide(domaine):
+                            print(f"[DOMAINE FIX] Pappers nom (filet de secours) → {domaine} pour {societe}")
+                            cache_domaine_set(siren, domaine)
+                            return domaine
+        except Exception as e:
+            print(f"[DOMAINE FIX ERROR Pappers] {e}")
+
     # Échec : on cache le vide (TTL 1j) pour éviter de re-tenter en boucle
     cache_domaine_set(siren, "")
     return ""
@@ -1220,9 +1351,31 @@ async def _enrich_one_core(data: dict):
                             break
         except Exception as e:
             print(f"[PIPEDRIVE ORG ERROR] {e}")
-    pappers_contacts = []
+    # ── SOURCE PRIMAIRE DES DIRIGEANTS : recherche-entreprises (gratuit) ──
+    # API publique data.gouv, même base RNE que Pappers. Pappers ne sert
+    # plus que de filet de secours (cf section 6 du handoff, 22/05/2026).
+    dirigeants_contacts = []
+    re_data = await _recherche_entreprises(
+        siren=siren, nom=nom, code_postal=code_postal, ville=ville)
+    if re_data:
+        siren_re = _normalize_siren(re_data.get("siren", ""))
+        if siren_re:
+            siren = siren_re
+        # État administratif fiable → société radiée : on s'arrête là.
+        if (re_data.get("etat_administratif") or "").upper() != "A":
+            print(f"[RADIÉE] {nom} (recherche-entreprises) — arrêt")
+            return {"results": [{"org_id":org_id,"societe":nom,"siren":siren,"domaine":domaine,"adresse":adresse,"prenom":"","nom_dg":"","titre":"⚠️ Société radiée","email":"","confiance":"","source":"recherche-entreprises"}]}
+        dirigeants_contacts = _dirigeants_vers_contacts(re_data)
+        print(f"[RECH-ENT] {nom} → {len(dirigeants_contacts)} dirigeant(s) actif(s) exploitable(s)")
+
+    # ── FILET DE SECOURS : Pappers, UNIQUEMENT si recherche-entreprises n'a
+    #    pas trouvé la société du tout (re_data is None). Si elle l'a trouvée
+    #    mais sans dirigeant exploitable, inutile d'appeler Pappers : les deux
+    #    lisent la même base RNE → on bascule directement sur la recherche
+    #    web Claude. Économie maximale (arbitrage validé par Marie, 22/05/2026).
     pappers_data = None
-    if PAPPERS_KEY:
+    if re_data is None and PAPPERS_KEY:
+        print(f"[PAPPERS] Filet de secours — société introuvable via recherche-entreprises : {nom}")
         if domaine_valide(domaine):
             try:
                 async with httpx.AsyncClient(timeout=10) as c:
@@ -1290,7 +1443,7 @@ async def _enrich_one_core(data: dict):
                     continue
                 prenom_raw = rep.get("prenom","")
                 prenom_clean = nettoyer_prenom(prenom_raw)
-                pappers_contacts.append({
+                dirigeants_contacts.append({
                     "prenom": prenom_clean,
                     "nom":    rep.get("nom",""),
                     "titre":  titre,
@@ -1298,16 +1451,16 @@ async def _enrich_one_core(data: dict):
                     "confiance": "",
                     "source": "Pappers"
                 })
-            print(f"[PAPPERS] {len(pappers_contacts)} représentants actifs | domaine={domaine}")
+            print(f"[PAPPERS] {len(dirigeants_contacts)} représentants actifs | domaine={domaine}")
     if contact_prenom and contact_nom:
         contact_prenom_clean = nettoyer_prenom(contact_prenom)
         deja_present = any(
             noms_similaires(contact_prenom_clean, ct.get("prenom","")) and
             noms_similaires(contact_nom, ct.get("nom",""))
-            for ct in pappers_contacts
+            for ct in dirigeants_contacts
         )
         if not deja_present:
-            pappers_contacts.insert(0, {
+            dirigeants_contacts.insert(0, {
                 "prenom": contact_prenom_clean,
                 "nom":    contact_nom,
                 "titre":  contact_titre or "Dirigeant",
@@ -1317,17 +1470,18 @@ async def _enrich_one_core(data: dict):
             })
             print(f"[SOURCE] Contact pré-rempli : {contact_prenom_clean} {contact_nom} ({contact_titre})")
         else:
-            print(f"[SOURCE] Contact déjà dans Pappers : {contact_prenom_clean} {contact_nom} — skip")
+            print(f"[SOURCE] Contact déjà parmi les dirigeants : {contact_prenom_clean} {contact_nom} — skip")
     claude_contacts = []
     # Recherche web Claude = FALLBACK. On ne la lance que si NI Pipedrive NI
-    # Pappers n'ont donné de dirigeant exploitable (membres du directoire déjà
-    # écartés). Si Pappers a livré, on économise l'appel Claude. La phase 2
-    # « Claude+web » reste, elle, un complément lancé à la demande.
+    # recherche-entreprises NI Pappers n'ont donné de dirigeant exploitable
+    # (membres du directoire déjà écartés). Si une source légale a livré, on
+    # économise l'appel Claude. La phase 2 « Claude+web » reste, elle, un
+    # complément lancé à la demande.
     if pipedrive_org_contacts:
         print(f"[PIPEDRIVE ORG] {nom} dans le CRM → recherche Claude sautée")
         cached_claude = None
-    elif pappers_contacts:
-        print(f"[CLAUDE] {nom} — {len(pappers_contacts)} dirigeant(s) Pappers → recherche web sautée")
+    elif dirigeants_contacts:
+        print(f"[CLAUDE] {nom} — {len(dirigeants_contacts)} dirigeant(s) déjà trouvé(s) → recherche web sautée")
         cached_claude = None
     else:
         # CACHE : si on a déjà appelé Claude+web pour ce SIREN dans les 60j, on réutilise
@@ -1335,8 +1489,8 @@ async def _enrich_one_core(data: dict):
     if cached_claude is not None:
         claude_contacts = cached_claude
         print(f"[CACHE HIT] {nom} (SIREN {siren}) → {len(cached_claude)} contacts Claude réutilisés")
-    elif ANTHROPIC_KEY and not pipedrive_org_contacts and not pappers_contacts:
-        noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in pappers_contacts]
+    elif ANTHROPIC_KEY and not pipedrive_org_contacts and not dirigeants_contacts:
+        noms_deja = [f"{c['prenom']} {c['nom']}".strip() for c in dirigeants_contacts]
         exclusion = f"\nDirigeants déjà connus à ne PAS inclure : {', '.join(noms_deja)}" if noms_deja else ""
         contexte_fondateurs = f"\nFondateurs connus : {fondateurs}" if fondateurs else ""
         # Bloc dynamique uniquement (les instructions sont dans SYSTEM_ENRICH, cachées)
@@ -1402,11 +1556,11 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
         _ct["confiance_email"] = ""
     if not domaine_valide(domaine) and siren:
         domaine = await corriger_domaine(siren, nom)
-    for ct in pappers_contacts + claude_contacts + pipedrive_org_contacts:
+    for ct in dirigeants_contacts + claude_contacts + pipedrive_org_contacts:
         if not ct.get("domaine"):
             ct["domaine"] = domaine
     if PIPEDRIVE_KEY and not pipedrive_org_contacts:
-        for ct in pappers_contacts + claude_contacts:
+        for ct in dirigeants_contacts + claude_contacts:
             if ct.get("email"):
                 continue
             pd_data = await check_pipedrive(ct.get("prenom",""), ct.get("nom",""))
@@ -1430,9 +1584,9 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
               f"conservés (Pappers/Claude ignorés)")
     else:
         # Priorité de conservation : contact du fichier → Pappers → Claude.
-        # (Le contact du fichier est déjà inséré en tête de pappers_contacts.)
-        total_trouve = len(pappers_contacts) + len(claude_contacts)
-        tous_contacts = (pappers_contacts + claude_contacts)[:4]
+        # (Le contact du fichier est déjà inséré en tête de dirigeants_contacts.)
+        total_trouve = len(dirigeants_contacts) + len(claude_contacts)
+        tous_contacts = (dirigeants_contacts + claude_contacts)[:4]
         if total_trouve > 4:
             print(f"[LIMITE] {nom} → {total_trouve} contacts trouvés, plafonné à 4")
     if not tous_contacts:
