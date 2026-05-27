@@ -320,6 +320,49 @@ def nettoyer_domaine(url: str) -> str:
     d = d.replace("https://", "").replace("http://", "").replace("www.", "")
     d = d.split("/")[0].strip()
     return d
+
+
+# ────────────────────────────────────────────────────────────────────
+# GARDE-FOU EMAIL vs DOMAINE SOCIÉTÉ
+# Catche les emails « parasites » :
+#  - CRM périmé (ex-employeur conservé dans Pipedrive)
+#  - Kaspr qui matche un mauvais LinkedIn
+#  - Emails de la maison mère / d'une filiale
+#  - Emails alumni d'une école
+# Renvoie True si l'email semble étranger à la société.
+# ────────────────────────────────────────────────────────────────────
+ISP_DOMAINS = {
+    "gmail.com", "googlemail.com", "hotmail.com", "hotmail.fr", "outlook.com",
+    "outlook.fr", "yahoo.com", "yahoo.fr", "icloud.com", "me.com", "mac.com",
+    "free.fr", "orange.fr", "wanadoo.fr", "sfr.fr", "neuf.fr", "laposte.net",
+    "aliceadsl.fr", "numericable.fr", "bbox.fr", "live.fr", "live.com",
+    "msn.com", "yandex.com", "protonmail.com", "proton.me", "tutanota.com",
+    "gmx.fr", "gmx.com",
+}
+
+
+def _email_externe_a_societe(email: str, domaine_societe: str) -> bool:
+    """True si l'email a un domaine différent de la société ET n'est pas
+    une boîte mail grand public. False sinon (OK, ISP générique tolérée,
+    ou impossible à vérifier faute de domaine société)."""
+    if not email or "@" not in email or not domaine_societe:
+        return False
+    email_d = email.rsplit("@", 1)[1].lower().strip()
+    if email_d in ISP_DOMAINS:
+        return False
+    soc_d = (domaine_societe or "").lower().strip()
+    if soc_d.startswith("www."):
+        soc_d = soc_d[4:]
+    if not soc_d:
+        return False
+    if email_d == soc_d:
+        return False
+    # Sous-domaines : mail.cbre.fr vs cbre.fr → OK
+    if email_d.endswith("." + soc_d) or soc_d.endswith("." + email_d):
+        return False
+    return True
+
+
 def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
     import unicodedata
     def normaliser(s):
@@ -332,6 +375,19 @@ def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
     a = normaliser(nom_csv)
     b = normaliser(nom_pappers)
     if a == b:
+        return True
+    # Forme compacte (sans espaces) : rattrape 'ConvictionsRH' ↔ 'Convictions RH',
+    # 'S2H Group' ↔ 'S2HGroup', etc. — utile parce que les tokens ≤2 chars sont
+    # filtrés plus bas et 'RH', 'Co', 'S2' sont alors invisibles à l'intersection.
+    a_c = a.replace(" ", "")
+    b_c = b.replace(" ", "")
+    if a_c == b_c:
+        return True
+    # Inclusion : un nom (au moins 5 chars compacts) entièrement contenu dans
+    # l'autre — gère 'Acme' vs 'Acme Conseil' ou 'GreenkeLocation' vs 'Grenke'.
+    if len(a_c) >= 5 and a_c in b_c:
+        return True
+    if len(b_c) >= 5 and b_c in a_c:
         return True
     mots_a = set(w for w in a.split() if len(w) > 2)
     mots_b = set(w for w in b.split() if len(w) > 2)
@@ -1591,6 +1647,19 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
             print(f"[LIMITE] {nom} → {total_trouve} contacts trouvés, plafonné à 4")
     if not tous_contacts:
         tous_contacts = [{"prenom":"","nom":"","titre":"","email":"","confiance":"","source":""}]
+    # ── Garde-fou final : email étranger au domaine de la société ──
+    # Catche les ex-employeurs traînant dans Pipedrive, les emails de la
+    # maison mère, et les ratés Kaspr (mauvais profil LinkedIn matché).
+    # On NE supprime PAS l'email (info précieuse pour Marie) — on dégrade
+    # la confiance et on marque la source pour pouvoir filtrer dans l'Excel.
+    for ct in tous_contacts:
+        if _email_externe_a_societe(ct.get("email",""), domaine):
+            ct["confiance_email"] = "faible"
+            src = (ct.get("source","") or "")
+            if "(email externe)" not in src:
+                ct["source"] = (src + " (email externe)").strip()
+            print(f"[GARDE-FOU] {nom} → {ct.get('prenom','')} {ct.get('nom','')} : "
+                  f"email {ct.get('email','')} ≠ domaine {domaine}")
     results = []
     for ct in tous_contacts:
         results.append({
