@@ -114,6 +114,13 @@ CACHE_DB = os.path.join(CACHE_DIR, "enrich_cache.db")
 CONTACTS_TTL_DAYS = 60
 DOMAINE_TTL_DAYS = 90
 DOMAINE_EMPTY_TTL_DAYS = 1
+# FullEnrich met sa base à jour ~mensuellement — TTL de 30j cohérent.
+EFFECTIF_TTL_DAYS = 30
+# Bande effectif cible (salariés). Toute société dont FullEnrich Search
+# annonce un effectif CLAIREMENT hors de cette bande est court-circuitée
+# avant Kaspr/FullEnrich emails (Option B, validée le 08/06/2026).
+EFFECTIF_MIN_BAND = int(os.getenv("EFFECTIF_MIN_BAND", "20"))
+EFFECTIF_MAX_BAND = int(os.getenv("EFFECTIF_MAX_BAND", "499"))
 
 def _init_cache():
     with sqlite3.connect(CACHE_DB) as conn:
@@ -127,6 +134,13 @@ def _init_cache():
         )""")
         conn.execute("""CREATE TABLE IF NOT EXISTS domaine_cache (
             siren TEXT PRIMARY KEY, domaine TEXT NOT NULL, cached_at INTEGER NOT NULL
+        )""")
+        # Cache effectif FullEnrich (clé = domaine, TTL 30j).
+        conn.execute("""CREATE TABLE IF NOT EXISTS effectif_cache (
+            domaine TEXT PRIMARY KEY,
+            headcount INTEGER,
+            headcount_range TEXT,
+            cached_at INTEGER NOT NULL
         )""")
         # Historique des runs (= Excel finaux pour re-téléchargement)
         conn.execute("""CREATE TABLE IF NOT EXISTS runs_history (
@@ -226,6 +240,41 @@ def cache_domaine_set(siren: str, domaine: str):
             conn.commit()
     except Exception as e:
         print(f"[DOMAINE CACHE SET ERROR] {siren}: {e}")
+
+
+def cache_effectif_get(domaine: str):
+    """Renvoie {'headcount':..., 'headcount_range':...} si en cache (TTL 30j),
+    None sinon. Le cache stocke aussi les 'pas trouvé' (range='') pour éviter
+    de rappeler FullEnrich en boucle pour les mêmes domaines."""
+    d = (domaine or "").strip().lower()
+    if not d:
+        return None
+    try:
+        with _sqlite_conn() as conn:
+            row = conn.execute(
+                "SELECT headcount, headcount_range, cached_at FROM effectif_cache WHERE domaine=?",
+                (d,)).fetchone()
+            if row and (time.time() - row[2]) < EFFECTIF_TTL_DAYS * 86400:
+                return {"headcount": row[0] or 0, "headcount_range": row[1] or ""}
+    except Exception as e:
+        print(f"[EFFECTIF CACHE GET ERROR] {d}: {e}")
+    return None
+
+
+def cache_effectif_set(domaine: str, headcount: int, headcount_range: str):
+    d = (domaine or "").strip().lower()
+    if not d:
+        return
+    try:
+        with _sqlite_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO effectif_cache "
+                "(domaine, headcount, headcount_range, cached_at) VALUES (?, ?, ?, ?)",
+                (d, int(headcount or 0), headcount_range or "", int(time.time())))
+            conn.commit()
+    except Exception as e:
+        print(f"[EFFECTIF CACHE SET ERROR] {d}: {e}")
+
 
 # ────────────────────────────────────────────────────────────────────
 # SYSTÈME D'ALERTES EMAIL (solde API + run failed)
@@ -1318,6 +1367,94 @@ Réponds UNIQUEMENT avec le domaine (ex: example.com), sans http ni www, sans au
     # Échec : on cache le vide (TTL 1j) pour éviter de re-tenter en boucle
     cache_domaine_set(siren, "")
     return ""
+
+
+# ────────────────────────────────────────────────────────────────────
+# FULLENRICH COMPANY SEARCH — effectif fiable par domaine
+# Source distincte du /contact/enrich/bulk déjà utilisé en Passe 5.
+# /api/v2/company/search renvoie headcount + headcount_range (tranche).
+# 1 crédit FullEnrich par lookup ; cache 30j pour limiter la casse.
+# Docs : https://docs.fullenrich.com/api/v2/company/search/post
+# ────────────────────────────────────────────────────────────────────
+async def _fullenrich_company_search(domaine: str) -> dict:
+    """Recherche FullEnrich par domaine exact. Renvoie
+    {'headcount': int, 'headcount_range': str} ou {} si rien trouvé /
+    pas de clé / erreur. Cache 30j automatique (clé = domaine)."""
+    d = (domaine or "").strip().lower()
+    if not d or "." not in d:
+        return {}
+    # Cache d'abord — y compris les 'pas trouvé' (headcount_range='')
+    cached = cache_effectif_get(d)
+    if cached is not None:
+        if cached.get("headcount_range"):
+            print(f"[EFFECTIF CACHE HIT] {d} → {cached['headcount_range']}")
+        return cached
+    if not FULLENRICH_KEY:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(
+                "https://app.fullenrich.com/api/v2/company/search",
+                headers={
+                    "Authorization": f"Bearer {FULLENRICH_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "limit": 1,
+                    "domains": [{"value": d, "exact_match": True}],
+                },
+            )
+            if r.status_code in (401, 402, 403):
+                _alert_api_down("FullEnrich Search", r.status_code, r.text[:200])
+                return {}
+            if r.status_code == 429:
+                print(f"[FE SEARCH] 429 pour {d} — on saute")
+                return {}
+            if r.status_code != 200:
+                print(f"[FE SEARCH] Status {r.status_code} pour {d}: {r.text[:120]}")
+                return {}
+            data = r.json() or {}
+            cies = data.get("companies", []) or []
+            if not cies:
+                # Cache vide pour éviter de rappeler à chaque scan
+                cache_effectif_set(d, 0, "")
+                print(f"[FE SEARCH] Aucune société pour {d}")
+                return {"headcount": 0, "headcount_range": ""}
+            cie = cies[0]
+            hc = int(cie.get("headcount") or 0)
+            hcr = (cie.get("headcount_range") or "").strip()
+            cache_effectif_set(d, hc, hcr)
+            print(f"[FE SEARCH] {d} → range={hcr!r} | headcount={hc} "
+                  f"| credits={(data.get('metadata') or {}).get('credits')}")
+            return {"headcount": hc, "headcount_range": hcr}
+    except Exception as e:
+        print(f"[FE SEARCH ERROR] {d}: {e}")
+        return {}
+
+
+def _est_hors_bande_effectif(headcount: int, range_str: str) -> bool:
+    """True si l'effectif est CLAIREMENT hors de la bande
+    [EFFECTIF_MIN_BAND, EFFECTIF_MAX_BAND]. En cas de doute (range qui
+    chevauche la bande, donnée absente), renvoie False — on préfère ne
+    pas jeter un prospect potentiellement bon. Headcount exact (>0) prime
+    sur le range. Reconnaît les formats "11-50", "1001-5000", "10001+"."""
+    mini, maxi = EFFECTIF_MIN_BAND, EFFECTIF_MAX_BAND
+    if headcount and headcount > 0:
+        return headcount < mini or headcount > maxi
+    if range_str:
+        try:
+            if range_str.endswith("+"):
+                lo = int(range_str.rstrip("+"))
+                return lo > maxi
+            parts = range_str.split("-")
+            lo, hi = int(parts[0]), int(parts[1])
+            if lo > maxi or hi < mini:
+                return True
+        except (ValueError, IndexError):
+            return False
+    return False
+
+
 # -------------------------------------------------------
 # ROUTE PASSE 1 : Pappers + Claude + Pipedrive
 # -------------------------------------------------------
@@ -1612,6 +1749,33 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
         _ct["confiance_email"] = ""
     if not domaine_valide(domaine) and siren:
         domaine = await corriger_domaine(siren, nom)
+
+    # ── Garde-fou effectif (Option B, FullEnrich Search) ─────────────
+    # FullEnrich a une info effectif plus fiable que les tranches INSEE.
+    # Si elle dit clairement hors bande [EFFECTIF_MIN_BAND..MAX], on
+    # court-circuite ici : pas de Pipedrive contact, pas de plafond,
+    # et surtout pas de Kaspr/FullEnrich emails en aval.
+    # Si FullEnrich ne connaît pas la société (cas fréquent pour de très
+    # jeunes structures), on continue normalement avec ce qu'on a.
+    effectif_range = ""
+    if domaine_valide(domaine):
+        eff = await _fullenrich_company_search(domaine)
+        effectif_range = eff.get("headcount_range", "") or ""
+        if _est_hors_bande_effectif(eff.get("headcount", 0), effectif_range):
+            marqueur = effectif_range or str(eff.get("headcount", "?"))
+            print(f"[HORS CIBLE] {nom} → effectif {marqueur} "
+                  f"hors bande [{EFFECTIF_MIN_BAND}-{EFFECTIF_MAX_BAND}] — arrêt")
+            return {"results": [{
+                "org_id": org_id, "societe": nom, "siren": siren,
+                "domaine": domaine, "adresse": adresse,
+                "prenom": "", "nom_dg": "",
+                "titre": f"⚠️ Société hors cible (effectif {marqueur})",
+                "email": "", "phone": "", "linkedin": "",
+                "confiance": "", "source": "FullEnrich Search",
+                "dans_pipedrive": "",
+                "effectif_fullenrich": effectif_range,
+            }]}
+
     for ct in dirigeants_contacts + claude_contacts + pipedrive_org_contacts:
         if not ct.get("domaine"):
             ct["domaine"] = domaine
@@ -1677,6 +1841,7 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
             "confiance":      ct.get("confiance_email", ct.get("confiance","")),
             "source":         ct.get("source",""),
             "dans_pipedrive": ct.get("dans_pipedrive",""),
+            "effectif_fullenrich": effectif_range,
         })
     print(f"[DONE] {nom} → {len(results)} contacts | domaine={domaine}")
     return {"results": results}
@@ -1954,8 +2119,8 @@ def generer_excel(rows: list, rayon=None, effectif: str = "") -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Dirigeants enrichis"
-    headers  = ['Organisation','Adresse','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Confiance','Source','Dans Pipedrive']
-    col_map  = ['societe','adresse','prenom','nom_dg','titre','email','phone','linkedin','domaine','confiance','source','dans_pipedrive']
+    headers  = ['Organisation','Adresse','Prénom','Nom','Titre','Email','Téléphone','LinkedIn','Domaine','Effectif (FullEnrich)','Confiance','Source','Dans Pipedrive']
+    col_map  = ['societe','adresse','prenom','nom_dg','titre','email','phone','linkedin','domaine','effectif_fullenrich','confiance','source','dans_pipedrive']
     thin     = Side(style='thin', color="e2e8f0")
     border   = Border(left=thin, right=thin, top=thin, bottom=thin)
     ws.merge_cells(f'A1:{get_column_letter(len(headers))}1')
