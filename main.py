@@ -121,6 +121,10 @@ EFFECTIF_TTL_DAYS = 30
 # avant Kaspr/FullEnrich emails (Option B, validée le 08/06/2026).
 EFFECTIF_MIN_BAND = int(os.getenv("EFFECTIF_MIN_BAND", "20"))
 EFFECTIF_MAX_BAND = int(os.getenv("EFFECTIF_MAX_BAND", "499"))
+# Cache contact-level (Kaspr + FullEnrich emails) — clé (prenom|nom|domaine).
+# Évite de repayer Kaspr ou un crédit FullEnrich pour des contacts déjà
+# enrichis dans les CONTACT_ENRICH_TTL_DAYS derniers jours.
+CONTACT_ENRICH_TTL_DAYS = int(os.getenv("CONTACT_ENRICH_TTL_DAYS", "90"))
 
 def _init_cache():
     with sqlite3.connect(CACHE_DB) as conn:
@@ -140,6 +144,17 @@ def _init_cache():
             domaine TEXT PRIMARY KEY,
             headcount INTEGER,
             headcount_range TEXT,
+            cached_at INTEGER NOT NULL
+        )""")
+        # Cache contact-level — Kaspr + FullEnrich emails partagent
+        # la même clé (prenom|nom|domaine, normalisée). TTL 90j par défaut.
+        conn.execute("""CREATE TABLE IF NOT EXISTS contact_enrich_cache (
+            contact_key TEXT PRIMARY KEY,
+            email TEXT,
+            phone TEXT,
+            linkedin TEXT,
+            confiance TEXT,
+            source TEXT,
             cached_at INTEGER NOT NULL
         )""")
         # Historique des runs (= Excel finaux pour re-téléchargement)
@@ -274,6 +289,84 @@ def cache_effectif_set(domaine: str, headcount: int, headcount_range: str):
             conn.commit()
     except Exception as e:
         print(f"[EFFECTIF CACHE SET ERROR] {d}: {e}")
+
+
+def _contact_cache_key(prenom: str, nom: str, domaine: str) -> str:
+    """Clé normalisée (lowercase, sans accents, sans espaces parasites)
+    pour le cache contact. Forme : 'prenom|nom|domaine'."""
+    import unicodedata
+    def _norm(s):
+        s = (s or "").lower().strip()
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+    return f"{_norm(prenom)}|{_norm(nom)}|{_norm(domaine)}"
+
+
+def cache_contact_enrich_get(prenom: str, nom: str, domaine: str):
+    """Renvoie {email, phone, linkedin, confiance, source} si en cache
+    (TTL CONTACT_ENRICH_TTL_DAYS jours), None sinon."""
+    key = _contact_cache_key(prenom, nom, domaine)
+    if not key.replace("|", "").strip():
+        return None
+    try:
+        with _sqlite_conn() as conn:
+            row = conn.execute(
+                "SELECT email, phone, linkedin, confiance, source, cached_at "
+                "FROM contact_enrich_cache WHERE contact_key=?",
+                (key,)).fetchone()
+            if row and (time.time() - row[5]) < CONTACT_ENRICH_TTL_DAYS * 86400:
+                return {
+                    "email":     row[0] or "",
+                    "phone":     row[1] or "",
+                    "linkedin":  row[2] or "",
+                    "confiance": row[3] or "",
+                    "source":    row[4] or "",
+                }
+    except Exception as e:
+        print(f"[CONTACT CACHE GET ERROR] {key}: {e}")
+    return None
+
+
+def cache_contact_enrich_set(prenom: str, nom: str, domaine: str,
+                              email: str = "", phone: str = "",
+                              linkedin: str = "", confiance: str = "",
+                              source: str = ""):
+    """Sauvegarde l'enrichissement contact. Si une entrée existe déjà
+    pour cette clé, on FUSIONNE (préserve email/phone/linkedin déjà
+    connus, concatène la source pour garder l'historique des providers).
+    Évite d'écraser un email Kaspr quand FullEnrich revient avec rien."""
+    key = _contact_cache_key(prenom, nom, domaine)
+    if not key.replace("|", "").strip():
+        return
+    if not (email or phone or linkedin):
+        return  # rien d'utile à cacher
+    try:
+        with _sqlite_conn() as conn:
+            row = conn.execute(
+                "SELECT email, phone, linkedin, confiance, source "
+                "FROM contact_enrich_cache WHERE contact_key=?",
+                (key,)).fetchone()
+            if row:
+                email     = email     or row[0] or ""
+                phone     = phone     or row[1] or ""
+                linkedin  = linkedin  or row[2] or ""
+                confiance = confiance or row[3] or ""
+                old_src = row[4] or ""
+                if source and old_src and source not in old_src:
+                    source = f"{old_src}{source}".replace("++", "+")
+                else:
+                    source = source or old_src
+            conn.execute(
+                "INSERT OR REPLACE INTO contact_enrich_cache "
+                "(contact_key, email, phone, linkedin, confiance, source, cached_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (key, email or "", phone or "", linkedin or "",
+                 confiance or "", source or "", int(time.time())))
+            conn.commit()
+    except Exception as e:
+        print(f"[CONTACT CACHE SET ERROR] {key}: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -1937,6 +2030,44 @@ async def _enrich_emails_core(data: dict):
     stop_check = data.get("_stop_check")
     emails_result = {}
     kaspr_par_nom = {}  # résultats Kaspr déjà obtenus dans ce batch (anti-doublon)
+
+    # ── Pre-pass cache contact-level (Kaspr + FullEnrich) ────────────
+    # Pour chaque contact, on regarde si on a déjà enrichi cette
+    # (prenom, nom, domaine) ces 90 derniers jours. Si oui, on évite
+    # à la fois l'appel Kaspr ET le crédit FullEnrich plus bas.
+    nb_cache_hit = 0
+    for ct in contacts:
+        prenom_ck = nettoyer_prenom(ct.get("prenom",""))
+        nom_ck    = ct.get("nom","") or ""
+        dom_ck    = ct.get("domaine","") or ""
+        if not prenom_ck or not nom_ck or not domaine_valide(dom_ck):
+            continue
+        cached = cache_contact_enrich_get(prenom_ck, nom_ck, dom_ck)
+        if not cached:
+            continue
+        if not (cached.get("email") or cached.get("phone")):
+            continue
+        idx = str(ct.get("idx",0))
+        if cached.get("email"):
+            ct["email"] = cached["email"]
+            ct["_cache_hit_email"] = True
+        if cached.get("phone"):
+            ct["phone"] = cached["phone"]
+        if cached.get("linkedin"):
+            ct["linkedin"] = cached["linkedin"]
+        # Politique : FullEnrich n'est jamais sollicité pour le téléphone
+        # → un email en cache suffit pour court-circuiter Kaspr ET FullEnrich.
+        emails_result[idx] = {
+            "email":    cached.get("email","") or "",
+            "phone":    cached.get("phone","") or "",
+            "linkedin": cached.get("linkedin","") or "",
+            "source":   cached.get("source","") or "",
+        }
+        nb_cache_hit += 1
+        print(f"[CACHE CONTACT] {prenom_ck} {nom_ck} @ {dom_ck} → email réutilisé")
+    if nb_cache_hit:
+        print(f"[CACHE CONTACT] {nb_cache_hit}/{len(contacts)} contacts servis par le cache")
+
     if KASPR_KEY and faire_kaspr:
         # On cherche un email Kaspr pour TOUS les contacts. Les emails devinés
         # par Claude ne sont pas fiables : on ne s'en sert plus pour zapper Kaspr.
@@ -1947,6 +2078,9 @@ async def _enrich_emails_core(data: dict):
             if time.monotonic() < _KASPR_QUOTA_KO_UNTIL[0]:
                 print("[KASPR] ⛔ Limite de requêtes atteinte — boucle Kaspr de ce lot sautée")
                 break
+            # Cache contact-level a déjà fourni l'email → skip Kaspr
+            if ct.get("_cache_hit_email"):
+                continue
             prenom = nettoyer_prenom(ct.get("prenom",""))
             nom_ct = ct.get("nom","")
             societe_ct = ct.get("societe","")
@@ -1990,6 +2124,13 @@ async def _enrich_emails_core(data: dict):
                     emails_result[idx] = {"email": email_kaspr, "linkedin": linkedin_url, "source": "+Kaspr"}
                     resultat["email"] = email_kaspr
                     print(f"[KASPR] ✅ {prenom} {nom_ct} → {email_kaspr}")
+                    # ── Cache contact-level : on garde email + linkedin
+                    #    pour qu'un futur scan évite cet appel.
+                    cache_contact_enrich_set(
+                        prenom, nom_ct, ct.get("domaine",""),
+                        email=email_kaspr, linkedin=linkedin_url,
+                        source="+Kaspr",
+                    )
             kaspr_par_nom[cle] = resultat
     # Phase « Kaspr uniquement », ou arrêt demandé → on s'arrête ici.
     if not faire_fullenrich or (stop_check and stop_check()):
@@ -2005,10 +2146,17 @@ async def _enrich_emails_core(data: dict):
             if domaines_corriges[societe]:
                 ct["domaine"] = domaines_corriges[societe]
     to_enrich = []
+    # Map idx → (prenom, nom, domaine) pour pouvoir cacher les résultats
+    # FullEnrich par contact à l'arrivée des réponses.
+    idx_to_contact = {}
     for ct in contacts:
         # On envoie TOUS les contacts à FullEnrich, sauf ceux dont Kaspr a
         # déjà trouvé l'email (résultat fiable — inutile de payer un crédit).
         if ct.get("source_kaspr"):
+            continue
+        # Cache contact-level a déjà fourni l'email → skip FullEnrich
+        # (on ne sollicite jamais FullEnrich pour le téléphone).
+        if ct.get("_cache_hit_email"):
             continue
         if not ct.get("prenom") or not ct.get("nom"):
             continue
@@ -2017,13 +2165,21 @@ async def _enrich_emails_core(data: dict):
             print(f"[FULLENRICH] Domaine toujours invalide pour {ct.get('prenom')} {ct.get('nom')} — ignoré")
             continue
         prenom_clean = nettoyer_prenom(ct["prenom"])
+        idx_str = str(ct.get("idx",0))
+        idx_to_contact[idx_str] = {
+            "prenom": prenom_clean,
+            "nom":    ct["nom"],
+            "domaine": domaine_ct,
+        }
         to_enrich.append({
             "firstname":    prenom_clean,
             "lastname":     ct["nom"],
             "domain":       domaine_ct,
             "company_name": ct.get("societe",""),
-            "enrich_fields": ["contact.emails", "contact.phones"],
-            "custom": {"idx": str(ct.get("idx",0))}
+            # FullEnrich n'est sollicité QUE pour les emails — pas de phone.
+            # (Décision Marie, 08/06/2026 : les phones viennent de Pipedrive.)
+            "enrich_fields": ["contact.emails"],
+            "custom": {"idx": idx_str}
         })
     if not to_enrich:
         return {"emails": emails_result}
@@ -2079,6 +2235,18 @@ async def _enrich_emails_core(data: dict):
                                 break
                         if email_val or phone_val:
                             emails_par_idx[idx] = {"email": email_val, "phone": phone_val}
+                            # ── Cache contact-level : on persiste pour
+                            #    qu'un futur scan évite ce crédit FullEnrich.
+                            ctx = idx_to_contact.get(idx, {})
+                            if ctx.get("prenom") and ctx.get("nom") and ctx.get("domaine"):
+                                # Politique : seul l'email FullEnrich est mis
+                                # en cache. Les phones ne sont jamais récupérés
+                                # via FullEnrich (cf enrich_fields plus haut).
+                                cache_contact_enrich_set(
+                                    ctx["prenom"], ctx["nom"], ctx["domaine"],
+                                    email=email_val,
+                                    source="+Fullenrich",
+                                )
                     print(f"[FULLENRICH] {len(emails_par_idx)} contacts enrichis")
                     for k, v in emails_par_idx.items():
                         if k not in emails_result:
@@ -2622,9 +2790,10 @@ async def _run_phase_emails(r: dict, phase: str):
     for idx, x in enumerate(resultats):
         if not x.get("nom_dg"):
             continue
-        sans_email  = (not x.get("email")) or x.get("confiance") == "faible"
-        sans_tel_fe = (not x.get("phone")) and phase == "fullenrich"
-        if sans_email or sans_tel_fe:
+        # FullEnrich n'est sollicité que pour l'email (décision Marie 08/06/2026)
+        # → on n'envoie plus les contacts qui ont déjà un email même sans phone.
+        sans_email = (not x.get("email")) or x.get("confiance") == "faible"
+        if sans_email:
             to_enrich.append({**x, "idx": idx})
     if not to_enrich:
         r["progres_total"] = 0
