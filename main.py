@@ -1046,21 +1046,29 @@ async def check_pipedrive(prenom: str, nom: str) -> dict:
                         if not phone and phones:
                             ph = phones[0]
                             phone = ph if isinstance(ph, str) else ph.get("value", "")
-                        if email and "@" in email:
-                            # Poste Pipedrive : pas toujours dans le résultat de
-                            # recherche → on le complète via /persons/{id}.
-                            poste = person.get("job_title", "") or ""
-                            if not poste and person.get("id"):
-                                try:
-                                    rp = await c.get(
-                                        f"https://api.pipedrive.com/v1/persons/{person.get('id')}",
-                                        params={"api_token": PIPEDRIVE_KEY})
-                                    if rp.status_code == 200:
-                                        poste = (rp.json().get("data") or {}).get("job_title", "") or ""
-                                except Exception:
-                                    pass
-                            print(f"[PIPEDRIVE] ✅ {terme} → {email} | tél: {phone} | poste: {poste or '—'}")
-                            return {"email": email, "phone": phone, "job_title": poste}
+                        # Poste Pipedrive : pas toujours dans le résultat de
+                        # recherche → on le complète via /persons/{id}.
+                        poste = person.get("job_title", "") or ""
+                        if not poste and person.get("id"):
+                            try:
+                                rp = await c.get(
+                                    f"https://api.pipedrive.com/v1/persons/{person.get('id')}",
+                                    params={"api_token": PIPEDRIVE_KEY})
+                                if rp.status_code == 200:
+                                    poste = (rp.json().get("data") or {}).get("job_title", "") or ""
+                            except Exception:
+                                pass
+                        # ── Politique 09/06/2026 (Marie) ─────────────────────
+                        # Les emails Pipedrive sont trop souvent périmés (ex-
+                        # employeurs traînant dans le CRM). On ne s'en sert
+                        # plus du tout — Kaspr + FullEnrich cherchent du frais.
+                        # Le téléphone et le poste, eux, restent fiables.
+                        if phone or poste:
+                            has_email = email and "@" in email
+                            print(f"[PIPEDRIVE] ✅ {terme} → tél: {phone or '—'} | "
+                                  f"poste: {poste or '—'} | "
+                                  f"email CRM : {'présent (ignoré)' if has_email else 'absent'}")
+                            return {"email": "", "phone": phone, "job_title": poste}
     except Exception as e:
         print(f"[PIPEDRIVE ERROR] {terme}: {e}")
     return {}
@@ -1620,11 +1628,14 @@ async def _enrich_one_core(data: dict):
                                                 if val:
                                                     phone_p = val
                                                     break
+                                        # Politique 09/06/2026 : email Pipedrive jeté,
+                                        # tél + poste + flag conservés.
                                         contacts_pipe.append({
                                             "prenom": prenom_p, "nom": nom_p,
-                                            "titre": titre_p, "email": email_p,
+                                            "titre": titre_p,
+                                            "email": "",            # Kaspr/FullEnrich s'en chargent
                                             "phone": phone_p,
-                                            "confiance": "haute" if (email_p and phone_p) else "faible",
+                                            "confiance": "",        # pas d'email = pas de confiance email
                                             "source": "Pipedrive",
                                             "dans_pipedrive": "oui",
                                             "siren": siren,
@@ -1873,19 +1884,23 @@ Nom : {nom}{chr(10)+"Site : "+domaine if domaine_valide(domaine) else ""}{chr(10
         if not ct.get("domaine"):
             ct["domaine"] = domaine
     if PIPEDRIVE_KEY and not pipedrive_org_contacts:
+        # Politique 09/06/2026 : on lookup Pipedrive UNIQUEMENT pour le
+        # téléphone et le poste, plus pour l'email (jeté à la source).
+        # On reste libre de chercher l'email via Kaspr/FullEnrich derrière.
         for ct in dirigeants_contacts + claude_contacts:
-            if ct.get("email"):
-                continue
             pd_data = await check_pipedrive(ct.get("prenom",""), ct.get("nom",""))
-            if pd_data.get("email"):
-                ct["email"] = pd_data["email"]
-                ct["confiance_email"] = "haute"
-                ct["source"] = ct.get("source","") + "+Pipedrive"
-                ct["dans_pipedrive"] = "oui"
-            if pd_data.get("phone"):
+            if not pd_data:
+                continue
+            if pd_data.get("phone") and not ct.get("phone"):
                 ct["phone"] = pd_data["phone"]
             if pd_data.get("job_title"):
-                ct["titre"] = pd_data["job_title"]   # le poste du CRM Pipedrive prime
+                ct["titre"] = pd_data["job_title"]   # le poste du CRM prime
+            # On marque que la personne est connue du CRM (info utile),
+            # mais on ne récupère plus son email.
+            ct["dans_pipedrive"] = "oui"
+            src = ct.get("source","") or ""
+            if "Pipedrive" not in src:
+                ct["source"] = (src + "+Pipedrive").lstrip("+")
     # ── Plafond de contacts par société ──────────────────────────────
     # Règle métier : 4 contacts maximum par société.
     # EXCEPTION : si la société est déjà dans Pipedrive (contacts CRM
@@ -2762,15 +2777,18 @@ async def _run_phase3(r: dict):
             return
         try:
             pd = await check_pipedrive(x.get("prenom", ""), x.get("nom_dg", ""))
-            if pd.get("email"):
-                x["email"] = pd["email"]
-                x["confiance"] = "haute"
-                x["source"] = (x.get("source", "") or "") + "+Pipedrive"
-                x["dans_pipedrive"] = "oui"
-                if pd.get("phone"):
+            if pd:
+                # Politique 09/06/2026 : on ne récupère plus l'email Pipedrive,
+                # uniquement le téléphone et le poste. Kaspr/FullEnrich
+                # (phases 4 et 5) se chargent d'aller chercher un email frais.
+                if pd.get("phone") and not x.get("phone"):
                     x["phone"] = pd["phone"]
                 if pd.get("job_title"):
-                    x["titre"] = pd["job_title"]   # le poste du CRM Pipedrive prime
+                    x["titre"] = pd["job_title"]   # le poste du CRM prime
+                x["dans_pipedrive"] = "oui"
+                src = (x.get("source", "") or "")
+                if "Pipedrive" not in src:
+                    x["source"] = (src + "+Pipedrive").lstrip("+")
         except Exception as e:
             print(f"[RUN {r['id']}] phase3 erreur: {e}")
         r["progres_traites"] = i + 1
