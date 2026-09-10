@@ -1519,20 +1519,21 @@ async def _executer_run(run_id: str):
                                      "Content-Type": "application/json"},
                             json={"name": filename, "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
                         )
-                        print(f"[NOTION] File upload create: {r1.status_code} {r1.text[:200]}")
+                        print(f"[NOTION] File upload create: {r1.status_code} {r1.text[:500]}")
                         if r1.status_code == 200:
                             upload_data = r1.json()
                             upload_url = upload_data.get("upload_url")
                             file_upload_id = upload_data.get("id")
-                            # Étape 2 : envoyer le fichier
+                            print(f"[NOTION] upload_url={upload_url} id={file_upload_id}")
+                            # Étape 2 : envoyer le fichier en multipart
                             if upload_url:
+                                files = {"file": (filename, excel, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
                                 r2 = await c.put(
                                     upload_url,
-                                    headers={"Authorization": f"Bearer {NOTION_KEY}",
-                                             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-                                    content=excel
+                                    headers={"Authorization": f"Bearer {NOTION_KEY}"},
+                                    files=files
                                 )
-                                print(f"[NOTION] File upload send: {r2.status_code}")
+                                print(f"[NOTION] File upload send: {r2.status_code} {r2.text[:200]}")
                                 if r2.status_code in (200, 204) and file_upload_id:
                                     # Étape 3 : attacher à la page Notion
                                     r3 = await c.patch(
