@@ -1,5 +1,6 @@
-import os, json, asyncio, httpx, re, smtplib, csv, io
+import os, json, asyncio, httpx, re, smtplib, csv, io, uuid, time
 from io import BytesIO
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -20,6 +21,119 @@ SMTP_HOST      = os.getenv("SMTP_HOST", "pro2.mail.ovh.net")
 SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER      = os.getenv("SMTP_USER", "")
 SMTP_PASS      = os.getenv("SMTP_PASS", "")
+NOTION_KEY     = os.getenv("NOTION_API_KEY", "")
+NOTION_DB_ID   = "0631870b-4265-4ccf-8284-d62d0633acdb"  # Enrichisseur Dirigeants — Runs
+
+# ═══════════════════════════════════════════════════════════════
+# GESTIONNAIRE DE RUNS (queue + persistance JSON + Notion)
+# ═══════════════════════════════════════════════════════════════
+RUNS_FILE   = "/tmp/runs.json"
+EXCEL_DIR   = "/tmp/runs_excel"
+MAX_WORKERS = 2   # runs simultanés max
+
+os.makedirs(EXCEL_DIR, exist_ok=True)
+
+# Semaphore pour limiter les runs simultanés
+_run_semaphore = asyncio.Semaphore(MAX_WORKERS)
+
+def _load_runs() -> dict:
+    try:
+        if os.path.exists(RUNS_FILE):
+            with open(RUNS_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_runs(runs: dict):
+    try:
+        with open(RUNS_FILE, "w") as f:
+            json.dump(runs, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[RUNS] Erreur sauvegarde JSON: {e}")
+
+def _purge_old_runs(runs: dict) -> dict:
+    """Supprime les runs terminés de plus de 24h."""
+    now = time.time()
+    return {
+        rid: r for rid, r in runs.items()
+        if r.get("statut") in ("EN_ATTENTE", "EN_COURS")
+        or now - r.get("created_at", now) < 86400
+    }
+
+async def _notion_create_run(run: dict) -> str | None:
+    """Crée une page dans la base Notion et retourne son ID."""
+    if not NOTION_KEY: return None
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                "https://api.notion.com/v1/pages",
+                headers={"Authorization": f"Bearer {NOTION_KEY}",
+                         "Notion-Version": "2022-06-28",
+                         "Content-Type": "application/json"},
+                json={
+                    "parent": {"database_id": NOTION_DB_ID},
+                    "properties": {
+                        "Nom":    {"title": [{"text": {"content": run.get("nom","")}}]},
+                        "Statut": {"select": {"name": run.get("statut","EN_ATTENTE")}},
+                        "Phases": {"rich_text": [{"text": {"content": str(run.get("phases",[]))}}]},
+                        "Run ID": {"rich_text": [{"text": {"content": run.get("id","")}}]},
+                        "Emails destinataires": {"rich_text": [{"text": {"content": ", ".join(run.get("emails_dest",[]))}}]},
+                        "date:Démarré le:start": run.get("started_at",""),
+                        "date:Démarré le:is_datetime": 1,
+                    }
+                }
+            )
+            if r.status_code == 200:
+                return r.json().get("id")
+    except Exception as e:
+        print(f"[NOTION] Erreur création run: {e}")
+    return None
+
+async def _notion_update_run(notion_page_id: str, updates: dict):
+    """Met à jour la page Notion du run."""
+    if not NOTION_KEY or not notion_page_id: return
+    props = {}
+    if "statut" in updates:
+        props["Statut"] = {"select": {"name": updates["statut"]}}
+    if "nb_societes" in updates:
+        props["Nb sociétés"] = {"number": updates["nb_societes"]}
+    if "nb_contacts" in updates:
+        props["Nb contacts"] = {"number": updates["nb_contacts"]}
+    if "nb_emails" in updates:
+        props["Nb emails"] = {"number": updates["nb_emails"]}
+    if "nb_telephones" in updates:
+        props["Nb téléphones"] = {"number": updates["nb_telephones"]}
+    if "erreur" in updates:
+        props["Erreur"] = {"rich_text": [{"text": {"content": str(updates["erreur"])[:2000]}}]}
+    if "duree_min" in updates:
+        props["Durée (min)"] = {"number": updates["duree_min"]}
+    if "termine_at" in updates:
+        props["date:Terminé le:start"] = updates["termine_at"]
+        props["date:Terminé le:is_datetime"] = 1
+    if not props: return
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            await c.patch(
+                f"https://api.notion.com/v1/pages/{notion_page_id}",
+                headers={"Authorization": f"Bearer {NOTION_KEY}",
+                         "Notion-Version": "2022-06-28",
+                         "Content-Type": "application/json"},
+                json={"properties": props}
+            )
+    except Exception as e:
+        print(f"[NOTION] Erreur update run: {e}")
+
+def _run_rang(run: dict, runs: dict) -> int:
+    """Position dans la file d'attente (1 = premier)."""
+    attente = sorted(
+        [r for r in runs.values() if r["statut"] == "EN_ATTENTE"],
+        key=lambda r: r["created_at"]
+    )
+    for i, r in enumerate(attente):
+        if r["id"] == run["id"]:
+            return i + 1
+    return 0
 
 ANCIENS_KEYWORDS = [
     "ancien", "ancienne", "ex-", "ex ", "démissionnaire",
@@ -1213,3 +1327,391 @@ Enrichisseur Dirigeants"""
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return {"ok": False, "error": str(e)}
+
+# ═══════════════════════════════════════════════════════════════
+# ROUTES RUN (orchestration côté serveur)
+# ═══════════════════════════════════════════════════════════════
+
+async def _executer_run(run_id: str):
+    """Exécute un run complet en arrière-plan."""
+    runs = _load_runs()
+    if run_id not in runs:
+        return
+    run = runs[run_id]
+    t_start = time.time()
+
+    async with _run_semaphore:
+        # Marquer EN_COURS
+        runs = _load_runs()
+        run = runs.get(run_id, run)
+        run["statut"] = "EN_COURS"
+        run["started_at"] = datetime.now(timezone.utc).isoformat()
+        run["phase_courante"] = "Démarrage…"
+        run["progres_traites"] = 0
+        runs[run_id] = run
+        _save_runs(runs)
+        await _notion_update_run(run.get("notion_id"), {"statut": "EN_COURS"})
+
+        try:
+            mode    = run.get("mode", "societes")
+            phases  = run.get("phases", [1,2,3,4,5])
+            rows_in = run.get("rows", [])       # mode societes
+            contacts_in = run.get("contacts", []) # mode contacts
+
+            resultats = []
+
+            if mode == "contacts":
+                # Mode contacts : on part des contacts existants
+                resultats = contacts_in
+                run["progres_total"] = len(contacts_in)
+                _save_runs({**_load_runs(), run_id: run})
+            else:
+                # Mode societes : process complet
+                rows_to_process = rows_in
+                run["progres_total"] = len(rows_to_process)
+                _save_runs({**_load_runs(), run_id: run})
+
+                for i, row in enumerate(rows_to_process):
+                    if _load_runs().get(run_id, {}).get("statut") == "ARRETE":
+                        break
+
+                    run["phase_courante"] = f"Phase 1 — {row.get('nom','')}"
+                    run["progres_traites"] = i
+                    _save_runs({**_load_runs(), run_id: run})
+
+                    # Phase 1 : Pappers
+                    if 1 in phases:
+                        try:
+                            async with httpx.AsyncClient(timeout=90) as c:
+                                r = await c.post(
+                                    "http://localhost:10000/enrich_one",
+                                    json=row
+                                )
+                                if r.status_code == 200:
+                                    resultats.extend(r.json().get("results", []))
+                        except Exception as e:
+                            print(f"[RUN] Phase 1 error {row.get('nom')}: {e}")
+
+                    if i < len(rows_to_process) - 1:
+                        await asyncio.sleep(8)
+
+            # Phases 2-5 via les routes existantes
+            if 2 in phases and mode != "contacts":
+                societes_uniques = list({r.get("societe","") for r in resultats})
+                run["phase_courante"] = "Phase 2 — Claude+web"
+                _save_runs({**_load_runs(), run_id: run})
+                for societe in societes_uniques:
+                    if _load_runs().get(run_id, {}).get("statut") == "ARRETE":
+                        break
+                    # Skip si dans Pipedrive
+                    if any(r.get("dans_pipedrive") for r in resultats if r.get("societe") == societe):
+                        continue
+                    row_data = next((r for r in (run.get("rows",[]) or []) if r.get("nom") == societe), {"nom": societe})
+                    # Récupérer domaine/siren depuis resultats existants
+                    existing = next((r for r in resultats if r.get("societe") == societe), {})
+                    row_data["domaine"] = row_data.get("domaine","") or existing.get("domaine","")
+                    row_data["siren"]   = row_data.get("siren","") or existing.get("siren","")
+                    try:
+                        async with httpx.AsyncClient(timeout=120) as c:
+                            r = await c.post("http://localhost:10000/enrich_claude", json=row_data)
+                            if r.status_code == 200:
+                                new_contacts = r.json().get("contacts", [])
+                                noms_existants = {f"{r['prenom']} {r['nom_dg']}".lower() for r in resultats if r.get("societe") == societe}
+                                for ct in new_contacts:
+                                    key = f"{ct.get('prenom','')} {ct.get('nom','')}".lower()
+                                    if key not in noms_existants:
+                                        resultats.append({
+                                            "societe": societe, "siren": row_data.get("siren",""),
+                                            "domaine": row_data.get("domaine",""), "org_id": row_data.get("org_id",""),
+                                            "prenom": ct.get("prenom",""), "nom_dg": ct.get("nom",""),
+                                            "titre": ct.get("titre",""), "email": ct.get("email",""),
+                                            "phone": "", "linkedin": "", "dans_pipedrive": "",
+                                            "confiance": ct.get("confiance_email","faible"), "source": "Claude+web"
+                                        })
+                    except Exception as e:
+                        print(f"[RUN] Phase 2 error {societe}: {e}")
+                    await asyncio.sleep(8)
+
+            if 3 in phases:
+                run["phase_courante"] = "Phase 3 — Pipedrive contacts"
+                _save_runs({**_load_runs(), run_id: run})
+                for ct in resultats:
+                    if ct.get("email") or ct.get("dans_pipedrive"):
+                        continue
+                    try:
+                        async with httpx.AsyncClient(timeout=15) as c:
+                            r = await c.post("http://localhost:10000/check_pipedrive",
+                                json={"prenom": ct.get("prenom",""), "nom": ct.get("nom_dg","")})
+                            if r.status_code == 200:
+                                d = r.json()
+                                if d.get("email"): ct["email"] = d["email"]; ct["confiance"] = "haute"; ct["source"] = (ct.get("source","") or "") + "+Pipedrive"; ct["dans_pipedrive"] = "oui"
+                                if d.get("phone") and not ct.get("phone"): ct["phone"] = d["phone"]
+                    except Exception: pass
+
+            if 4 in phases or 5 in phases:
+                run["phase_courante"] = "Phase 4+5 — Kaspr + Fullenrich"
+                _save_runs({**_load_runs(), run_id: run})
+                sans_email = [
+                    {**ct, "idx": i, "nom": ct.get("nom_dg","")}
+                    for i, ct in enumerate(resultats)
+                    if ct.get("nom_dg") and (not ct.get("email") or ct.get("confiance") == "faible")
+                ]
+                if sans_email:
+                    for phase_name in (["kaspr"] if 4 in phases else []) + (["fullenrich"] if 5 in phases else []):
+                        try:
+                            async with httpx.AsyncClient(timeout=300) as c:
+                                r = await c.post("http://localhost:10000/enrich_emails",
+                                    json={"contacts": sans_email, "phase": phase_name})
+                                if r.status_code == 200:
+                                    emails_found = r.json().get("emails", {})
+                                    for idx_str, val in emails_found.items():
+                                        idx = int(idx_str)
+                                        if 0 <= idx < len(resultats):
+                                            email = val.get("email","") if isinstance(val, dict) else val
+                                            phone = val.get("phone","") if isinstance(val, dict) else ""
+                                            linkedin = val.get("linkedin","") if isinstance(val, dict) else ""
+                                            src = val.get("source","") if isinstance(val, dict) else ""
+                                            if phone and not resultats[idx].get("phone"): resultats[idx]["phone"] = phone
+                                            if linkedin and not resultats[idx].get("linkedin"): resultats[idx]["linkedin"] = linkedin
+                                            if email and "@" in email:
+                                                resultats[idx]["email"] = email
+                                                resultats[idx]["confiance"] = "haute"
+                                                resultats[idx]["source"] = (resultats[idx].get("source","") or "") + src
+                        except Exception as e:
+                            print(f"[RUN] Phase {phase_name} error: {e}")
+
+            # Sauvegarder les résultats + Excel
+            runs = _load_runs()
+            run  = runs.get(run_id, run)
+            run["resultats"]      = resultats
+            run["nb_contacts"]    = len(resultats)
+            run["nb_emails"]      = len([r for r in resultats if r.get("email")])
+            run["nb_telephones"]  = len([r for r in resultats if r.get("phone")])
+            run["nb_societes"]    = len({r.get("societe","") for r in resultats})
+            run["statut"]         = "TERMINE"
+            run["progres_traites"]= run.get("progres_total", len(resultats))
+            t_end = time.time()
+            run["termine_at"]     = datetime.now(timezone.utc).isoformat()
+            run["duree_min"]      = round((t_end - t_start) / 60, 1)
+            run["phase_courante"] = "Terminé ✅"
+            runs[run_id] = run
+            _save_runs(runs)
+
+            # Générer et sauvegarder l'Excel
+            try:
+                excel = generer_excel(resultats)
+                excel_path = f"{EXCEL_DIR}/{run_id}.xlsx"
+                with open(excel_path, "wb") as f:
+                    f.write(excel)
+            except Exception as e:
+                print(f"[RUN] Excel error: {e}")
+
+            # Envoyer par email si destinataires
+            emails_dest = run.get("emails_dest", [])
+            if emails_dest and resultats:
+                try:
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    filename = f"enrichissement_{run.get('nom','run')}_{today}.xlsx"
+                    excel = generer_excel(resultats)
+                    msg = MIMEMultipart()
+                    msg['From'] = SMTP_USER
+                    msg['To'] = ", ".join(emails_dest)
+                    msg['Subject'] = f"Enrichissement dirigeants — {len(resultats)} contacts"
+                    body = f"Votre enrichissement est terminé.\n{len(resultats)} contacts · {run['nb_emails']} emails · {run['nb_telephones']} tél.\n\nEnrichisseur Dirigeants"
+                    msg.attach(MIMEText(body, 'plain', 'utf-8'))
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(excel)
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    msg.attach(part)
+                    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+                        server.starttls()
+                        server.login(SMTP_USER, SMTP_PASS)
+                        server.sendmail(SMTP_USER, emails_dest, msg.as_string())
+                    print(f"[RUN] Excel envoyé à {emails_dest}")
+                except Exception as e:
+                    print(f"[RUN] Email error: {e}")
+
+            # Mettre à jour Notion
+            await _notion_update_run(run.get("notion_id"), {
+                "statut": "TERMINE",
+                "nb_societes": run["nb_societes"],
+                "nb_contacts": run["nb_contacts"],
+                "nb_emails": run["nb_emails"],
+                "nb_telephones": run["nb_telephones"],
+                "duree_min": run["duree_min"],
+                "termine_at": run["termine_at"],
+            })
+
+        except Exception as e:
+            print(f"[RUN] Erreur run {run_id}: {e}")
+            runs = _load_runs()
+            run  = runs.get(run_id, run)
+            run["statut"]  = "ERREUR"
+            run["erreur"]  = str(e)
+            runs[run_id]   = run
+            _save_runs(runs)
+            await _notion_update_run(run.get("notion_id"), {"statut": "ERREUR", "erreur": str(e)})
+
+
+@app.post("/run/create")
+async def run_create(request: Request):
+    data = await request.json()
+    run_id = str(uuid.uuid4())
+    now    = time.time()
+
+    run = {
+        "id":              run_id,
+        "nom":             data.get("nom", "run"),
+        "statut":          "EN_ATTENTE",
+        "mode":            data.get("mode", "societes"),
+        "phases":          data.get("phases", [1,2,3,4,5]),
+        "emails_dest":     data.get("emails_dest", []),
+        "rows":            data.get("rows", []),
+        "contacts":        data.get("contacts", []),
+        "resultats":       [],
+        "nb_societes":     0,
+        "nb_contacts":     0,
+        "nb_emails":       0,
+        "nb_telephones":   0,
+        "progres_traites": 0,
+        "progres_total":   len(data.get("rows", data.get("contacts", []))),
+        "phase_courante":  "En attente…",
+        "created_at":      now,
+        "started_at":      None,
+        "termine_at":      None,
+        "duree_min":       None,
+        "erreur":          None,
+        "notion_id":       None,
+        "rang":            0,
+    }
+
+    runs = _load_runs()
+    runs = _purge_old_runs(runs)
+    runs[run_id] = run
+    _save_runs(runs)
+
+    # Calcul du rang
+    run["rang"] = _run_rang(run, runs)
+    runs[run_id] = run
+    _save_runs(runs)
+
+    # Créer la page Notion
+    notion_id = await _notion_create_run(run)
+    if notion_id:
+        run["notion_id"] = notion_id
+        runs[run_id] = run
+        _save_runs(runs)
+
+    # Lancer en arrière-plan
+    asyncio.create_task(_executer_run(run_id))
+
+    return {"ok": True, "run_id": run_id, "rang": run["rang"]}
+
+
+@app.get("/run/list")
+async def run_list():
+    runs = _load_runs()
+    runs = _purge_old_runs(runs)
+    result = []
+    for run in sorted(runs.values(), key=lambda r: -r.get("created_at", 0)):
+        result.append({
+            "id":              run["id"],
+            "nom":             run["nom"],
+            "statut":          run["statut"],
+            "phases":          run.get("phases", []),
+            "phase_courante":  run.get("phase_courante",""),
+            "progres_traites": run.get("progres_traites", 0),
+            "progres_total":   run.get("progres_total", 0),
+            "nb_contacts":     run.get("nb_contacts", 0),
+            "nb_emails":       run.get("nb_emails", 0),
+            "nb_telephones":   run.get("nb_telephones", 0),
+            "erreur":          run.get("erreur",""),
+            "rang":            _run_rang(run, runs),
+        })
+    return {"runs": result}
+
+
+@app.get("/run/{run_id}")
+async def run_detail(run_id: str):
+    runs = _load_runs()
+    run  = runs.get(run_id)
+    if not run:
+        return {"error": "Run introuvable"}, 404
+    return {
+        "id":        run["id"],
+        "nom":       run["nom"],
+        "statut":    run["statut"],
+        "resultats": run.get("resultats", []),
+    }
+
+
+@app.post("/run/{run_id}/stop")
+async def run_stop(run_id: str):
+    runs = _load_runs()
+    if run_id in runs:
+        runs[run_id]["statut"] = "ARRETE"
+        _save_runs(runs)
+        await _notion_update_run(runs[run_id].get("notion_id"), {"statut": "ARRETE"})
+    return {"ok": True}
+
+
+@app.get("/run/{run_id}/excel")
+async def run_excel(run_id: str):
+    excel_path = f"{EXCEL_DIR}/{run_id}.xlsx"
+    if not os.path.exists(excel_path):
+        # Régénérer depuis les résultats en mémoire
+        runs = _load_runs()
+        run  = runs.get(run_id)
+        if not run or not run.get("resultats"):
+            return StreamingResponse(BytesIO(b""), status_code=404)
+        excel = generer_excel(run["resultats"])
+        return StreamingResponse(
+            BytesIO(excel),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=enrichissement_{run_id[:8]}.xlsx"}
+        )
+    return FileResponse(
+        excel_path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"enrichissement_{run_id[:8]}.xlsx"
+    )
+
+
+@app.post("/run/{run_id}/continue")
+async def run_continue(run_id: str, request: Request):
+    data  = await request.json()
+    phases = data.get("phases", [])
+    runs  = _load_runs()
+    run   = runs.get(run_id)
+    if not run:
+        return {"ok": False, "error": "Run introuvable"}
+    # Créer un nouveau run qui repart des résultats existants
+    new_id = str(uuid.uuid4())
+    new_run = {**run,
+        "id":              new_id,
+        "statut":          "EN_ATTENTE",
+        "phases":          phases,
+        "progres_traites": 0,
+        "progres_total":   run.get("nb_societes", 0),
+        "phase_courante":  "En attente…",
+        "created_at":      time.time(),
+        "started_at":      None,
+        "termine_at":      None,
+        "erreur":          None,
+        "notion_id":       None,
+        "rang":            0,
+        # Repart des résultats existants comme contacts
+        "mode":            "contacts",
+        "contacts":        run.get("resultats", []),
+    }
+    runs = _purge_old_runs(runs)
+    runs[new_id] = new_run
+    _save_runs(runs)
+    notion_id = await _notion_create_run(new_run)
+    if notion_id:
+        new_run["notion_id"] = notion_id
+        runs[new_id] = new_run
+        _save_runs(runs)
+    asyncio.create_task(_executer_run(new_id))
+    return {"ok": True, "run_id": new_id, "rang": 1}
