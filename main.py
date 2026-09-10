@@ -72,8 +72,7 @@ async def _notion_create_run(run: dict) -> str | None:
             "Phases": {"rich_text": [{"text": {"content": str(run.get("phases",[]))}}]},
             "Run ID": {"rich_text": [{"text": {"content": str(run.get("id",""))}}]},
             "Emails destinataires": {"rich_text": [{"text": {"content": ", ".join(run.get("emails_dest",[]))}}]},
-            "date:Démarré le:start": now_iso,
-            "date:Démarré le:is_datetime": 0,
+            "Démarré le": {"date": {"start": now_iso}},
         }
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
@@ -109,8 +108,7 @@ async def _notion_update_run(notion_page_id: str, updates: dict):
     if "duree_min" in updates:
         props["Durée (min)"] = {"number": updates["duree_min"]}
     if "termine_at" in updates:
-        props["date:Terminé le:start"] = updates["termine_at"]
-        props["date:Terminé le:is_datetime"] = 1
+        props["Terminé le"] = {"date": {"start": updates["termine_at"][:10]}}
     if not props: return
     try:
         async with httpx.AsyncClient(timeout=10) as c:
