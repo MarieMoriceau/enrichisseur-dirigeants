@@ -302,6 +302,7 @@ async def health():
         "fullenrich_key": bool(FULLENRICH_KEY),
         "pipedrive_key": bool(PIPEDRIVE_KEY),
         "kaspr_key": bool(KASPR_KEY),
+        "notion_key": bool(NOTION_KEY),
     }
 
 async def check_pipedrive(prenom: str, nom: str) -> dict:
