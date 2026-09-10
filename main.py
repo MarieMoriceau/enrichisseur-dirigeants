@@ -1534,7 +1534,7 @@ async def _executer_run(run_id: str):
                                 )
                                 print(f"[NOTION] File upload send: {r2.status_code} {r2.text[:200]}")
                                 if r2.status_code in (200, 204) and file_upload_id:
-                                    # Étape 3 : attacher à la page Notion
+                                    # Étape 3 : attacher le file_upload à la colonne Files
                                     r3 = await c.patch(
                                         f"https://api.notion.com/v1/pages/{run['notion_id']}",
                                         headers={"Authorization": f"Bearer {NOTION_KEY}",
