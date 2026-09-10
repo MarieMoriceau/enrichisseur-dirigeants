@@ -178,6 +178,8 @@ async def get_template():
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=template_enrichisseur.xlsx"}
     )
+
+@app.get("/health")
 async def health():
     return {
         "ok": True,
