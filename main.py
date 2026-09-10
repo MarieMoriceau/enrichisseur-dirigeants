@@ -84,6 +84,7 @@ async def _notion_create_run(run: dict) -> str | None:
                     }
                 }
             )
+            print(f"[NOTION] Création run: status={r.status_code} body={r.text[:200]}")
             if r.status_code == 200:
                 return r.json().get("id")
     except Exception as e:
