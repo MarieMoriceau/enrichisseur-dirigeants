@@ -65,26 +65,25 @@ async def _notion_create_run(run: dict) -> str | None:
     """Crée une page dans la base Notion et retourne son ID."""
     if not NOTION_KEY: return None
     try:
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        props = {
+            "Nom":    {"title": [{"text": {"content": str(run.get("nom",""))[:100]}}]},
+            "Statut": {"select": {"name": run.get("statut","EN_ATTENTE")}},
+            "Phases": {"rich_text": [{"text": {"content": str(run.get("phases",[]))}}]},
+            "Run ID": {"rich_text": [{"text": {"content": str(run.get("id",""))}}]},
+            "Emails destinataires": {"rich_text": [{"text": {"content": ", ".join(run.get("emails_dest",[]))}}]},
+            "date:Démarré le:start": now_iso,
+            "date:Démarré le:is_datetime": 0,
+        }
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
                 "https://api.notion.com/v1/pages",
                 headers={"Authorization": f"Bearer {NOTION_KEY}",
                          "Notion-Version": "2022-06-28",
                          "Content-Type": "application/json"},
-                json={
-                    "parent": {"database_id": NOTION_DB_ID},
-                    "properties": {
-                        "Nom":    {"title": [{"text": {"content": run.get("nom","")}}]},
-                        "Statut": {"select": {"name": run.get("statut","EN_ATTENTE")}},
-                        "Phases": {"rich_text": [{"text": {"content": str(run.get("phases",[]))}}]},
-                        "Run ID": {"rich_text": [{"text": {"content": run.get("id","")}}]},
-                        "Emails destinataires": {"rich_text": [{"text": {"content": ", ".join(run.get("emails_dest",[]))}}]},
-                        "date:Démarré le:start": run.get("started_at",""),
-                        "date:Démarré le:is_datetime": 1,
-                    }
-                }
+                json={"parent": {"database_id": NOTION_DB_ID}, "properties": props}
             )
-            print(f"[NOTION] Création run: status={r.status_code} body={r.text[:200]}")
+            print(f"[NOTION] Création run: status={r.status_code} body={r.text[:300]}")
             if r.status_code == 200:
                 return r.json().get("id")
     except Exception as e:
