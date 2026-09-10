@@ -1519,18 +1519,17 @@ async def _executer_run(run_id: str):
                                      "Content-Type": "application/json"},
                             json={"name": filename, "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
                         )
-                        print(f"[NOTION] File upload create: {r1.status_code} {r1.text[:500]}")
                         if r1.status_code == 200:
                             upload_data = r1.json()
-                            upload_url = upload_data.get("upload_url")
                             file_upload_id = upload_data.get("id")
-                            print(f"[NOTION] upload_url={upload_url} id={file_upload_id}")
-                            # Étape 2 : envoyer le fichier en multipart
-                            if upload_url:
+                            print(f"[NOTION] file_upload_id={file_upload_id}")
+                            # Étape 2 : envoyer le fichier via POST /send
+                            if file_upload_id:
                                 files = {"file": (filename, excel, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
-                                r2 = await c.put(
-                                    upload_url,
-                                    headers={"Authorization": f"Bearer {NOTION_KEY}"},
+                                r2 = await c.post(
+                                    f"https://api.notion.com/v1/file_uploads/{file_upload_id}/send",
+                                    headers={"Authorization": f"Bearer {NOTION_KEY}",
+                                             "Notion-Version": "2022-06-28"},
                                     files=files
                                 )
                                 print(f"[NOTION] File upload send: {r2.status_code} {r2.text[:200]}")
