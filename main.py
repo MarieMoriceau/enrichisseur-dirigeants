@@ -1716,3 +1716,14 @@ async def run_continue(run_id: str, request: Request):
         _save_runs(runs)
     asyncio.create_task(_executer_run(new_id))
     return {"ok": True, "run_id": new_id, "rang": 1}
+
+
+@app.post("/run/reset")
+async def run_reset():
+    """Vide tous les runs."""
+    _save_runs({})
+    import shutil
+    if os.path.exists(EXCEL_DIR):
+        shutil.rmtree(EXCEL_DIR)
+        os.makedirs(EXCEL_DIR, exist_ok=True)
+    return {"ok": True, "message": "Tous les runs supprimés"}
