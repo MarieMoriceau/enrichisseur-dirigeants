@@ -1496,27 +1496,77 @@ async def _executer_run(run_id: str):
             runs[run_id] = run
             _save_runs(runs)
 
-            # Générer et sauvegarder l'Excel
+            # Générer et sauvegarder l'Excel + upload Notion
+            excel = None
+            notion_file_url = None
             try:
                 excel = generer_excel(resultats)
                 excel_path = f"{EXCEL_DIR}/{run_id}.xlsx"
                 with open(excel_path, "wb") as f:
                     f.write(excel)
+                print(f"[RUN] Excel généré : {len(excel)} bytes")
+
+                # Upload vers Notion en 2 étapes
+                if NOTION_KEY and run.get("notion_id"):
+                    today = datetime.now().strftime("%Y-%m-%d")
+                    filename = f"enrichissement_{run.get('nom','run')}_{today}.xlsx"
+                    async with httpx.AsyncClient(timeout=30) as c:
+                        # Étape 1 : créer l'upload
+                        r1 = await c.post(
+                            "https://api.notion.com/v1/file_uploads",
+                            headers={"Authorization": f"Bearer {NOTION_KEY}",
+                                     "Notion-Version": "2022-06-28",
+                                     "Content-Type": "application/json"},
+                            json={"name": filename, "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+                        )
+                        print(f"[NOTION] File upload create: {r1.status_code} {r1.text[:200]}")
+                        if r1.status_code == 200:
+                            upload_data = r1.json()
+                            upload_url = upload_data.get("upload_url")
+                            file_upload_id = upload_data.get("id")
+                            # Étape 2 : envoyer le fichier
+                            if upload_url:
+                                r2 = await c.put(
+                                    upload_url,
+                                    headers={"Authorization": f"Bearer {NOTION_KEY}",
+                                             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                                    content=excel
+                                )
+                                print(f"[NOTION] File upload send: {r2.status_code}")
+                                if r2.status_code in (200, 204) and file_upload_id:
+                                    # Étape 3 : attacher à la page Notion
+                                    r3 = await c.patch(
+                                        f"https://api.notion.com/v1/pages/{run['notion_id']}",
+                                        headers={"Authorization": f"Bearer {NOTION_KEY}",
+                                                 "Notion-Version": "2022-06-28",
+                                                 "Content-Type": "application/json"},
+                                        json={"properties": {
+                                            "Fichier Excel": {"files": [{
+                                                "name": filename,
+                                                "type": "file_upload",
+                                                "file_upload": {"id": file_upload_id}
+                                            }]}
+                                        }}
+                                    )
+                                    print(f"[NOTION] File attach: {r3.status_code} {r3.text[:200]}")
+                                    if r3.status_code == 200:
+                                        notion_file_url = f"https://www.notion.so/{run['notion_id'].replace('-','')}"
+                                        print(f"[NOTION] ✅ Excel attaché à la page Notion")
             except Exception as e:
-                print(f"[RUN] Excel error: {e}")
+                print(f"[RUN] Excel/Notion error: {e}")
 
             # Envoyer par email si destinataires
             emails_dest = run.get("emails_dest", [])
-            if emails_dest and resultats:
+            if emails_dest and resultats and excel:
                 try:
                     today = datetime.now().strftime("%Y-%m-%d")
                     filename = f"enrichissement_{run.get('nom','run')}_{today}.xlsx"
-                    excel = generer_excel(resultats)
                     msg = MIMEMultipart()
                     msg['From'] = SMTP_USER
                     msg['To'] = ", ".join(emails_dest)
                     msg['Subject'] = f"Enrichissement dirigeants — {len(resultats)} contacts"
-                    body = f"Votre enrichissement est terminé.\n{len(resultats)} contacts · {run['nb_emails']} emails · {run['nb_telephones']} tél.\n\nEnrichisseur Dirigeants"
+                    lien = f"\n\nFichier aussi disponible sur Notion : {notion_file_url}" if notion_file_url else ""
+                    body = f"Votre enrichissement est terminé.\n{len(resultats)} contacts · {run['nb_emails']} emails · {run['nb_telephones']} tél.{lien}\n\nEnrichisseur Dirigeants"
                     msg.attach(MIMEText(body, 'plain', 'utf-8'))
                     part = MIMEBase('application', 'octet-stream')
                     part.set_payload(excel)
@@ -1540,6 +1590,7 @@ async def _executer_run(run_id: str):
                 "nb_telephones": run["nb_telephones"],
                 "duree_min": run["duree_min"],
                 "termine_at": run["termine_at"],
+                "fichier_excel": f"https://enrichisseur-dirigeants.onrender.com/run/{run_id}/excel",
             })
 
         except Exception as e:
