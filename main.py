@@ -1402,8 +1402,9 @@ async def _executer_run(run_id: str):
                 for societe in societes_uniques:
                     if _load_runs().get(run_id, {}).get("statut") == "ARRETE":
                         break
-                    # Skip si dans Pipedrive
-                    if any(r.get("dans_pipedrive") for r in resultats if r.get("societe") == societe):
+                    # Skip si TOUS les contacts ont déjà un email
+                    contacts_societe = [r for r in resultats if r.get("societe") == societe]
+                    if contacts_societe and all(r.get("email") for r in contacts_societe):
                         continue
                     row_data = next((r for r in (run.get("rows",[]) or []) if r.get("nom") == societe), {"nom": societe})
                     # Récupérer domaine/siren depuis resultats existants
