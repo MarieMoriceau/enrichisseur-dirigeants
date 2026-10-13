@@ -385,7 +385,8 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                     if not r or not rl:
                         continue
                     r.setdefault("dirigeants", []).append({
-                        "prenom": l.get("firstName", ""), "nom": l.get("lastName", ""), "nom_complet": l.get("fullName", ""),
+                        "prenom": (l.get("firstName") or "").strip(), "nom": (l.get("lastName") or "").strip(),
+                        "nom_complet": (l.get("fullName") or "").strip(),
                         "fonction": l.get("title", ""), "role": rl, "lieu": l.get("location", ""),
                         "idf": bool(RE_IDF.search(l.get("location", "") or "")),
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),

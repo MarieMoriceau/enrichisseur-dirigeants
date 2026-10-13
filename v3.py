@@ -193,11 +193,18 @@ async def chercher_crm(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
             cands = meme_cp or cands
         if not cands:
             return {}
-        org = cands[0]
-        d = (await api.get(f"https://api.pipedrive.com/v1/organizations/{org['id']}",
-                           params={"api_token": PIPEDRIVE_KEY})).json().get("data") or {}
-        siren = re.sub(r"\D", "", str(d.get(champs.get("siren", ""), "") or ""))[:9]
-        return {"id": str(org["id"]), "nom_crm": d.get("name", ""), "siren": siren if luhn_ok(siren) else "",
+        # doublons : on préfère la fiche qui a un SIREN (puis un site)
+        choix = None
+        for org in cands[:3]:
+            d = (await api.get(f"https://api.pipedrive.com/v1/organizations/{org['id']}",
+                               params={"api_token": PIPEDRIVE_KEY})).json().get("data") or {}
+            sir = re.sub(r"\D", "", str(d.get(champs.get("siren", ""), "") or ""))[:9]
+            note = (luhn_ok(sir), bool(d.get(champs.get("site", ""))))
+            if choix is None or note > choix[0]:
+                choix = (note, org, d, sir)
+        _, org, d, siren = choix
+        return {"id": str(org["id"]), "autres_fiches": ", ".join(str(c["id"]) for c in cands if c["id"] != org["id"]),
+                "nom_crm": d.get("name", ""), "siren": siren if luhn_ok(siren) else "",
                 "site": str(d.get(champs.get("site", ""), "") or ""), "adresse": d.get("address") or "",
                 "doublons": len(cands)}
     except Exception as e:
@@ -496,7 +503,7 @@ async def traiter(job_id: str, orgs: list):
                 if not o["siren_crm"]:
                     crm = await chercher_crm(api, o["nom"], o.get("cp", ""))
                     if crm:
-                        o["dans_crm"] = "Pipedrive" + (f" ({crm['doublons']} fiches)" if crm["doublons"] > 1 else "")
+                        o["dans_crm"] = "Pipedrive" + (f" ({crm['doublons']} fiches, doublons : {crm['autres_fiches']})" if crm["doublons"] > 1 else "")
                         o["id"] = o["id"] or crm["id"]
                         o["siren_crm"] = crm["siren"]
                         o["site_crm"] = o["site_crm"] or crm["site"]
