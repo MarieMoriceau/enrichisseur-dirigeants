@@ -18,6 +18,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
+import v3_linkedin as LI
+
 router = APIRouter()
 JOBS: dict = {}
 
@@ -569,6 +571,13 @@ async def traiter(job_id: str, orgs: list):
                 job["resultats"].append(row)
                 job["fait"] += 1
         await asyncio.gather(*(un(o) for o in orgs))
+    if job.get("linkedin") and not job["stop"]:
+        try:
+            await LI.etapes_linkedin(job, ressemblance, domaine)
+        except Exception as e:
+            job.setdefault("journal", []).append(f"étapes LinkedIn interrompues : {e}")
+            print(f"[V3 LINKEDIN] {e}")
+    job["phase"] = ""
     job["fin"] = time.time()
     job["etat"] = "terminé" if not job["stop"] else "arrêté"
 
@@ -604,7 +613,7 @@ def excel(job) -> bytes:
     ws = wb.active
     ws.title = "Lisez-moi"
     lignes = [
-        f"ENRICHISSEUR V3 · étapes 1 et 2 · {auj}", "",
+        f"ENRICHISSEUR V3 · {'étapes 0 à 5' if job.get('linkedin') else 'étapes 0 à 2'} · {auj}", "",
         f"{n} organisations traitées",
         f"Déjà dans le CRM avec un SIREN (adresse seule) : {k(lambda r: r.get('mode', '').startswith('adresse'))}",
         f"Site joignable : {k(lambda r: r['site_joignable'] == 'oui')}",
@@ -614,7 +623,14 @@ def excel(job) -> bytes:
         f"Page LinkedIn trouvée sur le site : {k(lambda r: r['linkedin_site'])}",
         f"SIREN du CRM à remplacer : {k(lambda r: r['action'].startswith('🔄'))}",
         f"Radiées candidates à la suppression : {k(lambda r: r['statut'] == 'Radiée')}",
-        f"Radiées à vérifier (site encore en ligne) : {k(lambda r: r['statut'] == 'Radiée, à vérifier')}", "",
+        f"Radiées à vérifier (site encore en ligne) : {k(lambda r: r['statut'] == 'Radiée, à vérifier')}",
+    ] + ([
+        f"Effectif LinkedIn trouvé : {k(lambda r: r.get('effectif_linkedin') not in (None, ''))}",
+        f"Adresse confirmée par LinkedIn : {k(lambda r: r.get('confiance_adresse') == 'haute')}",
+        f"Adresse différente sur LinkedIn (à valider) : {k(lambda r: r.get('confiance_adresse') == 'moyenne')}",
+        f"Sociétés quasi inactives (≤ 7 salariés LinkedIn) : {k(lambda r: str(r.get('statut_activite', '')).startswith('Quasi'))}",
+        f"Dirigeants trouvés : {sum(len(r.get('dirigeants', [])) for r in res)} · avec e-mail : {sum(1 for r in res for d in r.get('dirigeants', []) if d['email'])}",
+    ] if job.get("linkedin") else []) + ["",
         "ONGLETS",
         "• Résultats : tout le détail, ligne par ligne",
         "• Import HubSpot : uniquement les sociétés actives de confiance haute (clé = nom de domaine)",
@@ -629,6 +645,10 @@ def excel(job) -> bytes:
         "• SIREN trouvé seulement par le nom dans SIRENE (site introuvable) : confiance moyenne, jamais dans l'onglet Import HubSpot.",
         "• L'adresse INSEE est celle du SIÈGE LÉGAL (souvent une domiciliation) : elle n'est PAS proposée comme adresse des bureaux.",
         "• « Suppressions » = SIREN fermé + site mort. Le contrôle LinkedIn (3e signal) viendra à l'étape suivante : ne rien supprimer avant.",
+        "• LinkedIn : la page vient du lien du site officiel ; sinon du Company URL Finder, vérifiée par le site ou le nom.",
+        "  Adresse : confirmée si LinkedIn = CRM ; nouvelle adresse LinkedIn = à valider ; siège à l'étranger = on garde le CRM.",
+        "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
+        "  Mode « adresse seule » : pas de recherche de dirigeants.",
         "• Rien n'est écrit dans Pipedrive ni HubSpot.",
     ]
     for l in lignes:
@@ -643,13 +663,46 @@ def excel(job) -> bytes:
             ("SIREN par le nom (SIRENE)", "siren_nom"), ("Raison sociale INSEE", "raison_sociale"), ("Date fermeture", "date_fermeture"),
             ("Siège légal INSEE", "siege_insee"), ("LinkedIn (site)", "linkedin_site"),
             ("Statut proposé", "statut"), ("Action", "action"), ("Confiance", "confiance"), ("Note", "note_site")]
+    if job.get("linkedin"):
+        cols += [("Page LinkedIn retenue", "linkedin"), ("Trouvée via", "source_linkedin"), ("Contrôle LinkedIn", "controle_linkedin"),
+                 ("Adresse CRM", "adresse_crm"), ("Adresse LinkedIn", "adresse_linkedin"), ("Adresse proposée", "adresse_proposee"),
+                 ("Action adresse", "action_adresse"), ("Confiance adresse", "confiance_adresse"),
+                 ("Effectif LinkedIn", "effectif_linkedin"), ("Tranche déclarée", "tranche_linkedin"), ("Statut activité", "statut_activite")]
     feuille(wb, "Résultats", [c for c, _ in cols], [[r.get(k_, "") for _, k_ in cols] for r in res])
 
     hub = [r for r in res if r["statut"] == "Active" and r["confiance"] == "haute" and r["domaine"]]
-    feuille(wb, "Import HubSpot",
-            ["Company Domain Name", "Name", "SIREN", "LinkedIn Company Page", "STATUT ACTIVITÉ", "Raison sociale", "ID Pipedrive", "Date relevé"],
-            [[r["domaine"], r["nom"], r["siren_site"] or r["siren_crm"] or r["siren_nom"], r["linkedin_site"], "Active",
-              r["raison_sociale"], r["id"], auj] for r in hub])
+    ent = ["Company Domain Name", "Name", "SIREN", "LinkedIn Company Page", "STATUT ACTIVITÉ", "Raison sociale", "ID Pipedrive", "Date relevé"]
+    if job.get("linkedin"):
+        ent += ["Street Address", "Postal Code", "City", "EFFECTIF LINKEDIN", "DATE EFFECTIF"]
+
+    def ligne_hub(r):
+        l = [r["domaine"], r["nom"], r["siren_site"] or r["siren_crm"] or r["siren_nom"], r.get("linkedin") or r["linkedin_site"],
+             r.get("statut_activite") or "Active", r["raison_sociale"], r["id"], auj]
+        if job.get("linkedin"):
+            rue = cp = ville = ""
+            if r.get("confiance_adresse") == "haute" and r.get("adresse_proposee"):
+                a = r["adresse_proposee"]
+                m = re.search(r"^(.*?)[,\s]+(\d{5})[,\s]+([^,]+)", a)
+                if m:
+                    rue, cp, ville = m.group(1).strip(" ,"), m.group(2), m.group(3).replace(", FR", "").replace("France", "").strip(" ,")
+            eff = r.get("effectif_linkedin", "")
+            l += [rue, cp, ville, eff, auj if eff != "" else ""]
+        return l
+    feuille(wb, "Import HubSpot", ent, [ligne_hub(r) for r in hub])
+    if job.get("linkedin"):
+        adr = [r for r in res if r.get("confiance_adresse") == "moyenne"]
+        feuille(wb, "Adresses à valider", ["ID Pipedrive", "Société", "Adresse CRM", "Adresse LinkedIn", "Action", "Effectif LinkedIn", "Valider ? (oui/non)"],
+                [[r["id"], r["nom"], r.get("adresse_crm", ""), r.get("adresse_linkedin", ""), r.get("action_adresse", ""),
+                  r.get("effectif_linkedin", ""), ""] for r in adr])
+        dir_ = [(r, d) for r in res for d in sorted(r.get("dirigeants", []), key=lambda d: d["role"])]
+        feuille(wb, "Dirigeants", ["ID Pipedrive", "Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "Île-de-France",
+                                   "LinkedIn", "E-mail (Kaspr)"],
+                [[r["id"], r["nom"], r["domaine"], d["prenom"], d["nom"], d["fonction"], d["role"], d["lieu"],
+                  "oui" if d["idf"] else "non", d["linkedin"], d["email"]] for r, d in dir_])
+        contacts = [(r, d) for r, d in dir_ if d["email"] and r["domaine"]]
+        feuille(wb, "Import HubSpot contacts", ["First Name", "Last Name", "Email", "Job Title", "LinkedIn URL",
+                                               "Company Domain Name", "Rôle", "Date relevé"],
+                [[d["prenom"], d["nom"], d["email"], d["fonction"], d["linkedin"], r["domaine"], d["role"], auj] for r, d in contacts])
     sup = [r for r in res if r["statut"] == "Radiée"]
     feuille(wb, "Suppressions", ["ID Pipedrive", "Société", "Domaine", "SIREN", "Raison sociale INSEE", "Date fermeture", "Site joignable", "Supprimer ? (oui/non)"],
             [[r["id"], r["nom"], r["domaine"], r["siren_site"] or r["siren_crm"], r["raison_sociale"], r["date_fermeture"], r["site_joignable"], ""] for r in sup])
@@ -663,7 +716,8 @@ def excel(job) -> bytes:
 
 # ───────────────────────── routes ─────────────────────────
 @router.post("/v3/run")
-async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50)):
+async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
+              linkedin: str = Form("")):
     if fichier is not None and fichier.filename:
         orgs = lire_fichier(fichier.filename, await fichier.read())
     else:
@@ -672,8 +726,12 @@ async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), li
         return JSONResponse({"erreur": "Aucune société lue : déposez un fichier avec une colonne de noms, ou collez une liste."}, 400)
     if limite and limite > 0:
         orgs = orgs[:limite]
+    avec_li = linkedin in ("on", "1", "true") and LI.pb_configure()
+    if avec_li and len(orgs) > LI.MAX_LINKEDIN:
+        return JSONResponse({"erreur": f"Avec les étapes LinkedIn, {LI.MAX_LINKEDIN} sociétés maximum par lancement "
+                                       f"(quota LinkedIn). Mettez {LI.MAX_LINKEDIN} dans « Lignes à traiter »."}, 400)
     jid = uuid.uuid4().hex[:8]
-    JOBS[jid] = {"total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours", "stop": False,
+    JOBS[jid] = {"id": jid, "linkedin": avec_li, "phase": "Sites web et SIREN…", "journal": [],"total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours", "stop": False,
                  "debut": time.time(), "fin": None}
     asyncio.create_task(traiter(jid, orgs))
     return {"job": jid, "total": len(orgs)}
@@ -685,10 +743,20 @@ async def status(jid: str):
     if not j:
         return JSONResponse({"erreur": "job inconnu (le service a peut-être redémarré)"}, 404)
     res = j["resultats"]
-    return {"etat": j["etat"], "total": j["total"], "fait": j["fait"],
+    return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
+            "journal": j.get("journal", [])[-5:], "linkedin": j.get("linkedin", False),
+            "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
+            "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
+            "emails": sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email")),
             "siren": sum(1 for r in res if r["siren_site"] or r["siren_crm"] or r["siren_nom"]), "linkedin": sum(1 for r in res if r["linkedin_site"]),
             "radiees": sum(1 for r in res if r["statut"].startswith("Radiée")),
             "secondes": int((j["fin"] or time.time()) - j["debut"])}
+
+
+@router.get("/v3/config")
+async def config():
+    return {"linkedin": LI.pb_configure(), "url_finder": bool(LI.PB_URL_FINDER), "salesnav": bool(LI.PB_SALESNAV),
+            "kaspr": bool(LI.KASPR_KEY), "max": LI.MAX_LINKEDIN}
 
 
 @router.post("/v3/stop/{jid}")

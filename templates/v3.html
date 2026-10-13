@@ -49,6 +49,10 @@ label{display:block;font-weight:500;font-size:14px;margin:0 0 6px}
 .drop b{color:var(--ink);font-weight:500}
 .drop input{display:none}
 .row{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px}
+.check{display:flex;gap:10px;align-items:flex-start;margin-top:14px;font-weight:400;font-size:14px;cursor:pointer}
+.check input{margin-top:3px;accent-color:var(--violet)}
+.check small{display:block;color:var(--muted);font-size:12.5px}
+.journal{font-size:12.5px;color:var(--muted);margin-top:10px;font-family:ui-monospace,Menlo,monospace;white-space:pre-line}
 .or{color:var(--muted);font-size:13px;text-align:center;margin:12px 0 6px}
 textarea{font:inherit;width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);resize:vertical}
 input[type=number]{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:120px}
@@ -106,6 +110,9 @@ footer a{color:var(--tag-ink)}
         </label>
         <div class="or">ou collez une liste de sociétés, une par ligne</div>
         <textarea id="liste" name="liste" rows="4" placeholder="Poiscaille&#10;Easy Partner&#10;Je Rêve d'une Maison"></textarea>
+        <label class="check" id="liBox"><input type="checkbox" id="linkedin" name="linkedin" checked>
+          <span>Étapes LinkedIn : adresse des bureaux, effectif réel, dirigeants et e-mails
+          <small id="liInfo">vérification de la configuration…</small></span></label>
         <div class="row">
           <div>
             <label for="limite">Lignes à traiter</label>
@@ -113,7 +120,7 @@ footer a{color:var(--tag-ink)}
           </div>
           <button class="btn primary" type="submit">Lancer</button>
         </div>
-        <div class="hint">0 = tout le fichier. Comptez environ 1 minute pour 50 sociétés, une heure pour toute la base.</div>
+        <div class="hint">0 = tout le fichier. Sans LinkedIn : environ 1 minute pour 50 sociétés. Avec LinkedIn : 150 sociétés maximum par lancement, comptez 20 à 40 minutes (les phantoms tournent chez PhantomBuster).</div>
       </form>
     </div>
   </section>
@@ -129,6 +136,13 @@ footer a{color:var(--tag-ink)}
         <div><b id="k3">0</b><span>pages LinkedIn trouvées</span></div>
         <div><b id="k4">0</b><span>radiées repérées</span></div>
       </div>
+      <div class="kpi" id="kpiLi" hidden style="margin-top:10px">
+        <div><b id="k5">0</b><span>effectifs LinkedIn</span></div>
+        <div><b id="k6">0</b><span>dirigeants trouvés</span></div>
+        <div><b id="k7">0</b><span>e-mails trouvés</span></div>
+        <div><b id="k8">—</b><span>étape en cours</span></div>
+      </div>
+      <div class="journal" id="journal"></div>
       <div class="tags"><span class="tag warn">Laissez cette page ouverte : elle empêche le service de s'endormir</span></div>
       <div class="actions">
         <a class="btn dl" id="dl" href="#" hidden>Télécharger l'Excel</a>
@@ -141,7 +155,9 @@ footer a{color:var(--tag-ink)}
     <div class="floor-head"><span class="floor-num">?</span><h2>Ce que contient l'Excel</h2></div>
     <div class="card">
       <ol class="steps">
-        <li><b>Résultats</b> : le détail ligne par ligne, avec la page où le SIREN a été trouvé.</li>
+        <li><b>Résultats</b> : le détail ligne par ligne, avec la page où le SIREN a été trouvé, et l'adresse et l'effectif LinkedIn.</li>
+        <li><b>Adresses à valider</b> : les sociétés dont LinkedIn affiche une autre adresse que le CRM.</li>
+        <li><b>Dirigeants</b> et <b>Import HubSpot contacts</b> : CEO, fondateurs, COO, CFO, associés, avec leur e-mail Kaspr.</li>
         <li><b>Import HubSpot</b> : uniquement les sociétés actives dont le SIREN est sûr. La clé est le nom de domaine.</li>
         <li><b>Suppressions</b> : SIREN fermé et site mort. À valider, et pas avant le contrôle LinkedIn.</li>
         <li><b>À vérifier</b> : SIREN fermé mais site en ligne. La société a sûrement changé de SIREN.</li>
@@ -158,6 +174,12 @@ footer a{color:var(--tag-ink)}
 
 <script>
 let jid=null,timer=null;
+fetch("/v3/config").then(r=>r.json()).then(c=>{
+  const i=document.getElementById("liInfo"),b=document.getElementById("linkedin");
+  if(!c.linkedin){i.textContent="Indisponible : clé PhantomBuster ou identifiant du Company Scraper absent dans Render.";b.checked=false;b.disabled=true;return}
+  const manque=[];if(!c.url_finder)manque.push("URL Finder");if(!c.salesnav)manque.push("Sales Navigator");if(!c.kaspr)manque.push("Kaspr");
+  i.textContent="Utilise vos phantoms et votre quota LinkedIn · "+c.max+" sociétés max."+(manque.length?" Non configuré : "+manque.join(", ")+".":"");
+}).catch(()=>{});
 const $=id=>document.getElementById(id);
 const drop=$("drop"),inp=$("fichier");
 inp.onchange=()=>{$("dropTxt").innerHTML=inp.files[0]?"<b>"+inp.files[0].name+"</b>":"<b>Cliquez</b> ou glissez le fichier ici"};
@@ -181,8 +203,11 @@ async function poll(){
   if(!r.ok){$("msg").textContent=s.erreur;clearInterval(timer);return}
   $("bar").style.width=(100*s.fait/s.total)+"%";
   $("k1").textContent=s.fait+" / "+s.total;$("k2").textContent=s.siren;$("k3").textContent=s.linkedin;$("k4").textContent=s.radiees;
-  $("chrono").textContent=s.secondes+" s";
-  $("msg").textContent=s.etat==="en cours"?"Traitement en cours…":(s.etat==="arrêté"?"Arrêté. L'Excel contient les sociétés déjà traitées.":"Terminé.");
+  $("chrono").textContent=Math.floor(s.secondes/60)+" min "+(s.secondes%60)+" s";
+  if(s.linkedin){$("kpiLi").hidden=false;$("k5").textContent=s.effectifs;$("k6").textContent=s.dirigeants;$("k7").textContent=s.emails;
+    $("k8").textContent=s.phase?"LinkedIn":"—";}
+  $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");
+  $("msg").textContent=s.etat==="en cours"?(s.phase||"Traitement en cours…"):(s.etat==="arrêté"?"Arrêté. L'Excel contient les sociétés déjà traitées.":"Terminé.");
   if(s.etat!=="en cours"){clearInterval(timer);$("dl").href="/v3/excel/"+jid;$("dl").hidden=false}
 }
 $("stop").onclick=async()=>{if(jid){await fetch("/v3/stop/"+jid,{method:"POST"});}};
