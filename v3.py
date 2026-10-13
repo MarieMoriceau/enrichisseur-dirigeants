@@ -76,7 +76,10 @@ def domaine(url) -> str:
         u = "http://" + u
     h = urlparse(u).netloc.split("@")[-1].split(":")[0]
     h = h[4:] if h.startswith("www.") else h
-    if "." not in h or any(x in h for x in ("linkedin.", "facebook.", "linktr.ee", "pappers.", "societe.com")):
+    if "." not in h or any(x in h for x in (
+            "linkedin.", "facebook.", "instagram.", "twitter.", "linktr.ee", "pappers.", "societe.com", "infogreffe.",
+            "verif.com", "data.gouv", "annuaire", "kompass.", "manageo.", "societeinfo.", "corporama.", "dnb.com",
+            "crunchbase.", "welcometothejungle.", "google.", "wikipedia.", "pagesjaunes.", "lefigaro.", "lesechos.")):
         return ""
     return h
 
@@ -269,7 +272,7 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
             r = await api.post("https://api.anthropic.com/v1/messages", timeout=60, headers={
                 "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05",
                 "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 60,
+                json={"model": "claude-sonnet-4-6", "max_tokens": 1024,
                       "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
                       "messages": [{"role": "user", "content": prompt}]})
             if r.status_code == 200:
@@ -277,13 +280,13 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
                 m = re.findall(r"[a-z0-9][a-z0-9\-.]*\.[a-z]{2,}", txt.lower())
                 if m and "non" != txt.lower().strip(" .") and domaine(m[-1]):
                     return domaine(m[-1]), "recherche web (Claude)"
-                return "", ""
+                return "", "recherche web : aucun site sûr"
             print(f"[V3 RECHERCHE SITE] {r.status_code} {r.text[:200]}")
             return "", f"recherche web en erreur ({r.status_code})"
         except Exception as e:
             print(f"[V3 RECHERCHE SITE] {e}")
             return "", "recherche web en erreur"
-    return "", ""
+    return "", "recherche web indisponible (clé API absente)"
 
 
 async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
@@ -325,7 +328,9 @@ def _statut(row: dict) -> tuple:
     e_crm, e_site = row.get("etat_crm", ""), row.get("etat_site", "")
     if ss and e_site == "active":
         if sp and sp != ss:
-            return "Active", "🔄 SIREN du CRM à remplacer par celui du site", "haute"
+            if e_crm == "active":
+                return "Active", "🔀 deux SIREN actifs (CRM et site) : entités du même groupe ? à choisir", "moyenne"
+            return "Active", "🔄 SIREN du CRM (fermé) à remplacer par celui du site", "haute"
         return "Active", "✅ SIREN confirmé par le site" if sp == ss else "🆕 SIREN trouvé sur le site", "haute"
     if ss and e_site == "fermée":
         if row["site_joignable"] == "oui":
@@ -437,7 +442,7 @@ async def traiter(job_id: str, orgs: list):
                     s2 = await scanner_site(web, autre)
                     if s2["site_joignable"] == "oui":
                         dom, s = autre, s2
-                row = {**o, "domaine": dom, "source_site": src if (dom or "erreur" in src) else "", **s,
+                row = {**o, "domaine": dom, "source_site": src, **s,
                        "controle_nom": "", "siren_nom": "", "etat_nom": "", "nb_homonymes": ""}
                 async with api_sem:
                     i_site = await insee(api, s["siren_site"]) if s["siren_site"] else {}
@@ -456,6 +461,8 @@ async def traiter(job_id: str, orgs: list):
                     else:
                         i_crm = await insee(api, o["siren_crm"])
                     i_nom = {}
+                    if not s["siren_site"] and not o["siren_crm"] and not sirene:
+                        sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""))
                     if sirene.get("siren") and not s["siren_site"]:
                         i_nom = await insee(api, sirene["siren"])
                         row.update({"siren_nom": sirene["siren"], "etat_nom": i_nom.get("etat", ""),
@@ -469,7 +476,7 @@ async def traiter(job_id: str, orgs: list):
                 if dom and s["site_joignable"] == "oui":
                     compact = norm_nom(o["nom"]).replace(" ", "")
                     etiquette = dom.split(".")[0].replace("-", "")
-                    dom_ok = bool(compact) and (etiquette == compact or (len(etiquette) >= 3 and compact.startswith(etiquette)))
+                    dom_ok = bool(compact) and (etiquette == compact or (len(etiquette) >= 6 and compact.startswith(etiquette)))
                     if s["siren_site"] and s["siren_site"] in (sirene.get("siren"), o["siren_crm"]):
                         row["controle_nom"] = "✅ SIREN du site = SIREN connu"
                     elif s["siren_site"] and i_site.get("raison_sociale"):
@@ -480,7 +487,7 @@ async def traiter(job_id: str, orgs: list):
                         else:
                             row["controle_nom"] = f"⚠️ le site appartient à « {i_site['raison_sociale']} »"
                     else:
-                        row["controle_nom"] = "✅ nom dans le domaine" if dom_ok else "⚠️ non vérifiable (pas de SIREN sur le site)"
+                        row["controle_nom"] = "➖ pas de SIREN sur le site : site non vérifié"
                 row["statut"], row["action"], row["confiance"] = statut(row)
                 job["resultats"].append(row)
                 job["fait"] += 1
