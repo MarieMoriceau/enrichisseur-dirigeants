@@ -292,12 +292,16 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
 async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
     """SIREN par recherche du nom dans SIRENE (API recherche-entreprises, gratuite)."""
     try:
-        p = {"q": nom, "per_page": 5}
-        if cp:
-            p["code_postal"] = cp
-        r = await api.get(INSEE_API, params=p)
-        res = r.json().get("results", []) if r.status_code == 200 else []
-        bons = [x for x in res if ressemblance(nom, x.get("nom_raison_sociale") or x.get("nom_complet") or "") >= 0.85]
+        bons = []
+        for code in ([cp, ""] if cp else [""]):     # d'abord avec le code postal, puis sans (société qui a déménagé)
+            p = {"q": nom, "per_page": 5}
+            if code:
+                p["code_postal"] = code
+            r = await api.get(INSEE_API, params=p)
+            res = r.json().get("results", []) if r.status_code == 200 else []
+            bons = [x for x in res if ressemblance(nom, x.get("nom_raison_sociale") or x.get("nom_complet") or "") >= 0.85]
+            if bons:
+                break
         bons.sort(key=lambda x: (x.get("etat_administratif") != "A",))
         if bons:
             return {"siren": bons[0].get("siren", ""), "nb": len(bons),
