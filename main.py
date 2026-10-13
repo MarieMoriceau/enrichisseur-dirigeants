@@ -12,6 +12,10 @@ from fastapi.templating import Jinja2Templates
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
+# V3 : page d'accueil = enrichisseur v3 (site web → SIREN + LinkedIn, INSEE)
+from v3 import router as v3_router
+app.include_router(v3_router)
+
 ANTHROPIC_KEY  = os.getenv("ANTHROPIC_API_KEY", "")
 PAPPERS_KEY    = os.getenv("PAPPERS_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
@@ -197,7 +201,7 @@ def noms_similaires(nom_csv: str, nom_pappers: str) -> bool:
         return True
     return len(mots_a & mots_b) > 0
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/ancien", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 

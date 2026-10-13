@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Enrichisseur v3</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
+<style>
+:root{--violet:#3C214B;--rouge:#B90009;--bleu:#77A1BA;--bg:#F4F3F6;--ink:#231829;--muted:#62596A;--line:#DEDAE3}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Roboto,system-ui,sans-serif}
+.band{background:var(--violet);color:#fff;border-bottom:4px solid var(--rouge)}
+.band div{max-width:820px;margin:0 auto;padding:24px 20px}
+.band small{color:var(--bleu);letter-spacing:.12em;text-transform:uppercase;font-weight:500}
+h1{margin:4px 0 4px;font-size:28px}
+.band p{margin:0;color:#D9D0E0}
+main{max-width:820px;margin:0 auto;padding:24px 20px 60px}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:18px}
+h2{font-size:18px;margin:0 0 12px}
+ol{margin:0;padding-left:20px;color:var(--muted)}
+label{display:block;font-weight:500;margin:14px 0 6px}
+input[type=file],input[type=number]{font:inherit;padding:9px;border:1px solid var(--line);border-radius:6px;width:100%;background:#fff}
+input[type=number]{width:140px}
+.hint{color:var(--muted);font-size:13px;margin-top:4px}
+button{font:500 15px Roboto,sans-serif;border:0;border-radius:6px;padding:11px 18px;cursor:pointer;margin-top:16px}
+.go{background:var(--violet);color:#fff}.go:hover{background:var(--rouge)}
+.stop{background:#eee;color:var(--ink);margin-left:8px}
+.dl{background:var(--rouge);color:#fff;text-decoration:none;display:inline-block;padding:11px 18px;border-radius:6px;margin-top:14px}
+.bar{height:10px;background:var(--line);border-radius:5px;overflow:hidden;margin:12px 0}
+.bar i{display:block;height:100%;background:var(--violet);width:0;transition:width .4s}
+.kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.kpi div{background:var(--bg);border-radius:8px;padding:10px;text-align:center}
+.kpi b{display:block;font-size:22px}
+.kpi span{font-size:12px;color:var(--muted)}
+.warn{background:#F7E3E4;color:var(--rouge);border-radius:6px;padding:8px 12px;font-size:13px;margin-top:12px}
+a.old{color:var(--muted);font-size:13px}
+@media(max-width:560px){.kpi{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="band"><div>
+  <small>Equation · données CRM</small>
+  <h1>Enrichisseur v3</h1>
+  <p>Retrouve le SIREN et la page LinkedIn officielle de chaque société sur son propre site, puis vérifie à l'INSEE si elle est encore active.</p>
+</div></div>
+<main>
+  <div class="card">
+    <h2>1. Déposer l'export</h2>
+    <ol>
+      <li>Pipedrive → Organisations → Exporter (au minimum : ID, Nom, Site internet, SIREN).</li>
+      <li>Déposez le fichier .xlsx ou .csv ci-dessous.</li>
+      <li>Commencez par 50 lignes, vérifiez le résultat, puis relancez sur tout le fichier (0).</li>
+    </ol>
+    <form id="f">
+      <label for="fichier">Fichier</label>
+      <input type="file" id="fichier" name="fichier" accept=".xlsx,.csv" required>
+      <label for="limite">Nombre de lignes à traiter</label>
+      <input type="number" id="limite" name="limite" value="50" min="0">
+      <div class="hint">0 = tout le fichier. Comptez environ 1 minute pour 50 sociétés.</div>
+      <button class="go" type="submit">Lancer</button>
+    </form>
+  </div>
+
+  <div class="card" id="suivi" hidden>
+    <h2>2. Suivi</h2>
+    <div id="msg">Démarrage…</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="kpi">
+      <div><b id="k1">0</b><span>traitées</span></div>
+      <div><b id="k2">0</b><span>SIREN trouvés</span></div>
+      <div><b id="k3">0</b><span>pages LinkedIn</span></div>
+      <div><b id="k4">0</b><span>radiées</span></div>
+    </div>
+    <div class="warn">Laissez cette page ouverte pendant le traitement : elle empêche le service de s'endormir.</div>
+    <a class="dl" id="dl" href="#" hidden>Télécharger l'Excel</a>
+    <button class="stop" id="stop" type="button">Arrêter</button>
+  </div>
+  <a class="old" href="/ancien">Ancienne version de l'enrichisseur</a>
+</main>
+<script>
+let jid=null,timer=null;
+const $=id=>document.getElementById(id);
+$("f").onsubmit=async e=>{
+  e.preventDefault();
+  const fd=new FormData($("f"));
+  $("suivi").hidden=false;$("dl").hidden=true;$("msg").textContent="Envoi du fichier…";
+  const r=await fetch("/v3/run",{method:"POST",body:fd});const j=await r.json();
+  if(!r.ok){$("msg").textContent=j.erreur||"Erreur";return}
+  jid=j.job;clearInterval(timer);timer=setInterval(poll,2500);poll();
+};
+async function poll(){
+  const r=await fetch("/v3/status/"+jid);const s=await r.json();
+  if(!r.ok){$("msg").textContent=s.erreur;clearInterval(timer);return}
+  $("bar").style.width=(100*s.fait/s.total)+"%";
+  $("k1").textContent=s.fait+" / "+s.total;$("k2").textContent=s.siren;$("k3").textContent=s.linkedin;$("k4").textContent=s.radiees;
+  $("msg").textContent=s.etat==="en cours"?"Traitement en cours… ("+s.secondes+" s)":"Terminé en "+s.secondes+" s.";
+  if(s.etat!=="en cours"){clearInterval(timer);$("dl").href="/v3/excel/"+jid;$("dl").hidden=false}
+}
+$("stop").onclick=async()=>{if(jid){await fetch("/v3/stop/"+jid,{method:"POST"});}};
+</script>
+</body>
+</html>
