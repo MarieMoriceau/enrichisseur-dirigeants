@@ -656,6 +656,8 @@ def excel(job) -> bytes:
         "  Adresse : confirmée si LinkedIn = CRM ; nouvelle adresse LinkedIn = à valider ; siège à l'étranger = on garde le CRM.",
         "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
         "  Mode « adresse seule » : pas de recherche de dirigeants.",
+        "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",
+        "  L'onglet Import HubSpot contacts ne contient que les NOUVEAUX dirigeants (absents de Pipedrive).",
         "• Rien n'est écrit dans Pipedrive ni HubSpot.",
     ]
     if job.get("journal"):
@@ -705,10 +707,11 @@ def excel(job) -> bytes:
                   r.get("effectif_linkedin", ""), ""] for r in adr])
         dir_ = [(r, d) for r in res for d in sorted(r.get("dirigeants", []), key=lambda d: d["role"])]
         feuille(wb, "Dirigeants", ["ID Pipedrive", "Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "Île-de-France",
-                                   "LinkedIn", "E-mail (Kaspr)"],
+                                   "LinkedIn", "Déjà dans Pipedrive", "E-mail", "Source e-mail"],
                 [[r["id"], r["nom"], r["domaine"], d["prenom"], d["nom"], d["fonction"], d["role"], d["lieu"],
-                  "oui" if d["idf"] else "non", d["linkedin"], d["email"]] for r, d in dir_])
-        contacts = [(r, d) for r, d in dir_ if d["email"] and r["domaine"]]
+                  "oui" if d["idf"] else "non", d["linkedin"], d.get("dans_pipedrive", ""), d["email"], d.get("source_email", "")]
+                 for r, d in dir_])
+        contacts = [(r, d) for r, d in dir_ if d["email"] and r["domaine"] and not d.get("dans_pipedrive")]
         feuille(wb, "Import HubSpot contacts", ["First Name", "Last Name", "Email", "Job Title", "LinkedIn URL",
                                                "Company Domain Name", "Rôle", "Date relevé"],
                 [[d["prenom"], d["nom"], d["email"], d["fonction"], d["linkedin"], r["domaine"], d["role"], auj] for r, d in contacts])
@@ -765,7 +768,7 @@ async def status(jid: str):
 @router.get("/v3/config")
 async def config():
     return {"linkedin": LI.pb_configure(), "url_finder": bool(LI.PB_URL_FINDER), "salesnav": bool(LI.PB_SALESNAV),
-            "kaspr": bool(LI.KASPR_KEY), "max": LI.MAX_LINKEDIN}
+            "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "max": LI.MAX_LINKEDIN}
 
 
 @router.post("/v3/stop/{jid}")

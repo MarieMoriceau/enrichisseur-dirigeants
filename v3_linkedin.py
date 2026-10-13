@@ -18,6 +18,8 @@ PB_URL_FINDER = os.getenv("PB_URL_FINDER_ID", "")
 PB_SCRAPER = os.getenv("PB_COMPANY_SCRAPER_ID", "")
 PB_SALESNAV = os.getenv("PB_SALESNAV_ID", "")
 KASPR_KEY = os.getenv("KASPR_API_KEY", "")
+FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
+PIPEDRIVE_KEY = os.getenv("PIPEDRIVE_API_KEY", "")
 PB_API = "https://api.phantombuster.com/api/v2"
 MAX_LINKEDIN = 150          # quota prudent par lancement (recommandation PhantomBuster avec Sales Navigator)
 
@@ -280,6 +282,65 @@ async def kaspr_email(c: httpx.AsyncClient, nom: str, url_profil: str) -> str:
     return ""
 
 
+# ───────────────────────── Pipedrive (personnes) & Fullenrich ─────────────────────────
+async def personne_pipedrive(c: httpx.AsyncClient, nom_complet: str, r: dict, ressemblance) -> dict:
+    """La personne existe-t-elle déjà dans Pipedrive, rattachée à cette société ?"""
+    if not nom_complet:
+        return {}
+    try:
+        res = await c.get("https://api.pipedrive.com/v1/persons/search",
+                          params={"term": nom_complet, "fields": "name", "limit": 10, "api_token": PIPEDRIVE_KEY})
+        items = [i.get("item", {}) for i in (res.json().get("data") or {}).get("items", [])]
+        for p in items:
+            if ressemblance(nom_complet, p.get("name", "")) < 0.9:
+                continue
+            org = p.get("organization") or {}
+            meme_org = (r.get("id") and str(org.get("id")) == str(r["id"])) or \
+                       ressemblance(r.get("nom", ""), org.get("name", "") or "") >= 0.8
+            if not meme_org:
+                continue
+            emails = [e for e in (p.get("emails") or []) if isinstance(e, str) and "@" in e]
+            return {"id": p.get("id"), "email": emails[0] if emails else ""}
+    except Exception as e:
+        print(f"[V3 PIPEDRIVE PERSONNE] {nom_complet}: {e}")
+    return {}
+
+
+async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> dict:
+    """contacts = [(dirigeant, société)] → {index: e-mail}. E-mails seulement (pas de téléphone) pour limiter les crédits."""
+    datas = [{"firstname": d["prenom"], "lastname": d["nom"], "domain": r["domaine"], "company_name": r["nom"],
+              "linkedin_url": d["linkedin"], "enrich_fields": ["contact.emails"], "custom": {"idx": str(i)}}
+             for i, (d, r) in enumerate(contacts)]
+    h = {"Authorization": f"Bearer {FULLENRICH_KEY}", "Content-Type": "application/json"}
+    try:
+        r = await c.post("https://app.fullenrich.com/api/v1/contact/enrich/bulk", headers=h,
+                         json={"name": "Enrichisseur v3", "datas": datas})
+        if r.status_code not in (200, 201):
+            journal(f"Fullenrich refusé ({r.status_code}) : {r.text[:150]}")
+            return {}
+        eid = r.json().get("enrichment_id") or r.json().get("id")
+        for _ in range(60):                                   # jusqu'à 5 minutes
+            await asyncio.sleep(5)
+            r2 = await c.get(f"https://app.fullenrich.com/api/v1/contact/enrich/bulk/{eid}", headers=h)
+            if r2.status_code != 200:
+                continue
+            res = r2.json()
+            if res.get("status") == "FINISHED":
+                out = {}
+                for x in res.get("datas", []):
+                    idx = (x.get("custom") or {}).get("idx", "")
+                    for e in (x.get("contact") or {}).get("emails", []):
+                        v = e.get("email") or e.get("value") or ""
+                        if "@" in v:
+                            out[idx] = v
+                            break
+                return out
+        journal("Fullenrich : pas de réponse après 5 minutes")
+    except Exception as e:
+        journal(f"Fullenrich en échec : {e}")
+    return {}
+
+
 # ───────────────────────── orchestration des étapes 3 à 5 ─────────────────────────
 async def etapes_linkedin(job: dict, ressemblance, domaine):
     res = [r for r in job["resultats"] if r.get("statut") not in ("Radiée",)
@@ -390,17 +451,48 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         "fonction": l.get("title", ""), "role": rl, "lieu": l.get("location", ""),
                         "idf": bool(RE_IDF.search(l.get("location", "") or "")),
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),
-                        "email": ""})
+                        "email": "", "source_email": "", "dans_pipedrive": ""})
 
-        # 5. Kaspr : e-mails des dirigeants (rôles 1 à 5, en Île-de-France ou lieu inconnu, 4 max par société)
-        if KASPR_KEY:
-            a_faire = []
-            for r in cibles:
-                ds = sorted(r.get("dirigeants", []), key=lambda d: d["role"])
-                a_faire += [d for d in ds if d["role"][0] in "12345" and (d["idf"] or not d["lieu"])][:4]
-            for i, d in enumerate(a_faire, 1):
+        # 5. e-mails des dirigeants utiles (rôles 1 à 5, en Île-de-France ou lieu inconnu, 4 max par société)
+        a_faire = []
+        for r in cibles:
+            ds = sorted(r.get("dirigeants", []), key=lambda d: d["role"])
+            for d in [d for d in ds if d["role"][0] in "12345" and (d["idf"] or not d["lieu"])][:4]:
+                a_faire.append((r, d))
+
+        # 5a. déjà dans Pipedrive ? alors ni Kaspr ni Fullenrich (on reprend l'e-mail de la fiche s'il existe)
+        if PIPEDRIVE_KEY:
+            for i, (r, d) in enumerate(a_faire, 1):
                 if stop():
                     return
-                job["phase"] = f"Kaspr : e-mails {i}/{len(a_faire)}…"
+                job["phase"] = f"Pipedrive : dirigeants déjà connus ? {i}/{len(a_faire)}…"
+                p = await personne_pipedrive(c, d["nom_complet"], r, ressemblance)
+                if p:
+                    d["dans_pipedrive"] = f"oui (fiche {p['id']})"
+                    d["email"], d["source_email"] = p["email"], ("Pipedrive" if p["email"] else "")
+        a_enrichir = [(r, d) for r, d in a_faire if not d["dans_pipedrive"]]
+
+        # 5b. Kaspr (e-mails pro illimités) à partir du profil LinkedIn
+        if KASPR_KEY:
+            for i, (r, d) in enumerate(a_enrichir, 1):
+                if stop():
+                    return
+                job["phase"] = f"Kaspr : e-mails {i}/{len(a_enrichir)}…"
                 d["email"] = await kaspr_email(c, d["nom_complet"], d["linkedin"])
+                d["source_email"] = "Kaspr" if d["email"] else ""
+
+        # 5c. Fullenrich en secours (crédits) pour ceux que Kaspr n'a pas trouvés
+        reste = [(r, d) for r, d in a_enrichir if not d["email"] and r.get("domaine")]
+        if FULLENRICH_KEY and reste and not stop():
+            job["phase"] = f"Fullenrich : {len(reste)} e-mails en secours…"
+            trouves = await fullenrich_emails(c, [(d, r) for r, d in reste], journal)
+            for n_, (r, d) in enumerate(reste):
+                if trouves.get(str(n_)):
+                    d["email"], d["source_email"] = trouves[str(n_)], "Fullenrich"
+        job["stats_email"] = {
+            "deja_pipedrive": sum(1 for _, d in a_faire if d["dans_pipedrive"]),
+            "kaspr": sum(1 for _, d in a_faire if d["source_email"] == "Kaspr"),
+            "fullenrich": sum(1 for _, d in a_faire if d["source_email"] == "Fullenrich")}
+        journal(f"e-mails : {job['stats_email']['deja_pipedrive']} dirigeants déjà dans Pipedrive (non enrichis), "
+                f"{job['stats_email']['kaspr']} trouvés par Kaspr, {job['stats_email']['fullenrich']} par Fullenrich")
     job["phase"] = ""

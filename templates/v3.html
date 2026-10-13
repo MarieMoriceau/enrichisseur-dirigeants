@@ -177,7 +177,7 @@ let jid=null,timer=null;
 fetch("/v3/config").then(r=>r.json()).then(c=>{
   const i=document.getElementById("liInfo"),b=document.getElementById("linkedin");
   if(!c.linkedin){i.textContent="Indisponible : clé PhantomBuster ou identifiant du Company Scraper absent dans Render.";b.checked=false;b.disabled=true;return}
-  const manque=[];if(!c.url_finder)manque.push("URL Finder");if(!c.salesnav)manque.push("Sales Navigator");if(!c.kaspr)manque.push("Kaspr");
+  const manque=[];if(!c.url_finder)manque.push("URL Finder");if(!c.salesnav)manque.push("Sales Navigator");if(!c.kaspr)manque.push("Kaspr");if(!c.fullenrich)manque.push("Fullenrich");
   i.textContent="Utilise vos phantoms et votre quota LinkedIn · "+c.max+" sociétés max."+(manque.length?" Non configuré : "+manque.join(", ")+".":"");
 }).catch(()=>{});
 const $=id=>document.getElementById(id);
