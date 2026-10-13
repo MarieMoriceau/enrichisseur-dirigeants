@@ -51,11 +51,26 @@ def luhn_ok(n: str) -> bool:
     return s % 10 == 0
 
 
+def domaines(url) -> list:
+    """Tous les domaines d'un champ CRM (« mozoo.com | www.mozoo.fr » → 2 domaines)."""
+    if not url or not isinstance(url, str):
+        return []
+    out = [domaine(m) for m in re.split(r"[|;,\s]+", url.strip()) if "." in m]
+    return list(dict.fromkeys(d for d in out if d))
+
+
 def domaine(url) -> str:
     if not url or not isinstance(url, str):
         return ""
-    u = url.strip().lower()
-    if u in ("v", "-", "n/a"):
+    morceaux = [m for m in re.split(r"[|;,\s]+", url.strip().lower()) if "." in m]
+    if len(morceaux) > 1:
+        for m in morceaux:
+            d = domaine(m)
+            if d:
+                return d
+        return ""
+    u = morceaux[0] if morceaux else ""
+    if u in ("", "v", "-", "n/a"):
         return ""
     if not u.startswith("http"):
         u = "http://" + u
@@ -72,25 +87,50 @@ def texte(html: str) -> str:
     return re.sub(r"\s+", " ", unescape(html))
 
 
+HEBERGEURS = {"424761419",   # OVH
+               "423093459",   # Gandi
+               "431303775",   # IONOS / 1&1
+               "433115904",   # Scaleway / Online
+               "510909807",   # o2switch
+               "450453881",   # LWS
+               "538176917",   # PlanetHoster France
+               "813805735",   # Hostinger France
+               }
+RE_HEBERGEUR = re.compile(r"h[ée]berg|hosting|hosted by|h[ée]bergeur|prestataire technique", re.I)
+
+
+def _hebergeur(t: str, pos: int) -> bool:
+    """Vrai si ce numéro suit une mention « hébergé par… » sans autre n° d'immatriculation entre les deux."""
+    seg = t[max(0, pos - 200):pos]
+    mots = list(RE_HEBERGEUR.finditer(seg))
+    if not mots:
+        return False
+    entre = seg[mots[-1].end():]
+    return not re.search(r"\d{3}[\s.\u00a0]?\d{3}[\s.\u00a0]?\d{3}", entre)
+
+
 def sirens_dans(t: str) -> list:
-    """SIREN candidats trouvés dans un texte (contrôle de Luhn)."""
+    """SIREN candidats trouvés dans un texte (contrôle de Luhn, hébergeurs écartés)."""
     c = []
     for m in RE_SIREN_CTX.finditer(t):
+        if _hebergeur(t, m.start()):
+            continue
         n = re.sub(r"\D", "", m.group(1))
         if len(n) == 11 and m.group(1).upper().startswith("FR"):   # n° TVA FRxx + SIREN
             n = n[2:]
         n = n[-9:]
-        if luhn_ok(n):
+        if luhn_ok(n) and n not in HEBERGEURS:
             c.append(n)
     for m in RE_SIRET.finditer(t):
         n = re.sub(r"\D", "", m.group(1))[:9]
-        if luhn_ok(n):
+        if luhn_ok(n) and n not in HEBERGEURS and not _hebergeur(t, m.start()):
             c.append(n)
     return c
 
 
 def linkedins_dans(html: str) -> list:
     out = []
+    html = unescape(html)
     for m in RE_LINKEDIN.finditer(html):
         slug = m.group(1).strip("/.").split("?")[0]
         if slug and slug.lower() not in ("linkedin", "company"):
@@ -111,7 +151,7 @@ def liens_legaux(html: str, base: str) -> list:
 
 # ───────────────────────── étape 1 : site web ─────────────────────────
 async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
-    r = {"site_joignable": "non", "siren_site": "", "page_siren": "", "linkedin_site": "", "note_site": ""}
+    r = {"site_joignable": "non", "siren_site": "", "page_siren": "", "linkedin_site": "", "note_site": "", "candidats": []}
     if not dom:
         r["note_site"] = "pas de site dans le CRM"
         return r
@@ -155,6 +195,8 @@ async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
         for s, _ in sirens:
             compte[s] = compte.get(s, 0) + 1
         best = max(compte, key=compte.get)
+        r["candidats"] = sorted(compte, key=compte.get, reverse=True)[:3]
+        r["pages"] = {c: next(p for s_, p in sirens if s_ == c) for c in r["candidats"]}
         r["siren_site"] = best
         r["page_siren"] = next(p for s, p in sirens if s == best)
         if len(compte) > 1:
@@ -225,7 +267,8 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
                   "Réponds UNIQUEMENT par le nom de domaine (ex : exemple.fr), ou NON si tu n'es pas sûr.")
         try:
             r = await api.post("https://api.anthropic.com/v1/messages", timeout=60, headers={
-                "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05",
+                "content-type": "application/json"},
                 json={"model": "claude-sonnet-4-6", "max_tokens": 60,
                       "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
                       "messages": [{"role": "user", "content": prompt}]})
@@ -234,8 +277,12 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
                 m = re.findall(r"[a-z0-9][a-z0-9\-.]*\.[a-z]{2,}", txt.lower())
                 if m and "non" != txt.lower().strip(" .") and domaine(m[-1]):
                     return domaine(m[-1]), "recherche web (Claude)"
-        except Exception:
-            pass
+                return "", ""
+            print(f"[V3 RECHERCHE SITE] {r.status_code} {r.text[:200]}")
+            return "", f"recherche web en erreur ({r.status_code})"
+        except Exception as e:
+            print(f"[V3 RECHERCHE SITE] {e}")
+            return "", "recherche web en erreur"
     return "", ""
 
 
@@ -260,9 +307,12 @@ async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
 # ───────────────────────── décision ─────────────────────────
 def statut(row: dict) -> tuple:
     st, act, conf = _statut(row)
+    if row.get("controle_nom", "").startswith("⚠️ le site appartient"):
+        row["linkedin_site"] = ""
+        return "", "⚠️ le site ne semble pas être celui de cette société : site à corriger dans le CRM", "basse"
     if row.get("controle_nom", "").startswith("⚠️") and conf == "haute":
         conf = "moyenne"
-        act += " · site trouvé par recherche, nom différent : à vérifier"
+        act += " · site non vérifiable"
     return st, act, conf
 
 
@@ -371,7 +421,8 @@ async def traiter(job_id: str, orgs: list):
             async with sem:
                 if job["stop"]:
                     return
-                dom, src = domaine(o["site_crm"]), "CRM"
+                doms = domaines(o["site_crm"])
+                dom, src = (doms[0] if doms else ""), "CRM"
                 sirene = {}
                 if not dom and not o["siren_crm"]:
                     async with api_sem:
@@ -380,10 +431,24 @@ async def traiter(job_id: str, orgs: list):
                     dom, src = await chercher_domaine(api, o["nom"], o.get("cp", ""), o.get("ville", ""),
                                                       sirene.get("raison", ""), sirene.get("siren", "") or o["siren_crm"])
                 s = await scanner_site(web, dom)
-                row = {**o, "domaine": dom, "source_site": src if dom else "", **s,
+                for autre in doms[1:]:                      # plusieurs sites dans le CRM : on essaie les suivants
+                    if s["site_joignable"] == "oui":
+                        break
+                    s2 = await scanner_site(web, autre)
+                    if s2["site_joignable"] == "oui":
+                        dom, s = autre, s2
+                row = {**o, "domaine": dom, "source_site": src if (dom or "erreur" in src) else "", **s,
                        "controle_nom": "", "siren_nom": "", "etat_nom": "", "nb_homonymes": ""}
                 async with api_sem:
                     i_site = await insee(api, s["siren_site"]) if s["siren_site"] else {}
+                    if len(s["candidats"]) > 1:      # plusieurs SIREN : on garde celui dont le nom colle
+                        meilleurs = [(ressemblance(o["nom"], i_site.get("raison_sociale", "")), s["siren_site"], i_site)]
+                        for autre in s["candidats"][1:]:
+                            i_a = await insee(api, autre)
+                            meilleurs.append((ressemblance(o["nom"], i_a.get("raison_sociale", "")), autre, i_a))
+                        sc, choisi, i_site = max(meilleurs, key=lambda t: (t[0], t[2].get("etat") == "active"))
+                        row["siren_site"], row["page_siren"] = choisi, s["pages"].get(choisi, "")
+                        s = {**s, "siren_site": choisi}
                     if not o["siren_crm"]:
                         i_crm = {}
                     elif o["siren_crm"] == s["siren_site"]:
@@ -400,17 +465,22 @@ async def traiter(job_id: str, orgs: list):
                 ref = i_site or i_crm or i_nom
                 row.update({"raison_sociale": ref.get("raison_sociale", ""), "date_fermeture": ref.get("date_fermeture", ""),
                             "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", "")})
-                # site trouvé par recherche : on vérifie que c'est bien la bonne société
-                if dom and src != "CRM":
+                # le site est-il bien celui de cette société ? (vaut aussi pour les sites du CRM, souvent faux)
+                if dom and s["site_joignable"] == "oui":
+                    compact = norm_nom(o["nom"]).replace(" ", "")
+                    etiquette = dom.split(".")[0].replace("-", "")
+                    dom_ok = bool(compact) and (etiquette == compact or (len(etiquette) >= 3 and compact.startswith(etiquette)))
                     if s["siren_site"] and s["siren_site"] in (sirene.get("siren"), o["siren_crm"]):
-                        row["controle_nom"] = "✅ SIREN du site = SIREN SIRENE"
+                        row["controle_nom"] = "✅ SIREN du site = SIREN connu"
                     elif s["siren_site"] and i_site.get("raison_sociale"):
-                        ok = ressemblance(o["nom"], i_site["raison_sociale"]) >= 0.6 or \
-                             norm_nom(o["nom"]).replace(" ", "") in dom.replace("-", "").replace(".", "")
-                        row["controle_nom"] = "✅ nom cohérent" if ok else f"⚠️ le site appartient à « {i_site['raison_sociale']} »"
-                    elif s["site_joignable"] == "oui":
-                        ok = norm_nom(o["nom"]).replace(" ", "")[:8] in dom.replace("-", "").replace(".", "")
-                        row["controle_nom"] = "✅ nom dans le domaine" if ok else "⚠️ non vérifiable (pas de SIREN sur le site)"
+                        if ressemblance(o["nom"], i_site["raison_sociale"]) >= 0.6:
+                            row["controle_nom"] = "✅ raison sociale cohérente"
+                        elif dom_ok:
+                            row["controle_nom"] = "✅ nom dans le domaine (marque ≠ raison sociale)"
+                        else:
+                            row["controle_nom"] = f"⚠️ le site appartient à « {i_site['raison_sociale']} »"
+                    else:
+                        row["controle_nom"] = "✅ nom dans le domaine" if dom_ok else "⚠️ non vérifiable (pas de SIREN sur le site)"
                 row["statut"], row["action"], row["confiance"] = statut(row)
                 job["resultats"].append(row)
                 job["fait"] += 1
