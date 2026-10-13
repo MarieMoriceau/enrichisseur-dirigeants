@@ -24,7 +24,6 @@ JOBS: dict = {}
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 INSEE_API = "https://recherche-entreprises.api.gouv.fr/search"
-PAPPERS_KEY = os.getenv("PAPPERS_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 FORMES = r"\b(sas|sasu|sarl|eurl|sa|sca|snc|sci|selarl|selas|scp|groupe|group|holding|france|paris|international|ltd|limited|gmbh|inc|llp|llc|et associes|associes|and partners|partners)\b"
 CHEMINS_LEGAUX = ["/mentions-legales", "/mentions-legales/", "/fr/mentions-legales", "/legal",
@@ -216,24 +215,12 @@ def ressemblance(a: str, b: str) -> float:
     return max(SequenceMatcher(None, a, b).ratio(), inclus * 0.95)
 
 
-async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str) -> tuple:
-    """Retrouve le site officiel d'une société à partir de son nom. Renvoie (domaine, source)."""
-    if PAPPERS_KEY:
-        try:
-            p = {"api_token": PAPPERS_KEY, "q": nom, "par_page": 3}
-            if cp:
-                p["code_postal"] = cp
-            r = await api.get("https://api.pappers.fr/v2/recherche", params=p)
-            if r.status_code == 200:
-                for x in r.json().get("resultats", []):
-                    d = domaine(x.get("domaine_url") or x.get("site_web") or "")
-                    if d and ressemblance(nom, x.get("nom_entreprise") or x.get("denomination") or "") >= 0.75:
-                        return d, "Pappers"
-        except Exception:
-            pass
+async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str, raison: str = "", siren: str = "") -> tuple:
+    """Retrouve le site officiel d'une société à partir de son nom (recherche web Claude). Renvoie (domaine, source)."""
     if ANTHROPIC_KEY:
         lieu = f" ({ville or cp})" if (ville or cp) else ""
-        prompt = (f"Quel est le site web officiel de la société française « {nom} »{lieu} ? "
+        ident = f", raison sociale {raison}, SIREN {siren}" if siren else ""
+        prompt = (f"Quel est le site web officiel de la société française « {nom} »{lieu}{ident} ? "
                   "Pas un annuaire (Pappers, Societe.com, LinkedIn, Kompass…), le site de la société elle-même. "
                   "Réponds UNIQUEMENT par le nom de domaine (ex : exemple.fr), ou NON si tu n'es pas sûr.")
         try:
@@ -253,7 +240,7 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
 
 
 async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
-    """Dernier recours : SIREN par recherche du nom à l'INSEE (moins fiable)."""
+    """SIREN par recherche du nom dans SIRENE (API recherche-entreprises, gratuite)."""
     try:
         p = {"q": nom, "per_page": 5}
         if cp:
@@ -263,7 +250,8 @@ async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
         bons = [x for x in res if ressemblance(nom, x.get("nom_raison_sociale") or x.get("nom_complet") or "") >= 0.85]
         bons.sort(key=lambda x: (x.get("etat_administratif") != "A",))
         if bons:
-            return {"siren": bons[0].get("siren", ""), "nb": len(bons)}
+            return {"siren": bons[0].get("siren", ""), "nb": len(bons),
+                    "raison": bons[0].get("nom_raison_sociale") or bons[0].get("nom_complet") or ""}
     except Exception:
         pass
     return {}
@@ -283,7 +271,7 @@ def _statut(row: dict) -> tuple:
     if not ss and not sp and row.get("siren_nom"):
         e = row.get("etat_nom", "")
         return ("Active" if e == "active" else "Radiée, à vérifier" if e == "fermée" else ""), \
-               f"🔎 SIREN trouvé par le nom à l'INSEE ({row.get('nb_homonymes', 1)} correspondance(s)) : à vérifier", "moyenne"
+               f"🔎 SIREN trouvé par le nom dans SIRENE ({row.get('nb_homonymes', 1)} correspondance(s)) : à vérifier", "moyenne"
     e_crm, e_site = row.get("etat_crm", ""), row.get("etat_site", "")
     if ss and e_site == "active":
         if sp and sp != ss:
@@ -384,8 +372,13 @@ async def traiter(job_id: str, orgs: list):
                 if job["stop"]:
                     return
                 dom, src = domaine(o["site_crm"]), "CRM"
+                sirene = {}
+                if not dom and not o["siren_crm"]:
+                    async with api_sem:
+                        sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""))
                 if not dom:
-                    dom, src = await chercher_domaine(api, o["nom"], o.get("cp", ""), o.get("ville", ""))
+                    dom, src = await chercher_domaine(api, o["nom"], o.get("cp", ""), o.get("ville", ""),
+                                                      sirene.get("raison", ""), sirene.get("siren", "") or o["siren_crm"])
                 s = await scanner_site(web, dom)
                 row = {**o, "domaine": dom, "source_site": src if dom else "", **s,
                        "controle_nom": "", "siren_nom": "", "etat_nom": "", "nb_homonymes": ""}
@@ -398,12 +391,10 @@ async def traiter(job_id: str, orgs: list):
                     else:
                         i_crm = await insee(api, o["siren_crm"])
                     i_nom = {}
-                    if not s["siren_site"] and not o["siren_crm"]:
-                        trouve = await insee_par_nom(api, o["nom"], o.get("cp", ""))
-                        if trouve.get("siren"):
-                            i_nom = await insee(api, trouve["siren"])
-                            row.update({"siren_nom": trouve["siren"], "etat_nom": i_nom.get("etat", ""),
-                                        "nb_homonymes": trouve.get("nb", 1)})
+                    if sirene.get("siren") and not s["siren_site"]:
+                        i_nom = await insee(api, sirene["siren"])
+                        row.update({"siren_nom": sirene["siren"], "etat_nom": i_nom.get("etat", ""),
+                                    "nb_homonymes": sirene.get("nb", 1)})
                 row["etat_site"] = i_site.get("etat", "")
                 row["etat_crm"] = i_crm.get("etat", "")
                 ref = i_site or i_crm or i_nom
@@ -411,7 +402,9 @@ async def traiter(job_id: str, orgs: list):
                             "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", "")})
                 # site trouvé par recherche : on vérifie que c'est bien la bonne société
                 if dom and src != "CRM":
-                    if s["siren_site"] and i_site.get("raison_sociale"):
+                    if s["siren_site"] and s["siren_site"] in (sirene.get("siren"), o["siren_crm"]):
+                        row["controle_nom"] = "✅ SIREN du site = SIREN SIRENE"
+                    elif s["siren_site"] and i_site.get("raison_sociale"):
                         ok = ressemblance(o["nom"], i_site["raison_sociale"]) >= 0.6 or \
                              norm_nom(o["nom"]).replace(" ", "") in dom.replace("-", "").replace(".", "")
                         row["controle_nom"] = "✅ nom cohérent" if ok else f"⚠️ le site appartient à « {i_site['raison_sociale']} »"
@@ -474,8 +467,9 @@ def excel(job) -> bytes:
         "• À vérifier : SIREN fermé mais site en ligne (changement de SIREN probable)", "",
         "RÈGLES",
         "• Le SIREN vient des mentions légales du site, contrôlé (clé de Luhn) puis vérifié à l'INSEE.",
-        "• Société sans site connu : le site est recherché (Pappers, puis recherche web), puis on vérifie que le SIREN affiché correspond bien au nom.",
-        "• Dernier recours, SIREN cherché par le nom à l'INSEE : confiance moyenne, jamais dans l'onglet Import HubSpot.",
+        "• Société sans site connu : on la cherche d'abord dans SIRENE par son nom (et son code postal), puis on cherche son site sur le web.",
+        "  Le site n'est retenu avec confiance haute que si le SIREN qu'il affiche est le même que celui de SIRENE (ou que le nom colle).",
+        "• SIREN trouvé seulement par le nom dans SIRENE (site introuvable) : confiance moyenne, jamais dans l'onglet Import HubSpot.",
         "• L'adresse INSEE est celle du SIÈGE LÉGAL (souvent une domiciliation) : elle n'est PAS proposée comme adresse des bureaux.",
         "• « Suppressions » = SIREN fermé + site mort. Le contrôle LinkedIn (3e signal) viendra à l'étape suivante : ne rien supprimer avant.",
         "• Rien n'est écrit dans Pipedrive ni HubSpot.",
@@ -489,7 +483,7 @@ def excel(job) -> bytes:
             ("Contrôle du nom", "controle_nom"), ("Site joignable", "site_joignable"),
             ("SIREN CRM", "siren_crm"), ("État SIREN CRM", "etat_crm"), ("SIREN site", "siren_site"),
             ("État SIREN site", "etat_site"), ("Page où le SIREN a été trouvé", "page_siren"),
-            ("SIREN par le nom (INSEE)", "siren_nom"), ("Raison sociale INSEE", "raison_sociale"), ("Date fermeture", "date_fermeture"),
+            ("SIREN par le nom (SIRENE)", "siren_nom"), ("Raison sociale INSEE", "raison_sociale"), ("Date fermeture", "date_fermeture"),
             ("Siège légal INSEE", "siege_insee"), ("LinkedIn (site)", "linkedin_site"),
             ("Statut proposé", "statut"), ("Action", "action"), ("Confiance", "confiance"), ("Note", "note_site")]
     feuille(wb, "Résultats", [c for c, _ in cols], [[r.get(k_, "") for _, k_ in cols] for r in res])
