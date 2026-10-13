@@ -149,6 +149,7 @@ class PhantomBuster:
         if url_directe and cle_url:                         # Sales Navigator : URL de recherche directe
             arg[cle_url] = url_directe
             n = 1
+            self.log(f"{nom_csv} : recherche Sales Navigator envoyée via « {cle_url} »")
         else:
             if url_directe:
                 valeurs, colonne = [url_directe], colonne or "searchUrl"
@@ -158,6 +159,7 @@ class PhantomBuster:
             arg[cle] = lien
             arg["columnName"] = colonne
             n = len(valeurs)
+            self.log(f"{nom_csv} : {n} lignes envoyées via « {cle} » (réglages du phantom : {', '.join(sorted(arg))[:200]})")
         for k in list(arg):                                  # traiter toute la liste en un seul lancement
             kl = k.lower()
             if kl.endswith("perlaunch"):
@@ -187,34 +189,55 @@ class PhantomBuster:
             await asyncio.sleep(10)
         return "trop long"
 
-    async def resultats(self, c: httpx.AsyncClient, conteneur: str, exclus: list = ()) -> list:
-        """Récupère le CSV produit (mêmes méthodes que prospection-bureaux)."""
-        url = None
-        for essai in range(5):
+    @staticmethod
+    def _lignes(obj) -> list:
+        """resultObject : soit directement la liste des résultats (JSON), soit un dict avec l'URL du CSV."""
+        if isinstance(obj, list):
+            return [{k: ("" if v is None else (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)))
+                     for k, v in x.items()} for x in obj if isinstance(x, dict)]
+        return []
+
+    async def resultats(self, c: httpx.AsyncClient, conteneur: str, nom: str = "") -> list:
+        """Récupère les résultats du lancement : JSON du resultObject, sinon CSV/JSON indiqué dans la sortie."""
+        sortie = ""
+        for essai in range(6):
             if essai:
                 await asyncio.sleep(5 * essai)
             try:
                 r = await c.get(f"{PB_API}/containers/fetch-result-object", headers=self.h, params={"id": conteneur})
                 ro = r.json().get("resultObject") if r.status_code == 200 else None
-                ro = json.loads(ro) if isinstance(ro, str) else ro
+                if isinstance(ro, str):
+                    try:
+                        ro = json.loads(ro)
+                    except ValueError:
+                        ro = None
+                lignes = self._lignes(ro)
+                if lignes:
+                    self.log(f"{nom} : {len(lignes)} lignes (resultObject)")
+                    return lignes
+                url = None
                 if isinstance(ro, dict):
-                    url = next((ro[k] for k in ("csvURL", "csvUrl", "resultsCsvUrl") if isinstance(ro.get(k), str)), None)
+                    url = next((ro[k] for k in ("csvURL", "csvUrl", "resultsCsvUrl", "jsonUrl", "jsonURL") if isinstance(ro.get(k), str)), None)
                 if not url:
                     r = await c.get(f"{PB_API}/containers/fetch-output", headers=self.h, params={"id": conteneur})
-                    out = r.json().get("output") or "" if r.status_code == 200 else ""
-                    out = "\n".join(map(str, out)) if isinstance(out, list) else out
-                    urls = [u for u in re.findall(r'https?://[^\s\'"<>)\]]+\.csv\b', out)
-                            if "paste.rs" not in u and u not in exclus]
+                    out = (r.json().get("output") or "") if r.status_code == 200 else ""
+                    sortie = "\n".join(map(str, out)) if isinstance(out, list) else str(out)
+                    urls = [u for u in re.findall(r'https?://[^\s\'"<>)\]]+\.(?:csv|json)\b', sortie) if "paste.rs" not in u]
                     url = ([u for u in urls if "phantombuster" in u or "amazonaws" in u] or urls or [None])[-1]
+                if url:
+                    r = await c.get(url, timeout=60)
+                    r.raise_for_status()
+                    if url.endswith(".json"):
+                        lignes = self._lignes(r.json())
+                    else:
+                        lignes = list(csv.DictReader(io.StringIO(r.content.decode("utf-8-sig", errors="replace"))))
+                    self.log(f"{nom} : {len(lignes)} lignes ({url.rsplit('/', 1)[-1]})")
+                    return lignes
             except Exception as e:
-                self.log(f"lecture du résultat : {e}")
-            if url:
-                break
-        if not url:
-            return []
-        r = await c.get(url, timeout=60)
-        r.raise_for_status()
-        return list(csv.DictReader(io.StringIO(r.content.decode("utf-8-sig", errors="replace"))))
+                self.log(f"{nom} : lecture du résultat impossible ({e})")
+        fin = re.sub(r"\s+", " ", sortie[-400:]) if sortie else "aucune sortie"
+        self.log(f"{nom} : aucun résultat récupéré. Fin du journal du phantom : {fin}")
+        return []
 
     async def executer(self, c, agent, nom_csv, stop, **kw) -> list:
         cid = await self.lancer(c, agent, nom_csv, **kw)
@@ -224,7 +247,7 @@ class PhantomBuster:
             self.log(f"phantom {nom_csv} : {st}")
             if st != "error":
                 return []
-        return await self.resultats(c, cid)
+        return await self.resultats(c, cid, nom_csv)
 
 
 # ───────────────────────── Kaspr ─────────────────────────
@@ -307,6 +330,9 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                 par_url.setdefault(cle_linkedin(l.get("companyUrl") or ""), l)
             for r in a_scraper:
                 l = par_url.get(cle_linkedin(r["linkedin"]))
+                if not l:                                   # secours : rapprochement par le nom
+                    l = next((x for x in lignes if ressemblance(r["nom"], x.get("name", "")) >= 0.9
+                              or (r.get("domaine") and domaine(x.get("website") or "") == r["domaine"])), None)
                 if not l:
                     r["controle_linkedin"] = "page non lue par le phantom"
                     continue

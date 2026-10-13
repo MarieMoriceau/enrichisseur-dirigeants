@@ -651,6 +651,8 @@ def excel(job) -> bytes:
         "  Mode « adresse seule » : pas de recherche de dirigeants.",
         "• Rien n'est écrit dans Pipedrive ni HubSpot.",
     ]
+    if job.get("journal"):
+        lignes += ["", "JOURNAL DES ÉTAPES LINKEDIN"] + job["journal"]
     for l in lignes:
         ws.append([l])
     ws["A1"].font = Font(name="Arial", bold=True, size=13, color="4A1E5C")
@@ -744,7 +746,7 @@ async def status(jid: str):
         return JSONResponse({"erreur": "job inconnu (le service a peut-être redémarré)"}, 404)
     res = j["resultats"]
     return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
-            "journal": j.get("journal", [])[-5:], "mode_linkedin": j.get("linkedin", False),
+            "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False),
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
             "emails": sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email")),
