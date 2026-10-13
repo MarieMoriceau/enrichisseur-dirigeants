@@ -204,7 +204,7 @@ async function poll(){
   $("bar").style.width=(100*s.fait/s.total)+"%";
   $("k1").textContent=s.fait+" / "+s.total;$("k2").textContent=s.siren;$("k3").textContent=s.linkedin;$("k4").textContent=s.radiees;
   $("chrono").textContent=Math.floor(s.secondes/60)+" min "+(s.secondes%60)+" s";
-  if(s.linkedin){$("kpiLi").hidden=false;$("k5").textContent=s.effectifs;$("k6").textContent=s.dirigeants;$("k7").textContent=s.emails;
+  if(s.mode_linkedin){$("kpiLi").hidden=false;$("k5").textContent=s.effectifs;$("k6").textContent=s.dirigeants;$("k7").textContent=s.emails;
     $("k8").textContent=s.phase?"LinkedIn":"—";}
   $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");
   $("msg").textContent=s.etat==="en cours"?(s.phase||"Traitement en cours…"):(s.etat==="arrêté"?"Arrêté. L'Excel contient les sociétés déjà traitées.":"Terminé.");
