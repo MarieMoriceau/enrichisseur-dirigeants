@@ -25,6 +25,8 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 INSEE_API = "https://recherche-entreprises.api.gouv.fr/search"
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+PIPEDRIVE_KEY = os.getenv("PIPEDRIVE_API_KEY", "")
+HUBSPOT_TOKEN = os.getenv("HUBSPOT_TOKEN", "")   # à brancher après la migration
 FORMES = r"\b(sas|sasu|sarl|eurl|sa|sca|snc|sci|selarl|selas|scp|groupe|group|holding|france|paris|international|ltd|limited|gmbh|inc|llp|llc|et associes|associes|and partners|partners)\b"
 CHEMINS_LEGAUX = ["/mentions-legales", "/mentions-legales/", "/fr/mentions-legales", "/legal",
                   "/mentions", "/legal-notice", "/informations-legales", "/cgu", "/cgv"]
@@ -150,6 +152,55 @@ def liens_legaux(html: str, base: str) -> list:
             if urlparse(u).netloc.replace("www.", "") == urlparse(base).netloc.replace("www.", ""):
                 out.append(u)
     return list(dict.fromkeys(out))[:4]
+
+
+# ───────────────────────── étape 0 : la société est-elle déjà dans le CRM ? ─────────────────────────
+_CHAMPS_PD = {}
+
+
+async def _champs_pipedrive(api: httpx.AsyncClient) -> dict:
+    """Clés internes des champs SIREN et SITE INTERNET des organisations Pipedrive (lues une fois)."""
+    if not _CHAMPS_PD:
+        try:
+            r = await api.get("https://api.pipedrive.com/v1/organizationFields",
+                              params={"api_token": PIPEDRIVE_KEY, "limit": 500})
+            for f in r.json().get("data") or []:
+                n = (f.get("name") or "").lower()
+                if n == "siren":
+                    _CHAMPS_PD["siren"] = f["key"]
+                elif n in ("site internet", "site web", "website") and "site" not in _CHAMPS_PD:
+                    _CHAMPS_PD["site"] = f["key"]
+        except Exception as e:
+            print(f"[V3 PIPEDRIVE CHAMPS] {e}")
+        _CHAMPS_PD.setdefault("ok", True)
+    return _CHAMPS_PD
+
+
+async def chercher_crm(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
+    """Cherche la société dans Pipedrive par son nom (et son code postal s'il est connu)."""
+    if not PIPEDRIVE_KEY:
+        return {}
+    try:
+        champs = await _champs_pipedrive(api)
+        r = await api.get("https://api.pipedrive.com/v1/organizations/search",
+                          params={"term": nom, "fields": "name", "limit": 5, "api_token": PIPEDRIVE_KEY})
+        items = [i.get("item", {}) for i in (r.json().get("data") or {}).get("items", [])]
+        cands = [i for i in items if ressemblance(nom, i.get("name", "")) >= 0.9]
+        if cp:
+            meme_cp = [i for i in cands if cp in str((i.get("address") or ""))]
+            cands = meme_cp or cands
+        if not cands:
+            return {}
+        org = cands[0]
+        d = (await api.get(f"https://api.pipedrive.com/v1/organizations/{org['id']}",
+                           params={"api_token": PIPEDRIVE_KEY})).json().get("data") or {}
+        siren = re.sub(r"\D", "", str(d.get(champs.get("siren", ""), "") or ""))[:9]
+        return {"id": str(org["id"]), "nom_crm": d.get("name", ""), "siren": siren if luhn_ok(siren) else "",
+                "site": str(d.get(champs.get("site", ""), "") or ""), "adresse": d.get("address") or "",
+                "doublons": len(cands)}
+    except Exception as e:
+        print(f"[V3 PIPEDRIVE] {nom}: {e}")
+        return {}
 
 
 # ───────────────────────── étape 1 : site web ─────────────────────────
@@ -325,6 +376,13 @@ def statut(row: dict) -> tuple:
 
 def _statut(row: dict) -> tuple:
     sp, ss = row["siren_crm"], row["siren_site"]
+    if row.get("mode", "").startswith("adresse"):
+        e = row.get("etat_crm", "")
+        if e == "active":
+            return "Active", "📍 SIREN déjà connu (actif) : recherche de l'adresse uniquement", "haute"
+        if e == "fermée":
+            return "Radiée, à vérifier", "⚠️ SIREN du CRM fermé : la société a peut-être changé de SIREN", "moyenne"
+        return "", "📍 SIREN déjà connu, introuvable à l'INSEE : à vérifier", "moyenne"
     if not ss and not sp and row.get("siren_nom"):
         e = row.get("etat_nom", "")
         return ("Active" if e == "active" else "Radiée, à vérifier" if e == "fermée" else ""), \
@@ -430,16 +488,30 @@ async def traiter(job_id: str, orgs: list):
             async with sem:
                 if job["stop"]:
                     return
+                # étape 0 : déjà dans le CRM ? (fichier avec SIREN, ou recherche Pipedrive par le nom)
+                o = dict(o)
+                o["dans_crm"] = "fichier" if o["siren_crm"] else ""
+                if not o["siren_crm"]:
+                    crm = await chercher_crm(api, o["nom"], o.get("cp", ""))
+                    if crm:
+                        o["dans_crm"] = "Pipedrive" + (f" ({crm['doublons']} fiches)" if crm["doublons"] > 1 else "")
+                        o["id"] = o["id"] or crm["id"]
+                        o["siren_crm"] = crm["siren"]
+                        o["site_crm"] = o["site_crm"] or crm["site"]
+                        o["adresse_crm"] = o["adresse_crm"] or crm["adresse"]
+                adresse_seule = bool(o["siren_crm"])      # SIREN déjà connu : on ne cherche que l'adresse physique
                 doms = domaines(o["site_crm"])
                 dom, src = (doms[0] if doms else ""), "CRM"
                 sirene = {}
                 if not dom and not o["siren_crm"]:
                     async with api_sem:
                         sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""))
-                if not dom:
+                if not dom and not adresse_seule:
                     dom, src = await chercher_domaine(api, o["nom"], o.get("cp", ""), o.get("ville", ""),
                                                       sirene.get("raison", ""), sirene.get("siren", "") or o["siren_crm"])
-                s = await scanner_site(web, dom)
+                s = await scanner_site(web, dom)       # en mode adresse seule : sert seulement au lien LinkedIn
+                if adresse_seule:
+                    s = {**s, "siren_site": "", "candidats": [], "page_siren": ""}
                 for autre in doms[1:]:                      # plusieurs sites dans le CRM : on essaie les suivants
                     if s["site_joignable"] == "oui":
                         break
@@ -447,7 +519,8 @@ async def traiter(job_id: str, orgs: list):
                     if s2["site_joignable"] == "oui":
                         dom, s = autre, s2
                 row = {**o, "domaine": dom, "source_site": src, **s,
-                       "controle_nom": "", "siren_nom": "", "etat_nom": "", "nb_homonymes": ""}
+                       "controle_nom": "", "siren_nom": "", "etat_nom": "", "nb_homonymes": "",
+                       "mode": "adresse seule (SIREN déjà au CRM)" if adresse_seule else "complet"}
                 async with api_sem:
                     i_site = await insee(api, s["siren_site"]) if s["siren_site"] else {}
                     if len(s["candidats"]) > 1:      # plusieurs SIREN : on garde celui dont le nom colle
@@ -465,7 +538,7 @@ async def traiter(job_id: str, orgs: list):
                     else:
                         i_crm = await insee(api, o["siren_crm"])
                     i_nom = {}
-                    if not s["siren_site"] and not o["siren_crm"] and not sirene:
+                    if not s["siren_site"] and not o["siren_crm"] and not sirene and not adresse_seule:
                         sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""))
                     if sirene.get("siren") and not s["siren_site"]:
                         i_nom = await insee(api, sirene["siren"])
@@ -477,7 +550,7 @@ async def traiter(job_id: str, orgs: list):
                 row.update({"raison_sociale": ref.get("raison_sociale", ""), "date_fermeture": ref.get("date_fermeture", ""),
                             "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", "")})
                 # le site est-il bien celui de cette société ? (vaut aussi pour les sites du CRM, souvent faux)
-                if dom and s["site_joignable"] == "oui":
+                if dom and s["site_joignable"] == "oui" and not adresse_seule:
                     compact = norm_nom(o["nom"]).replace(" ", "")
                     etiquette = dom.split(".")[0].replace("-", "")
                     dom_ok = bool(compact) and (etiquette == compact or (len(etiquette) >= 6 and compact.startswith(etiquette)))
@@ -533,6 +606,7 @@ def excel(job) -> bytes:
     lignes = [
         f"ENRICHISSEUR V3 · étapes 1 et 2 · {auj}", "",
         f"{n} organisations traitées",
+        f"Déjà dans le CRM avec un SIREN (adresse seule) : {k(lambda r: r.get('mode', '').startswith('adresse'))}",
         f"Site joignable : {k(lambda r: r['site_joignable'] == 'oui')}",
         f"Site retrouvé par recherche (absent du fichier) : {k(lambda r: r['source_site'] not in ('', 'CRM'))}",
         f"SIREN trouvé sur le site : {k(lambda r: r['siren_site'])}",
@@ -547,6 +621,8 @@ def excel(job) -> bytes:
         "• Suppressions : radiées avec site mort, à valider avant de les retirer",
         "• À vérifier : SIREN fermé mais site en ligne (changement de SIREN probable)", "",
         "RÈGLES",
+        "• Étape 0 : si la société a déjà un SIREN (dans le fichier ou dans Pipedrive), on ne recherche que son adresse physique.",
+        "  Son SIREN est seulement contrôlé à l'INSEE (gratuit), pour repérer les sociétés fermées.",
         "• Le SIREN vient des mentions légales du site, contrôlé (clé de Luhn) puis vérifié à l'INSEE.",
         "• Société sans site connu : on la cherche d'abord dans SIRENE par son nom (et son code postal), puis on cherche son site sur le web.",
         "  Le site n'est retenu avec confiance haute que si le SIREN qu'il affiche est le même que celui de SIRENE (ou que le nom colle).",
@@ -560,7 +636,7 @@ def excel(job) -> bytes:
     ws["A1"].font = Font(name="Arial", bold=True, size=13, color="4A1E5C")
     ws.column_dimensions["A"].width = 110
 
-    cols = [("ID Pipedrive", "id"), ("Société", "nom"), ("Domaine", "domaine"), ("Site trouvé via", "source_site"),
+    cols = [("ID Pipedrive", "id"), ("Société", "nom"), ("Déjà au CRM", "dans_crm"), ("Traitement", "mode"), ("Domaine", "domaine"), ("Site trouvé via", "source_site"),
             ("Contrôle du nom", "controle_nom"), ("Site joignable", "site_joignable"),
             ("SIREN CRM", "siren_crm"), ("État SIREN CRM", "etat_crm"), ("SIREN site", "siren_site"),
             ("État SIREN site", "etat_site"), ("Page où le SIREN a été trouvé", "page_siren"),
