@@ -590,6 +590,25 @@ async def traiter(job_id: str, orgs: list):
 
 
 # ───────────────────────── Excel ─────────────────────────
+def decouper_adresse(a: str) -> tuple:
+    """(rue, code postal, ville) pour les 3 formats rencontrés :
+    CRM « 17 Rue Montmartre, 75001 Paris » · Google « 24 Rue de l'Est, 75020 Paris, France » · LinkedIn « 24, Rue de l'est, Paris, 75020, FR »"""
+    m = re.search(r"\b(\d{5})\b", a or "")
+    if not m:
+        return a, "", ""
+    avant = a[:m.start()].strip(" ,–-")
+    apres = re.sub(r",?\s*(FR|France)\s*$", "", a[m.end():], flags=re.I).strip(" ,–-")
+    if apres:
+        return avant, m.group(1), apres
+    morceaux = [x.strip() for x in avant.split(",") if x.strip()]
+    if len(morceaux) >= 2 and not re.search(r"\d", morceaux[-1]):
+        ville = morceaux.pop()
+        rue = ", ".join(morceaux)
+        rue = re.sub(r"^(\d+\s*(?:bis|ter)?)\s*,\s*", r"\1 ", rue)       # « 24, Rue de l'est » → « 24 Rue de l'est »
+        return rue, m.group(1), ville
+    return avant, m.group(1), ""
+
+
 VIOLET = PatternFill("solid", fgColor="4A1E5C")
 
 
@@ -634,7 +653,8 @@ def excel(job) -> bytes:
     ] + ([
         f"Effectif LinkedIn trouvé : {k(lambda r: r.get('effectif_linkedin') not in (None, ''))}",
         f"Adresse confirmée par LinkedIn : {k(lambda r: r.get('confiance_adresse') == 'haute')}",
-        f"Adresse différente sur LinkedIn (à valider) : {k(lambda r: r.get('confiance_adresse') == 'moyenne')}",
+        f"Adresse à corriger (LinkedIn + Google concordent) : {k(lambda r: str(r.get('action_adresse', '')).startswith('🔄'))}",
+        f"Adresse à valider (une seule source ou désaccord) : {k(lambda r: r.get('confiance_adresse') == 'moyenne')}",
         f"Sociétés quasi inactives (≤ 7 salariés LinkedIn) : {k(lambda r: str(r.get('statut_activite', '')).startswith('Quasi'))}",
         f"Dirigeants trouvés : {sum(len(r.get('dirigeants', [])) for r in res)} · avec e-mail : {sum(1 for r in res for d in r.get('dirigeants', []) if d['email'])}",
     ] if job.get("linkedin") else []) + ["",
@@ -653,7 +673,8 @@ def excel(job) -> bytes:
         "• L'adresse INSEE est celle du SIÈGE LÉGAL (souvent une domiciliation) : elle n'est PAS proposée comme adresse des bureaux.",
         "• « Suppressions » = SIREN fermé + site mort. Le contrôle LinkedIn (3e signal) viendra à l'étape suivante : ne rien supprimer avant.",
         "• LinkedIn : la page vient du lien du site officiel ; sinon du Company URL Finder, vérifiée par le site ou le nom.",
-        "  Adresse : confirmée si LinkedIn = CRM ; nouvelle adresse LinkedIn = à valider ; siège à l'étranger = on garde le CRM.",
+        "  Adresse : validée quand 2 sources concordent (CRM, LinkedIn, Google Maps). Google n'est interrogé qu'en cas de désaccord,",
+        "  et une fiche Google n'est retenue que si son site web est celui de la société. Siège LinkedIn à l'étranger = ignoré.",
         "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
         "  Mode « adresse seule » : pas de recherche de dirigeants.",
         "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",
@@ -676,7 +697,8 @@ def excel(job) -> bytes:
             ("Statut proposé", "statut"), ("Action", "action"), ("Confiance", "confiance"), ("Note", "note_site")]
     if job.get("linkedin"):
         cols += [("Page LinkedIn retenue", "linkedin"), ("Trouvée via", "source_linkedin"), ("Contrôle LinkedIn", "controle_linkedin"),
-                 ("Adresse CRM", "adresse_crm"), ("Adresse LinkedIn", "adresse_linkedin"), ("Adresse proposée", "adresse_proposee"),
+                 ("Adresse CRM", "adresse_crm"), ("Adresse LinkedIn", "adresse_linkedin"), ("Fiche Google", "fiche_google"),
+                 ("Adresse Google", "adresse_google"), ("Adresse proposée", "adresse_proposee"),
                  ("Action adresse", "action_adresse"), ("Confiance adresse", "confiance_adresse"),
                  ("Effectif LinkedIn", "effectif_linkedin"), ("Tranche déclarée", "tranche_linkedin"), ("Statut activité", "statut_activite")]
     feuille(wb, "Résultats", [c for c, _ in cols], [[r.get(k_, "") for _, k_ in cols] for r in res])
@@ -692,19 +714,20 @@ def excel(job) -> bytes:
         if job.get("linkedin"):
             rue = cp = ville = ""
             if r.get("confiance_adresse") == "haute" and r.get("adresse_proposee"):
-                a = r["adresse_proposee"]
-                m = re.search(r"^(.*?)[,\s]+(\d{5})[,\s]+([^,]+)", a)
-                if m:
-                    rue, cp, ville = m.group(1).strip(" ,"), m.group(2), m.group(3).replace(", FR", "").replace("France", "").strip(" ,")
+                rue, cp, ville = decouper_adresse(r["adresse_proposee"])
             eff = r.get("effectif_linkedin", "")
             l += [rue, cp, ville, eff, auj if eff != "" else ""]
         return l
     feuille(wb, "Import HubSpot", ent, [ligne_hub(r) for r in hub])
     if job.get("linkedin"):
         adr = [r for r in res if r.get("confiance_adresse") == "moyenne"]
-        feuille(wb, "Adresses à valider", ["ID Pipedrive", "Société", "Adresse CRM", "Adresse LinkedIn", "Action", "Effectif LinkedIn", "Valider ? (oui/non)"],
-                [[r["id"], r["nom"], r.get("adresse_crm", ""), r.get("adresse_linkedin", ""), r.get("action_adresse", ""),
-                  r.get("effectif_linkedin", ""), ""] for r in adr])
+        feuille(wb, "Adresses à valider", ["ID Pipedrive", "Société", "Adresse CRM", "Adresse LinkedIn", "Adresse Google", "Action",
+                                           "Effectif LinkedIn", "Valider ? (oui/non)"],
+                [[r["id"], r["nom"], r.get("adresse_crm", ""), r.get("adresse_linkedin", ""), r.get("adresse_google", ""),
+                  r.get("action_adresse", ""), r.get("effectif_linkedin", ""), ""] for r in adr])
+        corr = [r for r in res if str(r.get("action_adresse", "")).startswith("🔄")]
+        feuille(wb, "Adresses à corriger", ["ID Pipedrive", "Société", "Ancienne adresse (CRM)", "Nouvelle adresse", "Sources"],
+                [[r["id"], r["nom"], r.get("adresse_crm", ""), r.get("adresse_proposee", ""), "LinkedIn + Google"] for r in corr])
         dir_ = [(r, d) for r in res for d in sorted(r.get("dirigeants", []), key=lambda d: d["role"])]
         feuille(wb, "Dirigeants", ["ID Pipedrive", "Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "Île-de-France",
                                    "LinkedIn", "Déjà dans Pipedrive", "E-mail", "Source e-mail"],
@@ -768,7 +791,7 @@ async def status(jid: str):
 @router.get("/v3/config")
 async def config():
     return {"linkedin": LI.pb_configure(), "url_finder": bool(LI.PB_URL_FINDER), "salesnav": bool(LI.PB_SALESNAV),
-            "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "max": LI.MAX_LINKEDIN}
+            "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "gmaps": bool(LI.PB_GMAPS), "max": LI.MAX_LINKEDIN}
 
 
 @router.post("/v3/stop/{jid}")

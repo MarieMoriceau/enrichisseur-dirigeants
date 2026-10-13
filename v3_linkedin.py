@@ -17,6 +17,7 @@ PB_KEY = os.getenv("PHANTOMBUSTER_API_KEY", "")
 PB_URL_FINDER = os.getenv("PB_URL_FINDER_ID", "")
 PB_SCRAPER = os.getenv("PB_COMPANY_SCRAPER_ID", "")
 PB_SALESNAV = os.getenv("PB_SALESNAV_ID", "")
+PB_GMAPS = os.getenv("PB_GMAPS_ID", "")
 KASPR_KEY = os.getenv("KASPR_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 PIPEDRIVE_KEY = os.getenv("PIPEDRIVE_API_KEY", "")
@@ -88,6 +89,27 @@ def decider_adresse(crm: str, linkedin: str) -> dict:
     hors = "" if dep in IDF else " · hors Île-de-France"
     return {"adresse_proposee": li, "action_adresse": f"🆕 adresse différente sur LinkedIn (déménagement ?){hors} : à valider",
             "confiance_adresse": "moyenne"}
+
+
+def arbitrer_google(r: dict, google: str):
+    """Google Maps tranche entre l'adresse du CRM et celle de LinkedIn (règle : 2 sources concordantes)."""
+    crm, li = r.get("adresse_crm", ""), r.get("adresse_linkedin", "")
+    li_ok = bool(li and cle_adresse(li) and li.rsplit(",", 1)[-1].strip().upper() in ("FR", "FRANCE"))
+    if not google or not cle_adresse(google):
+        return
+    if crm and meme_adresse(crm, google):
+        r.update(adresse_proposee=crm, confiance_adresse="haute",
+                 action_adresse="✅ adresse du CRM confirmée par Google" + (" (LinkedIn pas à jour)" if li_ok else ""))
+    elif li_ok and meme_adresse(li, google):
+        r.update(adresse_proposee=li, confiance_adresse="haute",
+                 action_adresse="🔄 nouvelle adresse confirmée par LinkedIn + Google : corriger le CRM")
+    elif li_ok:
+        r.update(adresse_proposee="", confiance_adresse="moyenne",
+                 action_adresse="⚖️ 3 adresses différentes (CRM, LinkedIn, Google) : à arbitrer")
+    else:
+        dep = cle_adresse(google)[2][:2]
+        r.update(adresse_proposee=google, confiance_adresse="moyenne",
+                 action_adresse="🆕 adresse Google seule (LinkedIn muet)" + ("" if dep in IDF else " · hors Île-de-France") + " : à valider")
 
 
 def role(titre: str) -> str:
@@ -165,7 +187,8 @@ class PhantomBuster:
         for k in list(arg):                                  # traiter toute la liste en un seul lancement
             kl = k.lower()
             if kl.endswith("perlaunch"):
-                arg[k] = max(n, resultats_par_recherche * n) if resultats_par_recherche else n
+                resultats = any(m in kl for m in ("result", "profile", "lead"))
+                arg[k] = resultats_par_recherche * n if (resultats and resultats_par_recherche) else n
             elif resultats_par_recherche and ("persearch" in kl or kl == "numberofprofiles"):
                 arg[k] = resultats_par_recherche
         arg["csvName"] = nom_csv
@@ -420,6 +443,39 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                 eff = r["effectif_linkedin"]
                 r["statut_activite"] = ("Quasi inactive (≤ 7 salariés LinkedIn)" if eff != "" and eff <= 7 else "Active") \
                     if r.get("statut") != "Radiée, à vérifier" else "Radiée, à vérifier"
+        if stop():
+            return
+
+        # 3c. Google Maps : arbitre quand LinkedIn et le CRM ne s'accordent pas (ou quand LinkedIn est muet)
+        a_arbitrer = [r for r in res if r.get("confiance_adresse") != "haute" and not stop()]
+        if PB_GMAPS and a_arbitrer:
+            job["phase"] = f"Google Maps : arbitrage de {len(a_arbitrer)} adresses…"
+            def requete(r):
+                cle = cle_adresse(r.get("adresse_crm", "") or "")
+                return f"{r['nom']}, {cle[2] if cle else 'Paris'}"
+            for r in a_arbitrer:
+                r["requete_google"] = requete(r)
+            try:
+                lignes = await pb.executer(c, PB_GMAPS, f"v3_{jid}_gmaps", stop, resultats_par_recherche=3,
+                                           valeurs=[r["requete_google"] for r in a_arbitrer], colonne="Recherche")
+            except Exception as e:
+                journal(f"Google Maps en échec : {e}")
+                lignes = []
+            par_req = {}
+            for l in lignes:
+                par_req.setdefault((l.get("query") or "").strip().lower(), []).append(l)
+            for r in a_arbitrer:
+                cands = par_req.get(r["requete_google"].lower(), [])
+                # une fiche Google n'est retenue que si son site = celui de la société (ou, sans site connu, nom quasi identique)
+                bon = next((l for l in cands if r.get("domaine") and domaine(l.get("website") or "") == r["domaine"]), None)
+                if not bon and not r.get("domaine"):
+                    bon = next((l for l in cands if ressemblance(r["nom"], l.get("title", "")) >= 0.9), None)
+                if bon and bon.get("address"):
+                    r["adresse_google"] = bon["address"]
+                    r["fiche_google"] = bon.get("title", "")
+                    arbitrer_google(r, bon["address"])
+                elif cands:
+                    r["fiche_google"] = "❌ fiches Google écartées (homonymes) : " + ", ".join(l.get("title", "") for l in cands[:3])
         if stop():
             return
 
