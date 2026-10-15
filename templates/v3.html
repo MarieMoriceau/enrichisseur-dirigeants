@@ -63,6 +63,16 @@ label{display:block;font-weight:500;font-size:14px;margin:0 0 6px}
 .journal{font-size:12.5px;color:var(--muted);margin-top:10px;font-family:ui-monospace,Menlo,monospace;white-space:pre-line}
 .or{color:var(--muted);font-size:13px;text-align:center;margin:12px 0 6px}
 textarea{font:inherit;width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);resize:vertical}
+input[type=email]{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%}
+.histo{width:100%;border-collapse:collapse;font-size:13.5px}
+.histo th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);padding:6px 8px}
+.histo td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
+.histo td small{display:block;color:var(--muted);font-size:12px}
+.histo a{color:var(--tag-ink);font-weight:500}
+.pill{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:4px;background:var(--tag);color:var(--tag-ink);white-space:nowrap}
+.pill.ko{background:var(--accent-soft);color:var(--accent)}
+.histo-wrap{overflow-x:auto}
+@media (max-width:720px){.histo .opt{display:none}}
 input[type=number]{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:120px}
 input:focus-visible,button:focus-visible,a:focus-visible,.drop:focus-within{outline:2px solid var(--accent);outline-offset:2px}
 .hint{color:var(--muted);font-size:12.5px;margin-top:4px}
@@ -130,6 +140,8 @@ footer a{color:var(--tag-ink)}
             <span><b>Tout</b><small>+ e-mails (Pipedrive, puis Kaspr, puis Fullenrich).</small></span></label>
           <small id="liInfo">vérification de la configuration…</small>
         </fieldset>
+        <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(l'Excel vous y sera envoyé à la fin)</span></label>
+        <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
         <div class="row">
           <div>
             <label for="limite">Lignes à traiter</label>
@@ -160,11 +172,21 @@ footer a{color:var(--tag-ink)}
         <div><b id="k8">—</b><span>étape en cours</span></div>
       </div>
       <div class="journal" id="journal"></div>
-      <div class="tags"><span class="tag warn">Laissez cette page ouverte : elle empêche le service de s'endormir</span></div>
+      <div class="tags"><span class="tag" id="tagMail">Vous pouvez fermer cet onglet : l'Excel arrivera par mail et restera dans « Lancements précédents ».</span></div>
       <div class="actions">
         <a class="btn dl" id="dl" href="#" hidden>Télécharger l'Excel</a>
         <button class="btn ghost" id="stop" type="button">Arrêter</button>
       </div>
+    </div>
+  </section>
+
+  <section class="floor">
+    <div class="floor-head"><span class="floor-num">3</span><h2>Lancements précédents</h2><span class="count" id="hCount"></span></div>
+    <div class="card">
+      <div class="histo-wrap"><table class="histo">
+        <thead><tr><th>Lancement</th><th>Choix</th><th class="opt">Résultats</th><th>Statut</th><th></th></tr></thead>
+        <tbody id="hBody"><tr><td colspan="5">Chargement…</td></tr></tbody>
+      </table></div>
     </div>
   </section>
 
@@ -208,14 +230,43 @@ $("f").onsubmit=async e=>{
   e.preventDefault();
   if(!inp.files.length&&!$("liste").value.trim()){$("dropTxt").innerHTML="<b>Déposez un fichier ou collez une liste</b>";return}
   const fd=new FormData($("f"));
+  try{localStorage.setItem("v3mail",$("mail").value.trim())}catch(_){}
   $("suivi").hidden=false;$("dl").hidden=true;$("msg").textContent="Envoi du fichier…";
   $("suivi").scrollIntoView({behavior:"smooth"});
   try{
     const r=await fetch("/v3/run",{method:"POST",body:fd});const j=await r.json();
     if(!r.ok){$("msg").textContent=j.erreur||"Erreur";return}
-    jid=j.job;clearInterval(timer);timer=setInterval(poll,2500);poll();
+    suivre(j.job);setTimeout(histo,3000);
   }catch(err){$("msg").textContent="Le service ne répond pas. Patientez une minute et relancez."}
 };
+function suivre(id){
+  jid=id;try{localStorage.setItem("v3job",id)}catch(_){}
+  $("suivi").hidden=false;$("dl").hidden=true;clearInterval(timer);timer=setInterval(poll,2500);poll();
+}
+const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["en attente",""]};
+async function histo(){
+  try{
+    const h=await (await fetch("/v3/historique")).json();
+    if(!h.notion){$("hBody").innerHTML='<tr><td colspan="5">Historique indisponible : clé Notion absente dans Render.</td></tr>';return}
+    const L=h.lancements||[];$("hCount").textContent=L.length?L.length+" derniers":"";
+    if(!L.length){$("hBody").innerHTML='<tr><td colspan="5">Aucun lancement pour l\'instant.</td></tr>';return}
+    $("hBody").innerHTML=L.map(x=>{
+      const d=x.debut?new Date(x.debut).toLocaleString("fr-FR",{timeZone:"Europe/Paris",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
+      const st=STATUTS[x.statut]||[x.statut,""];
+      const res=[x.societes!=null?x.societes+" sociétés":"",x.dirigeants?x.dirigeants+" dirigeants":"",x.emails?x.emails+" e-mails":""].filter(Boolean).join(" · ");
+      let act="";
+      if(x.statut==="EN_COURS"&&x.en_memoire)act=`<a href="#" data-job="${esc(x.job)}">Suivre</a>`;
+      else if(x.fichier)act=`<a href="/v3/historique/${esc(x.page)}/excel">Excel</a>`;
+      return `<tr><td>${esc(x.nom)}<small>${esc(d)}${x.par?" · "+esc(x.par):""}</small></td><td>${esc(x.perimetre)}</td>`+
+             `<td class="opt">${esc(res)}${x.duree!=null?`<small>${esc(x.duree)} min</small>`:""}</td>`+
+             `<td><span class="pill ${st[1]}">${esc(st[0])}</span></td><td>${act}</td></tr>`}).join("");
+    document.querySelectorAll("[data-job]").forEach(a=>a.onclick=ev=>{ev.preventDefault();suivre(a.dataset.job);$("suivi").scrollIntoView({behavior:"smooth"})});
+  }catch(_){$("hBody").innerHTML='<tr><td colspan="5">Historique indisponible pour le moment.</td></tr>'}
+}
+histo();
+try{const m=localStorage.getItem("v3mail");if(m)$("mail").value=m;
+  const k=localStorage.getItem("v3job");if(k)fetch("/v3/status/"+k).then(r=>r.ok?r.json():null).then(s=>{if(s&&s.etat==="en cours")suivre(k)})}catch(_){}
 async function poll(){
   const r=await fetch("/v3/status/"+jid);const s=await r.json();
   if(!r.ok){$("msg").textContent=s.erreur;clearInterval(timer);return}
@@ -225,8 +276,11 @@ async function poll(){
   if(s.mode_linkedin){$("kpiLi").hidden=false;$("k5").textContent=s.effectifs;$("k6").textContent=s.dirigeants;$("k7").textContent=s.emails;
     $("k8").textContent=s.phase?"LinkedIn":"—";}
   $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");
-  $("msg").textContent=s.etat==="en cours"?(s.phase||"Traitement en cours…"):(s.etat==="arrêté"?"Arrêté. L'Excel contient les sociétés déjà traitées.":"Terminé.");
-  if(s.etat!=="en cours"){clearInterval(timer);$("dl").href="/v3/excel/"+jid;$("dl").hidden=false}
+  const fin={"arrêté":"Arrêté. L'Excel contient les sociétés déjà traitées.","erreur":"Interrompu sur une erreur. L'Excel contient les sociétés déjà traitées."}[s.etat]||"Terminé.";
+  const mail=s.mails&&s.mails.length?(s.envoi==="fait"?" Excel envoyé à "+s.mails.join(", ")+".":" Envoi du mail…"):"";
+  $("msg").textContent=s.etat==="en cours"?(s.phase||"Traitement en cours…"):fin+mail;
+  if(s.etat!=="en cours"){$("dl").href="/v3/excel/"+jid;$("dl").hidden=false;
+    if(s.envoi==="fait"){clearInterval(timer);try{localStorage.removeItem("v3job")}catch(_){};histo()}}
 }
 $("stop").onclick=async()=>{if(jid){await fetch("/v3/stop/"+jid,{method:"POST"});}};
 </script>

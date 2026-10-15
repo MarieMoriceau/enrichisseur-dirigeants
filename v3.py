@@ -14,11 +14,12 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import APIRouter, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 import v3_linkedin as LI
+import v3_suivi as SUIVI
 
 router = APIRouter()
 JOBS: dict = {}
@@ -484,7 +485,39 @@ def lire_fichier(nom: str, data: bytes) -> list:
 
 
 # ───────────────────────── traitement ─────────────────────────
+def nom_fichier(job: dict) -> str:
+    base = re.sub(r"[^A-Za-z0-9_-]+", "_", unicodedata.normalize("NFKD", job.get("nom", "")).encode("ascii", "ignore").decode())[:40].strip("_")
+    return f"enrichisseur_v3_{date.today().isoformat()}_{base or job['fait']}.xlsx"
+
+
 async def traiter(job_id: str, orgs: list):
+    """Traitement complet, puis : Excel joint dans Notion (historique) et envoyé par mail."""
+    job = JOBS[job_id]
+    asyncio.create_task(SUIVI.rester_eveille(JOBS))
+    job["notion_id"] = await SUIVI.notion_creer(job)
+    try:
+        await _traiter(job_id, orgs)
+    except Exception as e:
+        job["erreur"] = f"{type(e).__name__} : {e}"
+        job.setdefault("journal", []).append(f"erreur : {job['erreur']}")
+        print(f"[V3] {job_id} : {e}")
+    job["phase"] = ""
+    job["fin"] = job.get("fin") or time.time()
+    if job["etat"] == "en cours":
+        job["etat"] = "erreur" if job.get("erreur") else ("arrêté" if job["stop"] else "terminé")
+    try:
+        xl = excel(job) if job["resultats"] else None
+    except Exception as e:
+        xl = None
+        job.setdefault("journal", []).append(f"Excel impossible : {e}")
+    fn = nom_fichier(job)
+    job["envoi"] = "en cours"
+    await SUIVI.notion_finir(job, xl, fn)
+    await SUIVI.envoyer_resultat(job, xl, fn)
+    job["envoi"] = "fait"
+
+
+async def _traiter(job_id: str, orgs: list):
     job = JOBS[job_id]
     sem = asyncio.Semaphore(8)
     limits = httpx.Limits(max_connections=20)
@@ -584,9 +617,7 @@ async def traiter(job_id: str, orgs: list):
         except Exception as e:
             job.setdefault("journal", []).append(f"étapes LinkedIn interrompues : {e}")
             print(f"[V3 LINKEDIN] {e}")
-    job["phase"] = ""
     job["fin"] = time.time()
-    job["etat"] = "terminé" if not job["stop"] else "arrêté"
 
 
 # ───────────────────────── Excel ─────────────────────────
@@ -763,7 +794,10 @@ def excel(job) -> bytes:
 # ───────────────────────── routes ─────────────────────────
 @router.post("/v3/run")
 async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
-              linkedin: str = Form(""), perimetre: str = Form("")):
+              linkedin: str = Form(""), perimetre: str = Form(""), mail: str = Form("")):
+    mails = SUIVI.mails_valides(mail)
+    if mail.strip() and not mails:
+        return JSONResponse({"erreur": "Adresse mail invalide."}, 400)
     # perimetre : siren | societes | dirigeants | tout (l'ancienne case « linkedin » vaut « tout »)
     if perimetre not in ("siren", "societes", "dirigeants", "tout"):
         perimetre = "tout" if linkedin in ("on", "1", "true") else "siren"
@@ -782,7 +816,11 @@ async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), li
         return JSONResponse({"erreur": f"Avec les étapes LinkedIn, {LI.MAX_LINKEDIN} sociétés maximum par lancement "
                                        f"(quota LinkedIn). Mettez {LI.MAX_LINKEDIN} dans « Lignes à traiter »."}, 400)
     jid = uuid.uuid4().hex[:8]
-    JOBS[jid] = {"id": jid, "linkedin": avec_li, "perimetre": perimetre, "phase": "Sites web et SIREN…", "journal": [],"total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours", "stop": False,
+    if fichier is not None and fichier.filename:
+        nom = re.sub(r"\.(xlsx|csv)$", "", fichier.filename, flags=re.I)
+    else:
+        nom = ", ".join(o["nom"] for o in orgs[:3]) + (f" (+{len(orgs) - 3})" if len(orgs) > 3 else "")
+    JOBS[jid] = {"id": jid, "nom": nom, "mails": mails, "linkedin": avec_li, "perimetre": perimetre, "phase": "Sites web et SIREN…", "journal": [],"total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours", "stop": False,
                  "debut": time.time(), "fin": None}
     asyncio.create_task(traiter(jid, orgs))
     return {"job": jid, "total": len(orgs)}
@@ -795,6 +833,7 @@ async def status(jid: str):
         return JSONResponse({"erreur": "job inconnu (le service a peut-être redémarré)"}, 404)
     res = j["resultats"]
     return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
+            "nom": j.get("nom", ""), "mails": j.get("mails", []), "envoi": j.get("envoi", ""),
             "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False), "perimetre": j.get("perimetre", ""),
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
@@ -822,9 +861,28 @@ async def telecharger(jid: str):
     j = JOBS.get(jid)
     if not j:
         return JSONResponse({"erreur": "job inconnu"}, 404)
-    nom = f"enrichisseur_v3_{date.today().isoformat()}_{j['fait']}_societes.xlsx"
+    nom = nom_fichier(j)
     return StreamingResponse(io.BytesIO(excel(j)), headers={"Content-Disposition": f'attachment; filename="{nom}"'},
                              media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@router.get("/v3/historique")
+async def historique():
+    try:
+        return {"notion": bool(SUIVI.NOTION_KEY), "mail": bool(SUIVI.SMTP_USER and SUIVI.SMTP_PASS),
+                "lancements": await SUIVI.historique(JOBS)}
+    except Exception as e:
+        return {"notion": bool(SUIVI.NOTION_KEY), "lancements": [], "erreur": str(e)}
+
+
+@router.get("/v3/historique/{page_id}/excel")
+async def excel_historique(page_id: str):
+    if not re.fullmatch(r"[0-9a-f\-]{32,36}", page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    url = await SUIVI.url_fichier(page_id)
+    if not url:
+        return JSONResponse({"erreur": "pas de fichier pour ce lancement"}, 404)
+    return RedirectResponse(url)
 
 
 @router.get("/", response_class=HTMLResponse)
