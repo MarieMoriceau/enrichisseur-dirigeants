@@ -508,6 +508,51 @@ def _entreprise_actuelle(l: dict) -> tuple:
     return nom, cid, poste, en_cours, periode
 
 
+def _poste_precedent(l: dict) -> tuple:
+    """(nom, slug LinkedIn, en cours ?, période) de l'avant-dernier poste lu par le Profile Scraper."""
+    periode = str(l.get("linkedinPreviousJobDateRange") or "")
+    return (l.get("previousCompanyName") or "", (l.get("linkedinPreviousCompanySlug") or "").lower(),
+            bool(periode) and bool(re.search(r"present|aujourd|actuel|now", periode, re.I)), periode)
+
+
+def _est_nous(r: dict, nom: str, cid: str = "", slug: str = "", ressemblance=None) -> bool:
+    if cid and cid == r.get("linkedin_id"):
+        return True
+    if slug and r.get("linkedin") and slug == cle_linkedin(r["linkedin"]):
+        return True
+    return bool(nom and ressemblance and max(ressemblance(nom, r.get("nom", "")), ressemblance(nom, r.get("nom_linkedin") or "")) >= 0.8)
+
+
+def _slug_profil(u: str) -> str:
+    m = re.search(r"linkedin\.com/in/([^/?#\s]+)", (u or "").lower())
+    return m.group(1).strip("/") if m else ""
+
+
+async def personne_ailleurs(c: httpx.AsyncClient, d: dict, r: dict, ressemblance) -> dict:
+    """Le dirigeant est-il déjà dans Pipedrive, rattaché à une AUTRE société ? (une personne Pipedrive n'a qu'une société)"""
+    if not (PIPEDRIVE_KEY and d.get("nom_complet")):
+        return {}
+    try:
+        res = await c.get("https://api.pipedrive.com/v1/persons/search",
+                          params={"term": d["nom_complet"], "fields": "name", "limit": 10, "api_token": PIPEDRIVE_KEY})
+        items = [i.get("item", {}) for i in (res.json().get("data") or {}).get("items", [])]
+        cle_li = await _champ_linkedin_personne(c)
+        for p in items:
+            org = p.get("organization") or {}
+            if ressemblance(d["nom_complet"], p.get("name", "")) < 0.92 or str(org.get("id")) == str(r.get("id")):
+                continue
+            if cle_li and d.get("linkedin"):              # homonyme ? on compare les profils LinkedIn quand les deux sont connus
+                fiche = (await c.get(f"https://api.pipedrive.com/v1/persons/{p['id']}",
+                                     params={"api_token": PIPEDRIVE_KEY})).json().get("data") or {}
+                li = _slug_profil(str(fiche.get(cle_li) or ""))
+                if li and li != _slug_profil(d["linkedin"]):
+                    continue
+            return {"id": str(p.get("id")), "org_id": str(org.get("id") or ""), "org_nom": org.get("name") or "sans société"}
+    except Exception as e:
+        print(f"[V3 PIPEDRIVE AILLEURS] {d.get('nom_complet')}: {e}")
+    return {}
+
+
 async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, journal, stop):
     """Pour chaque société : les contacts Pipedrive sont-ils toujours là ?
        présent parmi les dirigeants Sales Navigator → ✅ toujours là
@@ -527,6 +572,9 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
                     d["email"], d["source_email"] = p["email"], "Pipedrive"
             else:
                 p["statut"], p["detail"] = "à vérifier", "absent des dirigeants Sales Navigator"
+        for d in r.get("dirigeants", []):            # pas chez nous dans Pipedrive : peut-être fiché chez une autre société
+            if not d.get("dans_pipedrive") and "ailleurs_crm" not in d and not stop():
+                d["ailleurs_crm"] = await personne_ailleurs(c, d, r, ressemblance)
     a_lire = [(r, p) for r in avec_crm for p in r.get("contacts_crm", []) if p["statut"] == "à vérifier" and p["linkedin"]]
     if len(a_lire) > PROFILS_MAX:
         journal(f"profils LinkedIn : {len(a_lire)} contacts à vérifier, seuls les {PROFILS_MAX} premiers sont lus (PROFILS_MAX)")
@@ -557,18 +605,27 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
             p["detail"] += " ; profil non lu"
             continue
         nom_ent, cid, poste, en_cours, periode = _entreprise_actuelle(l)
-        meme = (cid and cid == r.get("linkedin_id")) or (nom_ent and max(
-            ressemblance(nom_ent, r.get("nom", "")), ressemblance(nom_ent, r.get("nom_linkedin") or "")) >= 0.8)
-        if meme and not en_cours:                    # dernier poste = chez nous, mais terminé
+        p_nom, p_slug, p_en_cours, p_periode = _poste_precedent(l)
+        nous_1 = _est_nous(r, nom_ent, cid, "", ressemblance)
+        nous_2 = _est_nous(r, p_nom, "", p_slug, ressemblance)
+        if nous_1 and en_cours:
+            p["statut"], p["detail"] = "toujours là", f"profil LinkedIn : {poste or 'poste non lu'} chez {nom_ent}"
+        elif nous_1:                                 # dernier poste = chez nous, mais terminé
             p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : poste chez {nom_ent} terminé ({periode})"
             partis += 1
-        elif meme:
-            p["statut"], p["detail"] = "toujours là", f"profil LinkedIn : {poste or 'poste non lu'} chez {nom_ent}"
+        elif nous_2 and p_en_cours:                  # plusieurs postes en cours, le nôtre en second
+            p["statut"], p["detail"] = "toujours là", f"profil LinkedIn : plusieurs postes en cours, dont {p_nom} ; poste principal chez {nom_ent}"
+        elif nous_2 and nom_ent:                     # ancien poste chez nous, nouvel employeur ensuite
+            p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : désormais {poste + ' chez ' if poste else 'chez '}{nom_ent} (chez {p_nom} : {p_periode or 'période non lue'})"
+            partis += 1
+        elif nom_ent and en_cours:                   # notre société n'apparaît pas dans les 2 derniers postes : on ne conclut pas
+            p["detail"] = (f"profil LinkedIn : poste actuel chez {nom_ent} ; {r.get('nom')} n'apparaît pas dans les 2 derniers postes "
+                           f"(parti, ou poste secondaire plus ancien)")
         elif nom_ent:
-            p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : désormais {poste + ' chez ' if poste else 'chez '}{nom_ent}"
+            p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : aucun poste en cours (dernier : {nom_ent}, {periode})"
             partis += 1
         else:
-            p["detail"] += " ; profil lu, aucun poste actuel affiché"
+            p["detail"] += " ; profil lu, aucun poste affiché"
     journal(f"contacts du CRM : {partis} probablement partis sur {len(a_lire)} profils lus")
 
 
@@ -793,6 +850,18 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             journal("⚠️ Sales Navigator n'a renvoyé aucun dirigeant : le filtre France (SN_REGION_FRANCE) est peut-être mal réglé")
         if job.get("hors_france"):
             journal(f"Sales Navigator : {job['hors_france']} dirigeants basés hors de France écartés")
+        # 4a bis. même dirigeant pour plusieurs sociétés du lancement : un seul contact HubSpot, associé à chacune
+        par_profil = {}
+        for r in cibles:
+            for d in r.get("dirigeants", []):
+                if _slug_profil(d.get("linkedin")):
+                    par_profil.setdefault(_slug_profil(d["linkedin"]), []).append(r["nom"])
+        for r in cibles:
+            for d in r.get("dirigeants", []):
+                autres = [n for n in par_profil.get(_slug_profil(d.get("linkedin")), []) if n != r["nom"]]
+                if autres:
+                    d["autres_societes"] = autres
+
         # 4b. contacts déjà dans Pipedrive : toujours dans la société ?
         if PIPEDRIVE_KEY and cibles and not stop():
             await controler_contacts_crm(job, cibles, pb, c, ressemblance, journal, stop)

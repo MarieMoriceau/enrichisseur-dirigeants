@@ -4,7 +4,8 @@ Enrichisseur v3 — rattrapage du contrôle des contacts CRM pour les sociétés
 Pour les sociétés traitées en « Sociétés + dirigeants » ou « Tout » avant l'ajout de l'étape 4b
 (ou dont des contacts « à vérifier » n'ont pas encore eu leur profil LinkedIn lu) :
   1. relit les dirigeants Sales Navigator gardés dans la mémoire Notion
-  2. récupère les contacts Pipedrive de la société et les rapproche → « toujours là » / « à vérifier »
+  2. récupère les contacts Pipedrive de la société et les rapproche → « toujours là » / « à vérifier »,
+     et cherche les nouveaux dirigeants dans tout Pipedrive (déjà fichés chez une autre société → à rattacher)
   3. lit les profils LinkedIn des « à vérifier » (phantom Profile Scraper, PROFILS_MAX au plus) → « probablement parti »
 Aucun crédit Kaspr / Fullenrich, pas de Sales Navigator.
 
@@ -41,6 +42,8 @@ def a_rattraper(data: dict) -> bool:
         return False                                   # pas d'ID Pipedrive : rien à contrôler
     if "contacts_crm" not in data:
         return True
+    if any(not d.get("dans_pipedrive") and "ailleurs_crm" not in d for d in data.get("dirigeants", [])):
+        return True                                    # nouveaux dirigeants pas encore cherchés dans tout Pipedrive
     return bool(LI.PB_PROFILS) and any(p.get("statut") == "à vérifier" and p.get("linkedin") and "profil" not in p.get("detail", "")
                                        for p in data["contacts_crm"])
 

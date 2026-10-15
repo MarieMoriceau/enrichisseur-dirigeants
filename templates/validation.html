@@ -323,7 +323,7 @@ function ecranContacts() {
     <h3>Nouveaux contacts <span class="pill">${nouveaux.length}</span></h3>
     ${nouveaux.length ? `<div class="tab-wrap"><table class="ro"><thead><tr><th>Dirigeant</th><th>Rôle</th><th>Téléphone</th><th>Négos</th></tr></thead><tbody>
       ${nouveaux.map(x => { const e = etatN(x); return `<tr>
-        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} · ${esc(x.email || "pas d'e-mail")}</small></td>
+        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} · ${esc(x.email || "pas d'e-mail")}${x.ailleurs_crm && x.ailleurs_crm.id ? " · déjà au CRM chez " + esc(x.ailleurs_crm.org_nom) + " (à rattacher)" : ""}${x.autres_societes && x.autres_societes.length ? " · aussi dirigeant de " + esc(x.autres_societes.join(", ")) : ""}</small></td>
         <td>${esc(x.role)}</td><td>${esc(e.telephone || "—")}</td>
         <td><span class="pill ${e.etat === "prêt pour HubSpot" ? "ok" : e.etat === "écarté" ? "ko" : ""}">${esc(e.etat || "à traiter")}</span></td></tr>`; }).join("")}
       </tbody></table></div><p class="note">Lecture seule : les négos les valident dans <a href="/v3/contacts">Nouveaux contacts</a>.</p>` : `<p class="msg">Aucun nouveau dirigeant.</p>`}`;

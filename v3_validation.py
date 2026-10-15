@@ -279,6 +279,7 @@ async def negos_societe(page_id: str, req: Request):
         nouveaux.append({"cle": cle_contact(d), "nom_complet": d.get("nom_complet", ""), "fonction": d.get("fonction", ""),
                          "role": d.get("role", ""), "lieu": d.get("lieu", ""), "linkedin": d.get("linkedin", ""),
                          "email": d.get("email", ""), "telephone": e.get("telephone", ""),
+                         "ailleurs": d.get("ailleurs_crm") or {}, "autres_societes": d.get("autres_societes") or [],
                          "etat": e.get("etat", "à traiter"), "le": e.get("le", "")})
     crm = [{k: p.get(k, "") for k in ("nom_complet", "fonction", "linkedin", "statut", "detail")} for p in data.get("contacts_crm", [])]
     adresse_validee = info["validation"] in ("Société validée", "Contacts validés")
@@ -322,7 +323,10 @@ async def negos_contact(page_id: str, req: Request):
     else:
         etats[cle] = {"etat": etat, "telephone": tel, "le": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                       "prenom": d.get("prenom", ""), "nom": d.get("nom", ""), "nom_complet": d.get("nom_complet", ""),
-                      "fonction": d.get("fonction", ""), "email": d.get("email", ""), "linkedin": d.get("linkedin", "")}
+                      "fonction": d.get("fonction", ""), "email": d.get("email", ""), "linkedin": d.get("linkedin", ""),
+                      # HubSpot : un contact peut être associé à plusieurs sociétés → on rattache au lieu de créer un doublon
+                      "action": "rattacher" if d.get("ailleurs_crm") else "créer",
+                      "fiche_existante": (d.get("ailleurs_crm") or {}).get("id", "")}
     maj = await _maj(page_id, {"Nouveaux contacts": MEM._txts(json.dumps(etats, ensure_ascii=False)),
                                "Nb prêts HubSpot": {"number": sum(1 for e in etats.values() if e["etat"] == "prêt pour HubSpot")}})
     if isinstance(maj, JSONResponse):

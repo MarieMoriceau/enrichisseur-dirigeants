@@ -122,6 +122,12 @@ Contrôle des contacts CRM (étape 4b du pipeline, choix « Sociétés + dirigea
 | `PB_PROFILE_SCRAPER_ID` | ID du phantom LinkedIn Profile Scraper (sans lui, les contacts restent « à vérifier ») |
 | `PROFILS_MAX` | profils lus au plus par lancement (80 par défaut, quota LinkedIn) |
 
+**Contacts présents dans plusieurs sociétés** (HubSpot associe un contact à plusieurs sociétés) :
+- nouveau dirigeant déjà fiché dans Pipedrive chez une autre société (même nom, et même profil LinkedIn quand les deux sont connus)
+  → « Rattacher aussi » dans l'écran des négos, action `rattacher` (pas de doublon créé)
+- même dirigeant trouvé pour plusieurs sociétés d'un lancement → « Aussi dirigeant de … » ; à l'envoi : un seul contact, associé à chacune
+- contrôle du profil : 2ᵉ poste chez nous encore en cours → « toujours là » ; société absente des 2 derniers postes → « à vérifier » (on ne conclut pas)
+
 **À prévoir pour l'envoi HubSpot (après la migration)** : créer dans HubSpot deux propriétés de type date,
 `date_validation_societe` (Sociétés, alimentée par « Validée le ») et `date_validation_contact`
 (Contacts, alimentée par la date de validation du négo), ainsi que le téléphone saisi par les négos.
