@@ -515,7 +515,7 @@ def statut(row: dict) -> tuple:
 
 def _statut(row: dict) -> tuple:
     sp, ss = row["siren_crm"], row["siren_site"]
-    if row.get("mode", "").startswith("adresse"):
+    if row.get("mode", "").startswith("SIREN déjà"):
         e = row.get("etat_crm", "")
         if e == "active":
             return "Active", "📍 SIREN déjà connu (actif) : recherche de l'adresse uniquement", "haute"
@@ -720,7 +720,7 @@ async def _traiter(job_id: str, orgs: list):
                         o["siren_crm"] = crm["siren"]
                         o["site_crm"] = o["site_crm"] or crm["site"]
                         o["adresse_crm"] = o["adresse_crm"] or crm["adresse"]
-                adresse_seule = bool(o["siren_crm"])      # SIREN déjà connu : on ne cherche que l'adresse physique
+                adresse_seule = bool(o["siren_crm"])      # SIREN déjà connu : pas de recherche de SIREN (adresse, effectif et dirigeants oui)
                 doms = domaines(o["site_crm"])
                 dom, src = (doms[0] if doms else ""), "CRM"
                 sirene = {}
@@ -730,7 +730,7 @@ async def _traiter(job_id: str, orgs: list):
                 if not dom and not adresse_seule:
                     dom, src = await chercher_domaine(api, o["nom"], o.get("cp", ""), o.get("ville", ""),
                                                       sirene.get("raison", ""), sirene.get("siren", "") or o["siren_crm"])
-                s = await scanner_site(web, dom)       # en mode adresse seule : sert seulement au lien LinkedIn
+                s = await scanner_site(web, dom)       # SIREN déjà connu : le site sert au lien LinkedIn et à l'adresse
                 if adresse_seule:
                     s = {**s, "siren_site": "", "candidats": [], "page_siren": ""}
                 for autre in doms[1:]:                      # plusieurs sites dans le CRM : on essaie les suivants
@@ -741,7 +741,7 @@ async def _traiter(job_id: str, orgs: list):
                         dom, s = autre, s2
                 row = {**o, "domaine": dom, "source_site": src, **s,
                        "controle_nom": "", "siren_nom": "", "etat_nom": "", "nb_homonymes": "",
-                       "mode": "adresse seule (SIREN déjà au CRM)" if adresse_seule else "complet"}
+                       "mode": "SIREN déjà au CRM" if adresse_seule else "complet"}
                 async with api_sem:
                     i_site = await insee(api, s["siren_site"]) if s["siren_site"] else {}
                     if len(s["candidats"]) > 1:      # plusieurs SIREN : on garde celui dont le nom colle
@@ -861,7 +861,7 @@ def excel(job) -> bytes:
         f"{n} organisations traitées",
         f"Reprises de la mémoire (traitées il y a moins de 6 mois, sans nouvelle recherche) : {k(lambda r: r.get('memoire'))}",
     ] + ([job["report"]] if job.get("report") else []) + [
-        f"Déjà dans le CRM avec un SIREN (adresse seule) : {k(lambda r: r.get('mode', '').startswith('adresse'))}",
+        f"Déjà dans le CRM avec un SIREN (pas de recherche de SIREN) : {k(lambda r: r.get('mode', '').startswith('SIREN déjà'))}",
         f"Site joignable : {k(lambda r: r['site_joignable'] == 'oui')}",
         f"Site retrouvé par recherche (absent du fichier) : {k(lambda r: r['source_site'] not in ('', 'CRM'))}",
         f"SIREN trouvé sur le site : {k(lambda r: r['siren_site'])}",
@@ -892,7 +892,7 @@ def excel(job) -> bytes:
         "• Suppressions : radiées avec site mort, à valider avant de les retirer",
         "• À vérifier : SIREN fermé mais site en ligne (changement de SIREN probable)", "",
         "RÈGLES",
-        "• Étape 0 : si la société a déjà un SIREN (dans le fichier ou dans Pipedrive), on ne recherche que son adresse physique.",
+        "• Étape 0 : si la société a déjà un SIREN (dans le fichier ou dans Pipedrive), on ne recherche pas son SIREN ; adresse, effectif et dirigeants oui.",
         "  Son SIREN est seulement contrôlé à l'INSEE (gratuit), pour repérer les sociétés fermées.",
         "• Le SIREN vient des mentions légales du site, contrôlé (clé de Luhn) puis vérifié à l'INSEE.",
         "• Société sans site connu : on la cherche d'abord dans SIRENE par son nom (et son code postal), puis on cherche son site sur le web.",
@@ -913,7 +913,6 @@ def excel(job) -> bytes:
         "  Seuls les dirigeants basés en France sont gardés (lieu LinkedIn), pour la liste comme pour les e-mails.",
         "  Niveaux recherchés : C-level, propriétaires et associés, VP, directeurs. Rôles 1 à 5 enrichis en e-mail ;",
         "  6 (immobilier, services généraux) et 7 (autres C-level) seulement listés.",
-        "  Mode « adresse seule » : pas de recherche de dirigeants.",
         "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",
         "  L'onglet Import HubSpot contacts ne contient que les NOUVEAUX dirigeants (absents de Pipedrive).",
         "• Quota : 150 sociétés par jour passent par LinkedIn (tous négos confondus). Au-delà, la suite part le lendemain à 7 h.",

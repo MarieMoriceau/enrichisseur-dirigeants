@@ -598,8 +598,8 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             job["phase"] = ""
             return
 
-        # 4. Sales Navigator : dirigeants (seulement les sociétés « complètes », pas le mode adresse seule)
-        cibles = [r for r in res if r.get("linkedin_id") and not r.get("mode", "").startswith("adresse")]
+        # 4. Sales Navigator : dirigeants de toutes les sociétés dont on a la page LinkedIn (SIREN déjà au CRM compris)
+        cibles = [r for r in res if r.get("linkedin_id")]
         par_id = {r["linkedin_id"]: r for r in cibles}
         if cibles and PB_SALESNAV:
             lots = [cibles[i:i + 18] for i in range(0, len(cibles), 18)]
