@@ -222,13 +222,20 @@ def role(titre: str) -> str:
     return ""
 
 
+# Filtre « Géographie : France » de Sales Navigator (identifiant LinkedIn de la France). Vide = pas de filtre à la source ;
+# le tri par lieu (en_france) reste de toute façon appliqué ensuite, en filet de sécurité.
+SN_REGION_FRANCE = os.getenv("SN_REGION_FRANCE", "105015875")
+
+
 def url_salesnav(entreprises: list) -> str:
     """Recherche Sales Navigator : entreprises actuelles (par identifiant LinkedIn) × niveaux CXO, Associé, VP."""
     vals = ",".join(
         f"(id:urn%3Ali%3Aorganization%3A{int(i)},text:{quote(re.sub(r'[,()]', ' ', n), safe='')},selectionType:INCLUDED)"
         for i, n in entreprises)
+    region = (f",(type:REGION,values:List((id:{SN_REGION_FRANCE},text:France,selectionType:INCLUDED)))"
+              if SN_REGION_FRANCE else "")
     q = (f"(filters:List((type:CURRENT_COMPANY,values:List({vals})),(type:SENIORITY_LEVEL,values:List("
-         f"(id:310,selectionType:INCLUDED),(id:320,selectionType:INCLUDED),(id:300,selectionType:INCLUDED)))))")
+         f"(id:310,selectionType:INCLUDED),(id:320,selectionType:INCLUDED),(id:300,selectionType:INCLUDED))){region}))")
     return "https://www.linkedin.com/sales/search/people?query=" + quote(q, safe="():,")
 
 
@@ -599,6 +606,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                 except Exception as e:
                     journal(f"Sales Navigator lot {n_lot} en échec : {e}")
                     continue
+                job["sn_lignes"] = job.get("sn_lignes", 0) + len(lignes)
                 for l in lignes:
                     cid = re.sub(r"\D", "", str(l.get("companyId") or ""))[:12]
                     r = par_id.get(cid)                     # les homonymes (même nom, autre société) sont écartés ici
@@ -616,6 +624,8 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),
                         "email": "", "source_email": "", "dans_pipedrive": ""})
 
+        if cibles and PB_SALESNAV and SN_REGION_FRANCE and len(cibles) >= 5 and not job.get("sn_lignes"):
+            journal("⚠️ Sales Navigator n'a renvoyé aucun dirigeant : le filtre France (SN_REGION_FRANCE) est peut-être mal réglé")
         if job.get("hors_france"):
             journal(f"Sales Navigator : {job['hors_france']} dirigeants basés hors de France écartés")
         if perim == "dirigeants":
