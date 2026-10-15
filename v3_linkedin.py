@@ -72,44 +72,70 @@ def meme_adresse(a: str, b: str) -> bool:
     return bool(x and y) and (x in y or y in x or x.split()[0] == y.split()[0])
 
 
-def decider_adresse(crm: str, linkedin: str) -> dict:
-    """Compare l'adresse du CRM et celle déclarée sur LinkedIn."""
-    li = (linkedin or "").strip()
-    if not li:
-        return {"adresse_proposee": "", "action_adresse": "⚪ pas d'adresse sur LinkedIn", "confiance_adresse": ""}
-    pays = li.rsplit(",", 1)[-1].strip().upper()
-    if pays and pays not in ("FR", "FRANCE"):
-        return {"adresse_proposee": "", "action_adresse": "⚠️ LinkedIn affiche le siège à l'étranger : garder l'adresse du CRM",
-                "confiance_adresse": "basse"}
-    if not cle_adresse(li):
-        return {"adresse_proposee": "", "action_adresse": "⚪ LinkedIn n'indique que la ville", "confiance_adresse": ""}
-    if crm and meme_adresse(crm, li):
-        return {"adresse_proposee": crm, "action_adresse": "✅ adresse du CRM confirmée par LinkedIn", "confiance_adresse": "haute"}
-    dep = cle_adresse(li)[2][:2]
-    hors = "" if dep in IDF else " · hors Île-de-France"
-    return {"adresse_proposee": li, "action_adresse": f"🆕 adresse différente sur LinkedIn (déménagement ?){hors} : à valider",
-            "confiance_adresse": "moyenne"}
+def _hors_idf(a: str) -> str:
+    c = cle_adresse(a)
+    return "" if (c and c[2][:2] in IDF) else " · hors Île-de-France"
 
 
-def arbitrer_google(r: dict, google: str):
-    """Google Maps tranche entre l'adresse du CRM et celle de LinkedIn (règle : 2 sources concordantes)."""
-    crm, li = r.get("adresse_crm", ""), r.get("adresse_linkedin", "")
-    li_ok = bool(li and cle_adresse(li) and li.rsplit(",", 1)[-1].strip().upper() in ("FR", "FRANCE"))
-    if not google or not cle_adresse(google):
-        return
-    if crm and meme_adresse(crm, google):
-        r.update(adresse_proposee=crm, confiance_adresse="haute",
-                 action_adresse="✅ adresse du CRM confirmée par Google" + (" (LinkedIn pas à jour)" if li_ok else ""))
-    elif li_ok and meme_adresse(li, google):
-        r.update(adresse_proposee=li, confiance_adresse="haute",
-                 action_adresse="🔄 nouvelle adresse confirmée par LinkedIn + Google : corriger le CRM")
-    elif li_ok:
-        r.update(adresse_proposee="", confiance_adresse="moyenne",
-                 action_adresse="⚖️ 3 adresses différentes (CRM, LinkedIn, Google) : à arbitrer")
-    else:
-        dep = cle_adresse(google)[2][:2]
-        r.update(adresse_proposee=google, confiance_adresse="moyenne",
-                 action_adresse="🆕 adresse Google seule (LinkedIn muet)" + ("" if dep in IDF else " · hors Île-de-France") + " : à valider")
+def decider_adresse(r: dict) -> dict:
+    """Adresse des bureaux à partir de 4 sources : CRM, site internet, LinkedIn, Google Maps.
+    Règle : une adresse est sûre quand 2 sources au moins la donnent.
+    Le site peut afficher plusieurs adresses (plusieurs bureaux) : on garde celle qui concorde avec une autre source."""
+    crm = (r.get("adresse_crm") or "").strip()
+    li = (r.get("adresse_linkedin") or "").strip()
+    li_etranger = bool(li) and li.rsplit(",", 1)[-1].strip().upper() not in ("FR", "FRANCE", "")
+    sources = []                                             # (nom, adresse), du plus fiable au moins fiable
+    site_liste = [a for a in (r.get("adresses_site_liste") or []) if cle_adresse(a)]
+    if site_liste:
+        autres = [x for x in (crm, li if not li_etranger else "", r.get("adresse_google", "")) if x and cle_adresse(x)]
+        site = next((a for a in site_liste if any(meme_adresse(a, x) for x in autres)), site_liste[0])
+        sources.append(("site", site))
+        r["adresse_site"] = site
+        r["page_adresse_site"] = (r.get("pages_adresse_site") or {}).get(site, "")
+    if li and not li_etranger and cle_adresse(li):
+        sources.append(("LinkedIn", li))
+    if r.get("adresse_google") and cle_adresse(r["adresse_google"]):
+        sources.append(("Google", r["adresse_google"]))
+    if crm and cle_adresse(crm):
+        sources.append(("CRM", crm))
+
+    # groupes de sources qui donnent la même adresse
+    groupes = []
+    for nom, a in sources:
+        g = next((g for g in groupes if meme_adresse(g[0][1], a)), None)
+        (g.append((nom, a)) if g else groupes.append([(nom, a)]))
+    groupes.sort(key=lambda g: (-len(g), not any(n == "site" for n, _ in g), not any(n == "CRM" for n, _ in g)))
+    noms = lambda g: " + ".join(n for n, _ in g)
+    externes = [(n, a) for n, a in sources if n != "CRM"]
+
+    if groupes and len(groupes[0]) >= 2:
+        g = groupes[0]
+        hors_g = [n for n, _ in sources if n != "CRM" and all(n != m for m, _ in g)]
+        reste = f" · autre adresse sur {', '.join(hors_g)}" if hors_g else ""
+        if any(n == "CRM" for n, _ in g):
+            return {"adresse_proposee": crm, "confiance_adresse": "haute", "sources_adresse": noms(g),
+                    "action_adresse": f"✅ adresse du CRM confirmée par {noms([x for x in g if x[0] != 'CRM'])}{reste}"}
+        a = g[0][1]
+        if crm:
+            return {"adresse_proposee": a, "confiance_adresse": "haute", "sources_adresse": noms(g),
+                    "action_adresse": f"🔄 nouvelle adresse confirmée par {noms(g)} : corriger le CRM{reste}{_hors_idf(a)}"}
+        return {"adresse_proposee": a, "confiance_adresse": "haute", "sources_adresse": noms(g),
+                "action_adresse": f"➕ adresse confirmée par {noms(g)} : à ajouter au CRM{reste}{_hors_idf(a)}"}
+
+    if len(externes) == 1:
+        n, a = externes[0]
+        quoi = f"🆕 adresse différente sur {'le site' if n == 'site' else n}" if crm else f"🆕 adresse trouvée seulement sur {'le site' if n == 'site' else n}"
+        return {"adresse_proposee": a, "confiance_adresse": "moyenne", "sources_adresse": n,
+                "action_adresse": f"{quoi}{_hors_idf(a)} : à valider"}
+    if len(externes) > 1:
+        a = externes[0][1]
+        return {"adresse_proposee": a, "confiance_adresse": "moyenne", "sources_adresse": externes[0][0],
+                "action_adresse": f"⚖️ adresses différentes ({', '.join(n for n, _ in sources)}) : à arbitrer"}
+    if li_etranger:
+        return {"adresse_proposee": "", "confiance_adresse": "basse", "sources_adresse": "",
+                "action_adresse": "⚠️ LinkedIn affiche le siège à l'étranger : garder l'adresse du CRM"}
+    return {"adresse_proposee": "", "confiance_adresse": "", "sources_adresse": "",
+            "action_adresse": "⚪ aucune autre source que le CRM" if crm else "⚪ aucune adresse trouvée"}
 
 
 def role(titre: str) -> str:
@@ -439,7 +465,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                     r["effectif_linkedin"] = int(float(l.get("employeesOnLinkedIn") or ""))
                 except ValueError:
                     r["effectif_linkedin"] = ""
-                r.update(decider_adresse(r.get("adresse_crm", ""), r["adresse_linkedin"]))
+                r.update(decider_adresse(r))
                 eff = r["effectif_linkedin"]
                 r["statut_activite"] = ("Quasi inactive (≤ 7 salariés LinkedIn)" if eff != "" and eff <= 7 else "Active") \
                     if r.get("statut") != "Radiée, à vérifier" else "Radiée, à vérifier"
@@ -451,7 +477,8 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         if PB_GMAPS and a_arbitrer:
             job["phase"] = f"Google Maps : arbitrage de {len(a_arbitrer)} adresses…"
             def requete(r):
-                cle = cle_adresse(r.get("adresse_crm", "") or "")
+                cle = next((cle_adresse(x) for x in (r.get("adresse_crm"), r.get("adresse_site"), r.get("adresse_linkedin"))
+                            if x and cle_adresse(x)), None)
                 return f"{r['nom']}, {cle[2] if cle else 'Paris'}"
             for r in a_arbitrer:
                 r["requete_google"] = requete(r)
@@ -473,7 +500,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                 if bon and bon.get("address"):
                     r["adresse_google"] = bon["address"]
                     r["fiche_google"] = bon.get("title", "")
-                    arbitrer_google(r, bon["address"])
+                    r.update(decider_adresse(r))
                 elif cands:
                     r["fiche_google"] = "❌ fiches Google écartées (homonymes) : " + ", ".join(l.get("title", "") for l in cands[:3])
         if stop():
