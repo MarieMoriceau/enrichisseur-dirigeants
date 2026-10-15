@@ -530,7 +530,21 @@ def _est_nous(r: dict, nom: str, cid: str = "", slug: str = "", ressemblance=Non
         return True
     if slug and r.get("linkedin") and slug == cle_linkedin(r["linkedin"]):
         return True
-    return bool(nom and ressemblance and max(ressemblance(nom, r.get("nom", "")), ressemblance(nom, r.get("nom_linkedin") or "")) >= 0.8)
+    if not (nom and ressemblance):
+        return False
+    if max(ressemblance(nom, r.get("nom", "")), ressemblance(nom, r.get("nom_linkedin") or "")) >= 0.8:
+        return True
+    # même racine (« Pyratz Corp » / « Pyratzlabs », « Mozoo Group » / « Mozoo ») : premier mot d'au moins 5 lettres
+    def racine(x):
+        mots = re.findall(r"[a-z0-9]+", _sans_accents(x))
+        return mots[0] if mots else ""
+    def compact(x):
+        return "".join(re.findall(r"[a-z0-9]+", _sans_accents(x)))
+    for nous in (r.get("nom", ""), r.get("nom_linkedin") or ""):
+        a, b = racine(nom), racine(nous)
+        if len(a) >= 5 and len(b) >= 5 and (compact(nous).startswith(a) or compact(nom).startswith(b)):
+            return True
+    return False
 
 
 def _slug_profil(u: str) -> str:
@@ -573,6 +587,9 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
             return
         job["phase"] = f"Pipedrive : contacts déjà connus {i}/{len(avec_crm)}…"
         r["contacts_crm"] = await personnes_societe(c, r["id"])
+        for p in r["contacts_crm"]:                  # URL LinkedIn ajoutée à la main dans l'écran admin (absente de Pipedrive)
+            if not p["linkedin"] and (r.get("_corrections_li") or {}).get(p["id"]):
+                p["linkedin"] = r["_corrections_li"][p["id"]]
         for p in r["contacts_crm"]:
             d = next((d for d in r.get("dirigeants", []) if ressemblance(p["nom_complet"], d["nom_complet"]) >= 0.9), None)
             if d:
@@ -628,9 +645,12 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
         elif nous_2 and nom_ent:                     # ancien poste chez nous, nouvel employeur ensuite
             p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : désormais {poste + ' chez ' if poste else 'chez '}{nom_ent} (chez {p_nom} : {p_periode or 'période non lue'})"
             partis += 1
-        elif nom_ent and en_cours:                   # notre société n'apparaît pas dans les 2 derniers postes : on ne conclut pas
-            p["detail"] = (f"profil LinkedIn : poste actuel chez {nom_ent} ; {r.get('nom')} n'apparaît pas dans les 2 derniers postes "
-                           f"(parti, ou poste secondaire plus ancien)")
+        elif nom_ent and en_cours:                   # poste actuel ailleurs, notre société absente des 2 derniers postes
+            # essai du 15/10 : 15 cas sur 16 étaient de vrais départs → « probablement parti » (l'admin tranche)
+            p["statut"] = "probablement parti"
+            p["detail"] = (f"profil LinkedIn : désormais {poste + ' chez ' if poste else 'chez '}{nom_ent} ; "
+                           f"{r.get('nom')} absente de ses 2 derniers postes")
+            partis += 1
         elif nom_ent:
             p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : aucun poste en cours (dernier : {nom_ent}, {periode})"
             partis += 1

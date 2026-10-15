@@ -36,12 +36,25 @@ def _journal(msg: str):
     print(f"[V3 RATTRAPAGE] {msg}")
 
 
+def corrections_li(decisions_txt: str) -> dict:
+    """URL LinkedIn saisies par l'admin sur les contacts CRM : {id personne Pipedrive: URL}."""
+    try:
+        dec = json.loads(decisions_txt) if decisions_txt else []
+    except ValueError:
+        return {}
+    return {str(x.get("id")): x["linkedin"] for x in dec if (x.get("type") or "crm") == "crm" and "linkedin.com/in/" in str(x.get("linkedin") or "")}
+
+
 def a_rattraper(data: dict) -> bool:
     """Contrôle jamais fait, ou des « à vérifier » dont le profil LinkedIn n'a pas encore été lu (si le phantom est branché)."""
     if not str(data.get("id") or "").isdigit():
         return False                                   # pas d'ID Pipedrive : rien à contrôler
     if "contacts_crm" not in data:
         return True
+    corr = data.get("_corrections_li") or {}
+    if LI.PB_PROFILS and any(p.get("statut") == "à vérifier" and not p.get("linkedin") and corr.get(str(p.get("id")))
+                             for p in data["contacts_crm"]):
+        return True                                    # URL ajoutée à la main depuis le dernier passage
     if any(not d.get("dans_pipedrive") and "ailleurs_crm" not in d for d in data.get("dirigeants", [])):
         return True                                    # nouveaux dirigeants pas encore cherchés dans tout Pipedrive
     return bool(LI.PB_PROFILS) and any(p.get("statut") == "à vérifier" and p.get("linkedin") and "profil" not in p.get("detail", "")
@@ -82,6 +95,8 @@ async def _tourner(essai: bool):
             if ETAT["stop"] or (essai and len(cibles) >= ESSAI_TAILLE):
                 break
             data = await MEM.lire(s["page"])
+            if data:
+                data["_corrections_li"] = corrections_li(s.get("decisions", ""))
             if data and a_rattraper(data):
                 data["_page"] = data.get("_page") or s["page"]
                 cibles.append(data)
@@ -111,6 +126,7 @@ async def _tourner(essai: bool):
                 for i, r in enumerate(cibles, 1):
                     ETAT["phase"] = f"Écriture dans Notion {i}/{len(cibles)}…"
                     page = r.pop("_page")
+                    r.pop("_corrections_li", None)
                     try:
                         await _reecrire(c, page, r)
                         ok += 1
