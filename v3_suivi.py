@@ -231,3 +231,156 @@ async def rester_eveille(jobs: dict):
 
 
 _EVEIL = False
+
+
+# ───────────────────────── quota LinkedIn par jour ─────────────────────────
+import json
+from datetime import timedelta
+from zoneinfo import ZoneInfo
+
+PARIS = ZoneInfo("Europe/Paris")
+QUOTA_JOUR = int(os.getenv("QUOTA_LINKEDIN_JOUR", "150"))   # sociétés passées par LinkedIn par jour, tous négos confondus
+HEURE_REPORT = 7                                            # les lancements reportés partent à 7 h (heure de Paris)
+CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+
+def _jour(d) -> tuple:
+    debut = datetime(d.year, d.month, d.day, tzinfo=PARIS)
+    return debut, debut + timedelta(days=1)
+
+
+async def utilise_le(d) -> int:
+    """Sociétés passées (ou programmées) par LinkedIn le jour d, d'après la base Notion des lancements."""
+    if not NOTION_KEY:
+        return 0
+    debut, fin = _jour(d)
+    total, curseur = 0, None
+    async with httpx.AsyncClient(timeout=15) as c:
+        while True:
+            corps = {"filter": {"and": [
+                {"property": "Phases", "rich_text": {"starts_with": "v3"}},
+                {"property": "Phases", "rich_text": {"does_not_contain": LIBELLES["siren"]}},
+                {"property": "Démarré le", "date": {"on_or_after": debut.isoformat()}},
+                {"property": "Démarré le", "date": {"before": fin.isoformat()}},
+                {"property": "Statut", "select": {"does_not_equal": "ARRETE"}}]}, "page_size": 100}
+            if curseur:
+                corps["start_cursor"] = curseur
+            r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
+            if r.status_code != 200:
+                print(f"[V3 QUOTA] Notion {r.status_code} {r.text[:200]}")
+                return total
+            j = r.json()
+            total += sum(int(_val(p["properties"], "Nb sociétés") or 0) for p in j.get("results", []))
+            if not j.get("has_more"):
+                return total
+            curseur = j.get("next_cursor")
+
+
+async def quota_du_jour() -> dict:
+    u = await utilise_le(datetime.now(PARIS))
+    return {"quota": QUOTA_JOUR, "utilise": u, "reste": max(0, QUOTA_JOUR - u)}
+
+
+async def planifier(orgs: list) -> list:
+    """Découpe une liste en lots qui respectent le quota : [(date de départ ou None pour maintenant, lot)]."""
+    lots, reste, maintenant = [], list(orgs), datetime.now(PARIS)
+    dispo = QUOTA_JOUR - await utilise_le(maintenant)
+    if dispo > 0:
+        lots.append((None, reste[:dispo]))
+        reste = reste[dispo:]
+    jour = maintenant
+    for _ in range(30):
+        if not reste:
+            break
+        jour = jour + timedelta(days=1)
+        depart = datetime(jour.year, jour.month, jour.day, HEURE_REPORT, tzinfo=PARIS)
+        dispo = QUOTA_JOUR - await utilise_le(depart)
+        if dispo > 0:
+            lots.append((depart, reste[:dispo]))
+            reste = reste[dispo:]
+    return lots
+
+
+async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart) -> str:
+    """Enregistre un lancement reporté dans Notion (statut EN_ATTENTE), avec sa liste de sociétés dans la page."""
+    if not NOTION_KEY:
+        return ""
+    data = json.dumps(orgs, ensure_ascii=False)
+    blocs = [{"object": "block", "type": "code", "code": {"language": "json",
+              "rich_text": [{"type": "text", "text": {"content": data[i:i + 1900]}}]}} for i in range(0, len(data), 1900)]
+    props = {
+        "Nom": {"title": [{"text": {"content": nom[:100]}}]},
+        "Statut": {"select": {"name": "EN_ATTENTE"}},
+        "Phases": _txt(f"v3 · {LIBELLES.get(perimetre, perimetre)}"),
+        "Emails destinataires": _txt(", ".join(mails)),
+        "Démarré le": {"date": {"start": depart.isoformat(timespec="minutes")}},
+        "Nb sociétés": {"number": len(orgs)},
+    }
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post("https://api.notion.com/v1/pages", headers=_h(),
+                         json={"parent": {"database_id": NOTION_DB}, "properties": props, "children": blocs[:100]})
+        if r.status_code != 200:
+            print(f"[V3 QUOTA] programmation {r.status_code} {r.text[:200]}")
+            return ""
+        pid = r.json()["id"]
+        for i in range(100, len(blocs), 100):                # au-delà de 100 blocs, on complète
+            await c.patch(f"https://api.notion.com/v1/blocks/{pid}/children", headers=_h(), json={"children": blocs[i:i + 100]})
+        return pid
+
+
+async def a_lancer() -> list:
+    """Lancements reportés dont l'heure est venue : [(page_id, nom, perimetre, mails, orgs)]."""
+    if not NOTION_KEY:
+        return []
+    out = []
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+            {"property": "Phases", "rich_text": {"starts_with": "v3"}},
+            {"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
+            {"property": "Démarré le", "date": {"on_or_before": datetime.now(PARIS).isoformat()}}]}, "page_size": 20})
+        if r.status_code != 200:
+            return []
+        for pg in r.json().get("results", []):
+            p = pg["properties"]
+            # on le passe tout de suite en EN_COURS : un second réveil ne le relancera pas
+            await c.patch(f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(),
+                          json={"properties": {"Statut": {"select": {"name": "EN_COURS"}},
+                                               "Démarré le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")}}}})
+            texte, curseur = "", None
+            while True:
+                b = await c.get(f"https://api.notion.com/v1/blocks/{pg['id']}/children", headers=_h(),
+                                params={"page_size": 100, **({"start_cursor": curseur} if curseur else {})})
+                bj = b.json()
+                for bl in bj.get("results", []):
+                    if bl.get("type") == "code":
+                        texte += "".join(t.get("plain_text", "") for t in bl["code"]["rich_text"])
+                if not bj.get("has_more"):
+                    break
+                curseur = bj.get("next_cursor")
+            try:
+                orgs = json.loads(texte)
+            except ValueError:
+                await c.patch(f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
+                    "Statut": {"select": {"name": "ERREUR"}}, "Erreur": _txt("liste de sociétés illisible")}})
+                continue
+            perim = next((k for k, v in LIBELLES.items() if v == _val(p, "Phases").replace("v3 · ", "")), "tout")
+            out.append((pg["id"], _val(p, "Nom"), perim, mails_valides(_val(p, "Emails destinataires")), orgs))
+    return out
+
+
+async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str):
+    """Mail immédiat au négo : sa liste est coupée, la suite part demain (ou plus tard)."""
+    if not mails or not SMTP_USER or not SMTP_PASS:
+        return
+    tout = sum(len(l) for _, l in lots)
+    lignes = ["Bonjour,", "", f"Votre liste « {nom} » compte {tout} sociétés. Pour ne pas dépasser le quota LinkedIn "
+              f"de {QUOTA_JOUR} sociétés par jour (tous négos confondus), elle a été découpée :", ""]
+    for depart, lot in lots:
+        quand = "tout de suite" if depart is None else depart.strftime("le %d/%m à %H h")
+        lignes.append(f"  • {len(lot)} sociétés : {quand}")
+    lignes += ["", "Vous recevrez un Excel par mail à la fin de chaque partie. Rien à faire de votre côté.",
+               f"Choix : {LIBELLES.get(perimetre, perimetre)}", "", "L'enrichisseur v3"]
+    try:
+        await asyncio.to_thread(_envoyer, mails, f"Enrichissement programmé : {nom}", "\n".join(lignes), None, "")
+    except Exception as e:
+        print(f"[V3 QUOTA] mail : {e}")
