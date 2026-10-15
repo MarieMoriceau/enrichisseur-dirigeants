@@ -155,6 +155,9 @@ footer a{color:var(--tag-ink)}
           <label class="li"><input type="radio" name="perimetre" value="tout" checked>
             <span><b>Tout</b><small>+ e-mails (Pipedrive, puis Kaspr, puis Fullenrich).</small></span></label>
           <small id="liInfo">vérification de la configuration…</small>
+          <small id="quotaInfo"></small>
+          <label class="check" style="grid-column:1/-1;border:0;padding:0;margin-top:4px"><input type="checkbox" name="forcer" id="forcer">
+            <span>Ignorer la mémoire<small>Par défaut, une société déjà traitée depuis moins de 6 mois est reprise telle quelle, sans nouvelle recherche ni quota. Cochez pour tout relancer.</small></span></label>
         </fieldset>
         <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(l'Excel vous y sera envoyé à la fin)</span></label>
         <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
@@ -190,6 +193,7 @@ footer a{color:var(--tag-ink)}
       <div class="journal" id="journal"></div>
       <div class="tags"><span class="tag" id="tagMail">Vous pouvez fermer cet onglet : l'Excel arrivera par mail et restera dans « Lancements précédents ».</span></div>
       <div class="actions">
+        <a class="btn dl" id="dlc" href="#" hidden>Contacts et e-mails</a>
         <a class="btn dl" id="dl" href="#" hidden>Télécharger l'Excel</a>
         <button class="btn ghost" id="stop" type="button">Arrêter</button>
       </div>
@@ -224,7 +228,15 @@ footer a{color:var(--tag-ink)}
           <li>Suivez l'avancement à l'écran, ou fermez l'onglet : le traitement continue et l'Excel arrive par mail.</li>
           <li>Vos anciens lancements sont dans <b>Lancements précédents</b>, avec le lien vers leur Excel. Un lancement encore en cours s'y rouvre avec <b>Suivre</b>.</li>
         </ol>
-        <p class="note">Toujours un essai sur une cinquantaine de lignes avant un gros fichier. Et pas plus de 150 sociétés par lancement dès qu'on passe par LinkedIn.</p>
+        <p class="note">Toujours un essai sur une cinquantaine de lignes avant un gros fichier.</p>
+      </details>
+      <details>
+        <summary>Quota LinkedIn, mémoire et fichiers reçus</summary>
+        <ul class="steps">
+          <li><b>Quota</b> : 150 sociétés par jour passent par LinkedIn, tous négos confondus (c'est le même compte LinkedIn). Le compteur s'affiche sous les choix. Au-delà, l'outil traite ce qui rentre aujourd'hui et programme la suite le lendemain à 7 h. Vous êtes prévenu par mail tout de suite, puis vous recevez l'Excel de chaque partie.</li>
+          <li><b>Mémoire</b> : une société déjà traitée depuis moins de 6 mois est reprise telle quelle, sans nouvelle recherche, sans quota et sans crédits. Elle est signalée dans la colonne « Reprise de la mémoire ». Pour tout relancer quand même, cochez « Ignorer la mémoire ».</li>
+          <li><b>Fichiers</b> : avec les dirigeants, vous recevez par mail la version courte (dirigeants et e-mails). Le fichier complet (sociétés, adresses, effectifs, domiciliation) est envoyé en copie à Marie, et reste téléchargeable dans l'outil.</li>
+        </ul>
       </details>
       <details>
         <summary>Quel choix faire ?</summary>
@@ -280,6 +292,9 @@ footer a{color:var(--tag-ink)}
 
 <script>
 let jid=null,timer=null;
+function quotaInfo(){fetch("/v3/quota").then(r=>r.json()).then(q=>{if(q.utilise==null)return;
+  $("quotaInfo").textContent="Quota LinkedIn aujourd'hui : "+q.utilise+" / "+q.quota+" sociétés"+(q.reste?" (reste "+q.reste+")":" (atteint : la liste partira demain à 7 h)")+". Les sociétés en mémoire ne comptent pas.";}).catch(()=>{})}
+setTimeout(quotaInfo,0);
 fetch("/v3/config").then(r=>r.json()).then(c=>{
   const i=document.getElementById("liInfo");
   if(!c.linkedin){i.textContent="Seul « SIREN et statut » est disponible : clé PhantomBuster ou Company Scraper absent dans Render.";
@@ -298,7 +313,7 @@ $("f").onsubmit=async e=>{
   if(!inp.files.length&&!$("liste").value.trim()){$("dropTxt").innerHTML="<b>Déposez un fichier ou collez une liste</b>";return}
   const fd=new FormData($("f"));
   try{localStorage.setItem("v3mail",$("mail").value.trim())}catch(_){}
-  $("suivi").hidden=false;$("dl").hidden=true;$("msg").textContent="Envoi du fichier…";
+  $("suivi").hidden=false;$("dl").hidden=true;$("dlc").hidden=true;$("msg").textContent="Envoi du fichier…";
   $("suivi").scrollIntoView({behavior:"smooth"});
   try{
     const r=await fetch("/v3/run",{method:"POST",body:fd});const j=await r.json();
@@ -308,10 +323,10 @@ $("f").onsubmit=async e=>{
 };
 function suivre(id){
   jid=id;try{localStorage.setItem("v3job",id)}catch(_){}
-  $("suivi").hidden=false;$("dl").hidden=true;clearInterval(timer);timer=setInterval(poll,2500);poll();
+  $("suivi").hidden=false;$("dl").hidden=true;$("dlc").hidden=true;clearInterval(timer);timer=setInterval(poll,2500);poll();
 }
 const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["en attente",""]};
+const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["programmé",""]};
 async function histo(){
   try{
     const h=await (await fetch("/v3/historique")).json();
@@ -319,7 +334,7 @@ async function histo(){
     const L=h.lancements||[];$("hCount").textContent=L.length?L.length+" derniers":"";
     if(!L.length){$("hBody").innerHTML='<tr><td colspan="5">Aucun lancement pour l\'instant.</td></tr>';return}
     $("hBody").innerHTML=L.map(x=>{
-      const d=x.debut?new Date(x.debut).toLocaleString("fr-FR",{timeZone:"Europe/Paris",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
+      const d=x.debut?(x.statut==="EN_ATTENTE"?"départ le ":"")+new Date(x.debut).toLocaleString("fr-FR",{timeZone:"Europe/Paris",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
       const st=STATUTS[x.statut]||[x.statut,""];
       const res=[x.societes!=null?x.societes+" sociétés":"",x.dirigeants?x.dirigeants+" dirigeants":"",x.emails?x.emails+" e-mails":""].filter(Boolean).join(" · ");
       let act="";
@@ -345,8 +360,13 @@ async function poll(){
   $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");
   const fin={"arrêté":"Arrêté. L'Excel contient les sociétés déjà traitées.","erreur":"Interrompu sur une erreur. L'Excel contient les sociétés déjà traitées."}[s.etat]||"Terminé.";
   const mail=s.mails&&s.mails.length?(s.envoi==="fait"?" Excel envoyé à "+s.mails.join(", ")+".":" Envoi du mail…"):"";
-  $("msg").textContent=s.etat==="en cours"?(s.phase||"Traitement en cours…"):fin+mail;
-  if(s.etat!=="en cours"){$("dl").href="/v3/excel/"+jid;$("dl").hidden=false;
+  const mem=s.memoire?" "+s.memoire+" sociétés reprises de la mémoire.":"";
+  $("msg").textContent=(s.etat==="en cours"?(s.phase||"Traitement en cours…"):fin+mem+mail)+(s.report?" "+s.report:"");
+  if(s.etat!=="en cours"){
+    const contacts=s.perimetre==="dirigeants"||s.perimetre==="tout";
+    $("dlc").href="/v3/excel/"+jid+"?version=contacts";$("dlc").hidden=!contacts;
+    $("dl").href="/v3/excel/"+jid;$("dl").hidden=false;$("dl").textContent=contacts?"Fichier complet":"Télécharger l'Excel";
+    $("dl").className=contacts?"btn ghost":"btn dl";
     if(s.envoi==="fait"){clearInterval(timer);try{localStorage.removeItem("v3job")}catch(_){};histo()}}
 }
 $("stop").onclick=async()=>{if(jid){await fetch("/v3/stop/"+jid,{method:"POST"});}};

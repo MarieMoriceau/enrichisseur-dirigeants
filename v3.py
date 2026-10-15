@@ -8,7 +8,7 @@ Sortie : Excel prêt pour HubSpot (rien n'est écrit dans un CRM).
 """
 import asyncio, csv, io, os, re, time, unicodedata, uuid
 from difflib import SequenceMatcher
-from datetime import date
+from datetime import date, datetime, timezone
 from html import unescape
 from urllib.parse import urljoin, urlparse
 
@@ -20,6 +20,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 import v3_linkedin as LI
 import v3_suivi as SUIVI
+import v3_memoire as MEM
 
 router = APIRouter()
 JOBS: dict = {}
@@ -618,31 +619,81 @@ def nom_fichier(job: dict) -> str:
     return f"enrichisseur_v3_{date.today().isoformat()}_{base or job['fait']}.xlsx"
 
 
+def jlog(job: dict, msg: str):
+    job.setdefault("journal", []).append(f"{datetime.now(SUIVI.PARIS):%H:%M:%S} {msg}")
+    print(f"[V3 {job['id']}] {msg}")
+
+
+async def repartir(job: dict, orgs: list) -> list:
+    """Quota LinkedIn du jour (tous négos confondus) : renvoie ce qui part maintenant, programme le reste à 7 h les jours suivants."""
+    utilise = await SUIVI.utilise_le(datetime.now(SUIVI.PARIS)) - job.get("reserve", 0)   # un lancement reporté se compte déjà
+    dispo = max(0, SUIVI.QUOTA_JOUR - utilise)
+    maintenant, reste = orgs[:dispo], orgs[dispo:]
+    if not reste:
+        return maintenant
+    lots = await SUIVI.planifier_suite(reste)
+    base = re.sub(r"( \(suite \d+/\d+\))+$", "", job["nom"])
+    for n, (depart, lot) in enumerate(lots, 1):
+        await SUIVI.programmer(f"{base} (suite {n}/{len(lots)})", job["perimetre"], job.get("mails", []), lot, depart)
+    places = sum(len(l) for _, l in lots)
+    job["report"] = (f"Quota LinkedIn du jour atteint ({utilise}/{SUIVI.QUOTA_JOUR}) : {len(maintenant)} sociétés traitées maintenant, "
+                     + ", ".join(f"{len(l)} le {d:%d/%m} à {d:%H} h" for d, l in lots) + ".")
+    if places < len(reste):
+        job["report"] += f" {len(reste) - places} sociétés n'ont pas pu être programmées (plus de 30 jours) : relancez-les plus tard."
+    jlog(job, job["report"])
+    await SUIVI.prevenir_report(job.get("mails", []), job["nom"], [(None, maintenant)] + lots if maintenant else lots, job["perimetre"])
+    return maintenant
+
+
 async def traiter(job_id: str, orgs: list):
-    """Traitement complet, puis : Excel joint dans Notion (historique) et envoyé par mail."""
+    """Mémoire (sociétés déjà traitées), quota du jour, traitement, puis Excel joint dans Notion et envoyé par mail."""
     job = JOBS[job_id]
     asyncio.create_task(SUIVI.rester_eveille(JOBS))
-    job["notion_id"] = await SUIVI.notion_creer(job)
+    if job.get("notion_id"):                          # lancement reporté qui démarre
+        await SUIVI.maj(job["notion_id"], {"Statut": "EN_COURS", "Run ID": job_id,
+                                           "Démarré le": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    else:
+        job["notion_id"] = await SUIVI.notion_creer(job)
     try:
-        await _traiter(job_id, orgs)
+        if not job.get("forcer") and job["perimetre"] != "siren":
+            job["phase"] = "Mémoire : sociétés déjà traitées depuis moins de 6 mois ?"
+            reprises, orgs = await MEM.reprendre(job, orgs, norm_nom, domaines, lambda m: jlog(job, m))
+            job["resultats"] += reprises
+            job["fait"] += len(reprises)
+            job["nb_memoire"] = len(reprises)
+        if job["linkedin"] and orgs:
+            job["phase"] = "Quota LinkedIn du jour…"
+            avant = len(orgs)
+            orgs = await repartir(job, orgs)
+            job["total"] -= avant - len(orgs)
+        await SUIVI.maj(job["notion_id"], {"Nb sociétés": job["total"], "Nb LinkedIn": len(orgs) if job["linkedin"] else 0,
+                                           "Nb mémoire": job.get("nb_memoire", 0)})
+        if orgs:
+            job["phase"] = "Sites web et SIREN…"
+            await _traiter(job_id, orgs)
     except Exception as e:
         job["erreur"] = f"{type(e).__name__} : {e}"
-        job.setdefault("journal", []).append(f"erreur : {job['erreur']}")
-        print(f"[V3] {job_id} : {e}")
+        jlog(job, f"erreur : {job['erreur']}")
     job["phase"] = ""
     job["fin"] = job.get("fin") or time.time()
     if job["etat"] == "en cours":
         job["etat"] = "erreur" if job.get("erreur") else ("arrêté" if job["stop"] else "terminé")
     try:
         xl = excel(job) if job["resultats"] else None
+        xl_nego = excel_nego(job) if job["resultats"] and job["perimetre"] in ("dirigeants", "tout") else None
     except Exception as e:
-        xl = None
-        job.setdefault("journal", []).append(f"Excel impossible : {e}")
+        xl = xl_nego = None
+        jlog(job, f"Excel impossible : {e}")
     fn = nom_fichier(job)
     job["envoi"] = "en cours"
     await SUIVI.notion_finir(job, xl, fn)
-    await SUIVI.envoyer_resultat(job, xl, fn)
+    if job["resultats"] or not job.get("report"):     # tout reporté : le mail « programmé » suffit
+        await SUIVI.envoyer_resultat(job, xl, fn, xl_nego, fn.replace(".xlsx", "_contacts.xlsx"))
     job["envoi"] = "fait"
+    try:
+        await MEM.enregistrer(job, norm_nom, lambda m: jlog(job, m))
+    except Exception as e:
+        print(f"[V3 MEMOIRE] {e}")
 
 
 async def _traiter(job_id: str, orgs: list):
@@ -808,6 +859,8 @@ def excel(job) -> bytes:
     lignes = [
         f"ENRICHISSEUR V3 · {libelle} · {auj}", "",
         f"{n} organisations traitées",
+        f"Reprises de la mémoire (traitées il y a moins de 6 mois, sans nouvelle recherche) : {k(lambda r: r.get('memoire'))}",
+    ] + ([job["report"]] if job.get("report") else []) + [
         f"Déjà dans le CRM avec un SIREN (adresse seule) : {k(lambda r: r.get('mode', '').startswith('adresse'))}",
         f"Site joignable : {k(lambda r: r['site_joignable'] == 'oui')}",
         f"Site retrouvé par recherche (absent du fichier) : {k(lambda r: r['source_site'] not in ('', 'CRM'))}",
@@ -863,6 +916,8 @@ def excel(job) -> bytes:
         "  Mode « adresse seule » : pas de recherche de dirigeants.",
         "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",
         "  L'onglet Import HubSpot contacts ne contient que les NOUVEAUX dirigeants (absents de Pipedrive).",
+        "• Quota : 150 sociétés par jour passent par LinkedIn (tous négos confondus). Au-delà, la suite part le lendemain à 7 h.",
+        "• Mémoire : une société traitée depuis moins de 6 mois est reprise sans nouvelle recherche (colonne « Reprise de la mémoire »).",
         "• Rien n'est écrit dans Pipedrive ni HubSpot.",
     ]
     if job.get("journal"):
@@ -872,7 +927,7 @@ def excel(job) -> bytes:
     ws["A1"].font = Font(name="Arial", bold=True, size=13, color="4A1E5C")
     ws.column_dimensions["A"].width = 110
 
-    cols = [("ID Pipedrive", "id"), ("Société", "nom"), ("Déjà au CRM", "dans_crm"), ("Traitement", "mode"), ("Domaine", "domaine"), ("Site trouvé via", "source_site"),
+    cols = [("ID Pipedrive", "id"), ("Société", "nom"), ("Reprise de la mémoire", "memoire"), ("Déjà au CRM", "dans_crm"), ("Traitement", "mode"), ("Domaine", "domaine"), ("Site trouvé via", "source_site"),
             ("Contrôle du nom", "controle_nom"), ("Site joignable", "site_joignable"),
             ("SIREN CRM", "siren_crm"), ("État SIREN CRM", "etat_crm"), ("SIREN site", "siren_site"),
             ("État SIREN site", "etat_site"), ("Page où le SIREN a été trouvé", "page_siren"),
@@ -957,10 +1012,32 @@ def excel(job) -> bytes:
     return b.getvalue()
 
 
+def excel_nego(job: dict) -> bytes:
+    """Version courte pour les négos : seulement les dirigeants (en France) et leurs e-mails."""
+    res = job["resultats"]
+    tout = job["perimetre"] == "tout"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Contacts"
+    ent = ["Société", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "LinkedIn"] + (["E-mail", "Déjà dans Pipedrive"] if tout else [])
+    lignes = []
+    for r in sorted(res, key=lambda r: (r.get("nom") or "").lower()):
+        for d in sorted(r.get("dirigeants", []), key=lambda d: d["role"]):
+            l = [r.get("nom", ""), d["prenom"], d["nom"], d["fonction"], d["role"][2:], d["lieu"], d["linkedin"]]
+            if tout:
+                l += [d.get("email", ""), "oui" if d.get("dans_pipedrive") else ""]
+            lignes.append(l)
+    wb.remove(ws)
+    feuille(wb, "Contacts", ent, lignes)
+    b = io.BytesIO()
+    wb.save(b)
+    return b.getvalue()
+
+
 # ───────────────────────── routes ─────────────────────────
 @router.post("/v3/run")
 async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
-              linkedin: str = Form(""), perimetre: str = Form(""), mail: str = Form("")):
+              linkedin: str = Form(""), perimetre: str = Form(""), mail: str = Form(""), forcer: str = Form("")):
     mails = SUIVI.mails_valides(mail)
     if mail.strip() and not mails:
         return JSONResponse({"erreur": "Adresse mail invalide."}, 400)
@@ -977,19 +1054,52 @@ async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), li
         orgs = orgs[:limite]
     if perimetre != "siren" and not LI.pb_configure():
         return JSONResponse({"erreur": "PhantomBuster n'est pas configuré dans Render : seul « SIREN et statut » est possible."}, 400)
-    avec_li = perimetre != "siren"
-    if avec_li and len(orgs) > LI.MAX_LINKEDIN:
-        return JSONResponse({"erreur": f"Avec les étapes LinkedIn, {LI.MAX_LINKEDIN} sociétés maximum par lancement "
-                                       f"(quota LinkedIn). Mettez {LI.MAX_LINKEDIN} dans « Lignes à traiter »."}, 400)
-    jid = uuid.uuid4().hex[:8]
     if fichier is not None and fichier.filename:
         nom = re.sub(r"\.(xlsx|csv)$", "", fichier.filename, flags=re.I)
     else:
         nom = ", ".join(o["nom"] for o in orgs[:3]) + (f" (+{len(orgs) - 3})" if len(orgs) > 3 else "")
-    JOBS[jid] = {"id": jid, "nom": nom, "mails": mails, "linkedin": avec_li, "perimetre": perimetre, "phase": "Sites web et SIREN…", "journal": [],"total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours", "stop": False,
-                 "debut": time.time(), "fin": None}
-    asyncio.create_task(traiter(jid, orgs))
+    jid = nouveau_job(nom, mails, perimetre, orgs, forcer=forcer in ("on", "1", "true"))
     return {"job": jid, "total": len(orgs)}
+
+
+def nouveau_job(nom, mails, perimetre, orgs, forcer=False, notion_id="", reserve=0) -> str:
+    jid = uuid.uuid4().hex[:8]
+    JOBS[jid] = {"id": jid, "nom": nom, "mails": mails, "linkedin": perimetre != "siren", "perimetre": perimetre,
+                 "forcer": forcer, "notion_id": notion_id, "reserve": reserve,
+                 "phase": "Démarrage…", "journal": [], "total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours",
+                 "stop": False, "debut": time.time(), "fin": None}
+    asyncio.create_task(traiter(jid, orgs))
+    return jid
+
+
+_VERROU_REPRISE = asyncio.Lock()
+
+
+async def lancer_dus() -> int:
+    """Démarre les lancements reportés dont l'heure est venue (appelé par le réveil de 7 h et à chaque ouverture de la page)."""
+    if _VERROU_REPRISE.locked():
+        return 0
+    async with _VERROU_REPRISE:
+        n = 0
+        for pid, nom, perim, mails, orgs in await SUIVI.a_lancer():
+            nouveau_job(nom, mails, perim, orgs, notion_id=pid, reserve=len(orgs))
+            n += 1
+        return n
+
+
+@router.get("/v3/reprendre")
+async def reprendre(cle: str = ""):
+    if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
+        return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
+    return {"lances": await lancer_dus()}
+
+
+@router.get("/v3/quota")
+async def quota():
+    try:
+        return await SUIVI.quota_du_jour()
+    except Exception as e:
+        return {"quota": SUIVI.QUOTA_JOUR, "utilise": None, "reste": None, "erreur": str(e)}
 
 
 @router.get("/v3/status/{jid}")
@@ -1000,6 +1110,7 @@ async def status(jid: str):
     res = j["resultats"]
     return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
             "nom": j.get("nom", ""), "mails": j.get("mails", []), "envoi": j.get("envoi", ""),
+            "memoire": j.get("nb_memoire", 0), "report": j.get("report", ""),
             "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False), "perimetre": j.get("perimetre", ""),
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
@@ -1023,11 +1134,14 @@ async def stop(jid: str):
 
 
 @router.get("/v3/excel/{jid}")
-async def telecharger(jid: str):
+async def telecharger(jid: str, version: str = ""):
     j = JOBS.get(jid)
     if not j:
         return JSONResponse({"erreur": "job inconnu"}, 404)
     nom = nom_fichier(j)
+    if version == "contacts" and j["perimetre"] in ("dirigeants", "tout"):
+        return StreamingResponse(io.BytesIO(excel_nego(j)), headers={"Content-Disposition": f'attachment; filename="{nom.replace(".xlsx", "_contacts.xlsx")}"'},
+                                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     return StreamingResponse(io.BytesIO(excel(j)), headers={"Content-Disposition": f'attachment; filename="{nom}"'},
                              media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -1043,6 +1157,7 @@ async def csv_phantom(jeton: str):
 
 @router.get("/v3/historique")
 async def historique():
+    asyncio.create_task(lancer_dus())               # filet de sécurité si le réveil de 7 h n'est pas passé
     try:
         return {"notion": bool(SUIVI.NOTION_KEY), "mail": bool(SUIVI.SMTP_USER and SUIVI.SMTP_PASS),
                 "lancements": await SUIVI.historique(JOBS)}

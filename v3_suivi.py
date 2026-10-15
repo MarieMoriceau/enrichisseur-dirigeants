@@ -53,6 +53,7 @@ async def notion_creer(job: dict) -> str:
         "Emails destinataires": _txt(", ".join(job.get("mails", []))),
         "Démarré le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")}},
         "Nb sociétés": {"number": job["total"]},
+        "Nb LinkedIn": {"number": 0},                   # fixé juste après, une fois la mémoire et le quota passés
     }
     try:
         async with httpx.AsyncClient(timeout=15) as c:
@@ -182,32 +183,54 @@ def _envoyer(dest: list, sujet: str, corps: str, excel: bytes | None, nom_fichie
         s.sendmail(SMTP_USER, dest, msg.as_string())
 
 
-async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str):
+COPIE_COMPLETE = mails_valides(os.getenv("COPIE_FICHIER_COMPLET", "mmoriceau@equation-sie.com"))
+
+
+async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, excel_nego: bytes | None = None, nom_nego: str = ""):
+    """Le négo reçoit la version courte (contacts et e-mails) quand il y a des dirigeants ;
+    l'adresse COPIE_FICHIER_COMPLET (Marie) reçoit toujours le fichier complet."""
     dest = job.get("mails") or []
-    if not dest or not SMTP_USER or not SMTP_PASS:
+    if not SMTP_USER or not SMTP_PASS:
         return
     res = job["resultats"]
     etat = {"terminé": "est terminé", "arrêté": "a été arrêté avant la fin"}.get(job["etat"], "s'est interrompu sur une erreur")
-    lignes = [f"Bonjour,", "", f"Votre enrichissement « {job['nom']} » {etat}.", "",
-              f"Choix : {LIBELLES.get(job['perimetre'], job['perimetre'])}",
-              f"Sociétés traitées : {len(res)} sur {job['total']}",
-              f"SIREN trouvés : {sum(1 for r in res if r.get('siren_site') or r.get('siren_crm') or r.get('siren_nom'))}"]
-    if job.get("linkedin"):
-        lignes.append(f"Effectifs LinkedIn : {sum(1 for r in res if r.get('effectif_linkedin') not in (None, ''))}")
-    if job["perimetre"] in ("dirigeants", "tout"):
-        lignes.append(f"Dirigeants : {sum(len(r.get('dirigeants', [])) for r in res)}")
-    if job["perimetre"] == "tout":
-        lignes.append(f"E-mails : {sum(1 for r in res for d in r.get('dirigeants', []) if d.get('email'))}")
-    if job.get("erreur"):
-        lignes += ["", f"Erreur : {job['erreur']}"]
-    lignes += ["", "L'Excel est en pièce jointe. Il reste aussi téléchargeable dans l'outil, rubrique « Lancements précédents ».",
-               "Rien n'a été modifié dans Pipedrive ni dans HubSpot.", "", "L'enrichisseur v3"]
-    try:
-        await asyncio.to_thread(_envoyer, dest, f"Enrichissement terminé : {job['nom']}", "\n".join(lignes), excel, nom_fichier)
-        job.setdefault("journal", []).append(f"Excel envoyé par mail à {', '.join(dest)}")
-    except Exception as e:
-        job.setdefault("journal", []).append(f"envoi du mail impossible : {e}")
-        print(f"[V3 SUIVI] mail : {e}")
+    def corps(version):
+        l = ["Bonjour,", "", f"L'enrichissement « {job['nom']} » {etat}.", "",
+             f"Choix : {LIBELLES.get(job['perimetre'], job['perimetre'])}",
+             f"Sociétés : {len(res)}" + (f" (dont {job['nb_memoire']} reprises de la mémoire, sans nouvelle recherche)" if job.get("nb_memoire") else "")]
+        if job["perimetre"] in ("dirigeants", "tout"):
+            l.append(f"Dirigeants : {sum(len(r.get('dirigeants', [])) for r in res)}")
+        if job["perimetre"] == "tout":
+            l.append(f"E-mails : {sum(1 for r in res for d in r.get('dirigeants', []) if d.get('email'))}")
+        if job.get("report"):
+            l += ["", job["report"]]
+        if job.get("erreur"):
+            l += ["", f"Erreur : {job['erreur']}"]
+        l += ["", version, "Rien n'a été modifié dans Pipedrive ni dans HubSpot.", "", "L'enrichisseur v3"]
+        return "\n".join(l)
+    envois = []
+    if dest and excel_nego:
+        envois.append((dest, "Vos contacts", corps("En pièce jointe : les dirigeants et leurs e-mails."), excel_nego, nom_nego))
+        complets = [m for m in COPIE_COMPLETE if m.lower() not in {d.lower() for d in dest}]
+        # si la personne qui lance est aussi le destinataire du complet, elle reçoit les deux fichiers
+        if any(m.lower() in {d.lower() for d in dest} for m in COPIE_COMPLETE):
+            envois.append(([m for m in COPIE_COMPLETE if m.lower() in {d.lower() for d in dest}], "Fichier complet",
+                           corps("En pièce jointe : le fichier complet (sociétés, adresses, effectifs, dirigeants)."), excel, nom_fichier))
+    else:
+        envois.append((dest, "Enrichissement terminé", corps("L'Excel est en pièce jointe. Il reste aussi dans l'outil, rubrique « Lancements précédents »."), excel, nom_fichier))
+        complets = [m for m in COPIE_COMPLETE if m.lower() not in {d.lower() for d in dest}]
+    if complets and excel:
+        par = ", ".join(dest) or "un utilisateur"
+        envois.append((complets, "Copie du fichier complet", corps(f"Copie du fichier complet, lancement fait par {par}."), excel, nom_fichier))
+    for qui, sujet, texte, fichier, nom in envois:
+        if not qui:
+            continue
+        try:
+            await asyncio.to_thread(_envoyer, qui, f"{sujet} : {job['nom']}", texte, fichier, nom)
+            job.setdefault("journal", []).append(f"{sujet} envoyé à {', '.join(qui)}")
+        except Exception as e:
+            job.setdefault("journal", []).append(f"envoi du mail impossible ({', '.join(qui)}) : {e}")
+            print(f"[V3 SUIVI] mail : {e}")
 
 
 # ───────────────────────── rester éveillé ─────────────────────────
@@ -270,7 +293,9 @@ async def utilise_le(d) -> int:
                 print(f"[V3 QUOTA] Notion {r.status_code} {r.text[:200]}")
                 return total
             j = r.json()
-            total += sum(int(_val(p["properties"], "Nb sociétés") or 0) for p in j.get("results", []))
+            for p in j.get("results", []):
+                nl = _val(p["properties"], "Nb LinkedIn")
+                total += int(nl if nl is not None and nl != "" else (_val(p["properties"], "Nb sociétés") or 0))
             if not j.get("has_more"):
                 return total
             curseur = j.get("next_cursor")
@@ -281,14 +306,10 @@ async def quota_du_jour() -> dict:
     return {"quota": QUOTA_JOUR, "utilise": u, "reste": max(0, QUOTA_JOUR - u)}
 
 
-async def planifier(orgs: list) -> list:
-    """Découpe une liste en lots qui respectent le quota : [(date de départ ou None pour maintenant, lot)]."""
-    lots, reste, maintenant = [], list(orgs), datetime.now(PARIS)
-    dispo = QUOTA_JOUR - await utilise_le(maintenant)
-    if dispo > 0:
-        lots.append((None, reste[:dispo]))
-        reste = reste[dispo:]
-    jour = maintenant
+async def planifier_suite(reste: list) -> list:
+    """Répartit ce qui ne passe pas aujourd'hui sur les jours suivants, à 7 h : [(date de départ, lot)]."""
+    lots, reste = [], list(reste)
+    jour = datetime.now(PARIS)
     for _ in range(30):
         if not reste:
             break
@@ -315,6 +336,7 @@ async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart) 
         "Emails destinataires": _txt(", ".join(mails)),
         "Démarré le": {"date": {"start": depart.isoformat(timespec="minutes")}},
         "Nb sociétés": {"number": len(orgs)},
+        "Nb LinkedIn": {"number": len(orgs)},           # réservation sur le quota du jour de départ
     }
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post("https://api.notion.com/v1/pages", headers=_h(),
@@ -342,10 +364,6 @@ async def a_lancer() -> list:
             return []
         for pg in r.json().get("results", []):
             p = pg["properties"]
-            # on le passe tout de suite en EN_COURS : un second réveil ne le relancera pas
-            await c.patch(f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(),
-                          json={"properties": {"Statut": {"select": {"name": "EN_COURS"}},
-                                               "Démarré le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")}}}})
             texte, curseur = "", None
             while True:
                 b = await c.get(f"https://api.notion.com/v1/blocks/{pg['id']}/children", headers=_h(),
@@ -384,3 +402,24 @@ async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str):
         await asyncio.to_thread(_envoyer, mails, f"Enrichissement programmé : {nom}", "\n".join(lignes), None, "")
     except Exception as e:
         print(f"[V3 QUOTA] mail : {e}")
+
+
+async def maj(page_id: str, props: dict):
+    """Met à jour quelques propriétés d'un lancement dans Notion (valeurs simples : nombre, texte, statut)."""
+    if not NOTION_KEY or not page_id:
+        return
+    p = {}
+    for k, v in props.items():
+        if k == "Statut":
+            p[k] = {"select": {"name": v}}
+        elif k == "Démarré le":
+            p[k] = {"date": {"start": v}}
+        elif isinstance(v, (int, float)):
+            p[k] = {"number": v}
+        else:
+            p[k] = _txt(v)
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            await c.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=_h(), json={"properties": p})
+    except Exception as e:
+        print(f"[V3 SUIVI] maj : {e}")

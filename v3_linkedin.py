@@ -478,7 +478,7 @@ async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> di
 
 # ───────────────────────── orchestration des étapes 3 à 5 ─────────────────────────
 async def etapes_linkedin(job: dict, ressemblance, domaine):
-    res = [r for r in job["resultats"] if r.get("statut") not in ("Radiée",)
+    res = [r for r in job["resultats"] if r.get("statut") not in ("Radiée",) and not r.get("memoire")
            and not r.get("controle_nom", "").startswith("⚠️ le site appartient")][:MAX_LINKEDIN]
     stop = lambda: job["stop"]
     jid = job["id"]
