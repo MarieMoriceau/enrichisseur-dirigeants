@@ -77,7 +77,51 @@ def _hors_idf(a: str) -> str:
     return "" if (c and c[2][:2] in IDF) else " · hors Île-de-France"
 
 
+# Grandes adresses de domiciliation parisiennes (des milliers de sociétés y ont leur siège). Liste à compléter.
+ADRESSES_DOMICILIATION = [
+    "60 rue François 1er 75008 Paris", "66 avenue des Champs-Élysées 75008 Paris", "229 rue Saint-Honoré 75001 Paris",
+    "10 rue de Penthièvre 75008 Paris", "128 rue La Boétie 75008 Paris",
+]
+RE_DOMICIL_INSEE = re.compile(r"\bc/o\b|\bchez\b|domicil|business cent|centre d.affaires", re.I)
+
+
+def verdict_domiciliation(r: dict, dec: dict) -> dict:
+    """Le siège légal (INSEE) est-il une simple domiciliation, ailleurs que les bureaux ?
+    C'est le signal des cibles coworking : une société domiciliée qui travaille ailleurs, ou nulle part."""
+    siege = (r.get("siege_insee") or "").strip()
+    bureaux = dec.get("adresse_proposee") or ""
+    sur = dec.get("confiance_adresse") == "haute"
+    if r.get("mention_domiciliation") and not str(r.get("controle_nom", "")).startswith("⚠️"):
+        return {"verdict_domiciliation": "🎯 Domiciliation probable",
+                "raison_domiciliation": f"le site l'indique : « {r['mention_domiciliation']} »"}
+    if not siege or not cle_adresse(siege):
+        return {"verdict_domiciliation": "", "raison_domiciliation": "siège INSEE inconnu"}
+    if RE_DOMICIL_INSEE.search(siege):
+        return {"verdict_domiciliation": "🎯 Domiciliation probable", "raison_domiciliation": "siège INSEE « chez » un tiers"}
+    if any(meme_adresse(siege, a) for a in ADRESSES_DOMICILIATION):
+        return {"verdict_domiciliation": "🎯 Domiciliation probable",
+                "raison_domiciliation": "siège à une adresse connue de domiciliation" + ("" if bureaux else ", aucun bureau trouvé ailleurs")}
+    connue = bureaux or (r.get("adresse_crm") or "")
+    if cle_adresse(siege)[2][:2] not in IDF and connue and cle_adresse(connue) and not meme_adresse(siege, connue):
+        return {"verdict_domiciliation": "🏢 Siège hors Île-de-France",
+                "raison_domiciliation": "siège en région, bureaux en Île-de-France" if not _hors_idf(connue) else "siège et bureaux hors Île-de-France"}
+    if not bureaux:
+        return {"verdict_domiciliation": "", "raison_domiciliation": "adresse des bureaux inconnue"}
+    if meme_adresse(siege, bureaux):
+        return {"verdict_domiciliation": "✅ Cohérent", "raison_domiciliation": "siège = bureaux"}
+    if sur:
+        return {"verdict_domiciliation": "📍 Siège ≠ bureaux",
+                "raison_domiciliation": f"siège ailleurs que les bureaux confirmés ({dec.get('sources_adresse', '')}) : domiciliation ou ancien siège"}
+    return {"verdict_domiciliation": "🔍 À vérifier", "raison_domiciliation": "siège ≠ adresse trouvée, mais celle-ci n'est pas confirmée"}
+
+
 def decider_adresse(r: dict) -> dict:
+    d = _decider_adresse(r)
+    d.update(verdict_domiciliation(r, d))
+    return d
+
+
+def _decider_adresse(r: dict) -> dict:
     """Adresse des bureaux à partir de 4 sources : CRM, site internet, LinkedIn, Google Maps.
     Règle : une adresse est sûre quand 2 sources au moins la donnent.
     Le site peut afficher plusieurs adresses (plusieurs bureaux) : on garde celle qui concorde avec une autre source."""

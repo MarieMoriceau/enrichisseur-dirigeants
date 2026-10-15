@@ -168,6 +168,26 @@ RE_ADRESSE = re.compile(
 CONTEXTE_SIEGE = re.compile(r"si[èe]ge\s+social|domicili|immatricul|rcs|capital\s+(social|de)|h[ée]berg", re.I)
 
 
+RE_DOMICIL = re.compile(r"domicili[ée]e?s?\s+(?:chez|par|au|à|aupr[èe]s)[^.;|]{0,60}|\bc/o\b[^.;|]{0,50}|soci[ée]t[ée] de domiciliation[^.;|]{0,50}", re.I)
+
+
+def mention_domiciliation(t: str) -> str:
+    """« Domiciliée chez… », « c/o… » : le site dit lui-même que l'adresse est une domiciliation."""
+    m = RE_DOMICIL.search(t)
+    return re.sub(r"\s+", " ", m.group(0)).strip()[:90] if m else ""
+
+
+SECTIONS_NAF = {
+    "A": "Agriculture, sylviculture et pêche", "B": "Industries extractives", "C": "Industrie manufacturière",
+    "D": "Énergie (électricité, gaz)", "E": "Eau, déchets, dépollution", "F": "Construction",
+    "G": "Commerce, réparation d'automobiles", "H": "Transports et entreposage", "I": "Hébergement et restauration",
+    "J": "Information et communication", "K": "Finance et assurance", "L": "Activités immobilières",
+    "M": "Activités spécialisées, scientifiques et techniques", "N": "Services administratifs et de soutien",
+    "O": "Administration publique", "P": "Enseignement", "Q": "Santé humaine et action sociale",
+    "R": "Arts, spectacles et activités récréatives", "S": "Autres activités de services",
+    "T": "Activités des ménages employeurs", "U": "Activités extra-territoriales"}
+
+
 def _ville(suite: str) -> str:
     """La ville qui suit le code postal : un mot (avec ses tirets), « Paris La Défense », « Le Kremlin-Bicêtre », Cedex."""
     mots = re.findall(r"[A-Za-zÀ-ÿ'][A-Za-zÀ-ÿ'\-]*|\d{1,2}", suite)
@@ -302,7 +322,7 @@ async def chercher_crm(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
 # ───────────────────────── étape 1 : site web ─────────────────────────
 async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
     r = {"site_joignable": "non", "siren_site": "", "page_siren": "", "linkedin_site": "", "note_site": "", "candidats": [],
-         "adresses_site": []}
+         "adresses_site": [], "mention_domiciliation": ""}
     if not dom:
         r["note_site"] = "pas de site dans le CRM"
         return r
@@ -322,6 +342,7 @@ async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
     li = linkedins_dans(html)
     sirens = [(s, base) for s in sirens_dans(texte(html))]
     adresses = [(a, base, "accueil", ctx) for a, ctx in adresses_dans(texte(html))]
+    domicil = mention_domiciliation(texte(html))
     # page contact : c'est là que les sociétés mettent l'adresse de leurs bureaux
     for p in liens_contact(html, base):
         try:
@@ -329,6 +350,7 @@ async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
             if resp.status_code < 400:
                 t = texte(resp.text)
                 adresses += [(a, str(resp.url), "contact", ctx) for a, ctx in adresses_dans(t)]
+                domicil = domicil or mention_domiciliation(t)
                 sirens += [(s, str(resp.url)) for s in sirens_dans(t)]
                 li += linkedins_dans(resp.text)
         except Exception:
@@ -351,10 +373,12 @@ async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
             t = texte(resp.text)
             sirens += [(s, str(resp.url)) for s in sirens_dans(t)]
             adresses += [(a, str(resp.url), "légal", ctx) for a, ctx in adresses_dans(t)]
+            domicil = domicil or mention_domiciliation(t)
             li += linkedins_dans(resp.text)
         except Exception:
             continue
     r["adresses_site"] = adresses
+    r["mention_domiciliation"] = domicil
 
     if sirens:
         compte = {}
@@ -376,7 +400,7 @@ async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
 
 # ───────────────────────── étape 2 : INSEE ─────────────────────────
 async def insee(client: httpx.AsyncClient, siren: str) -> dict:
-    vide = {"raison_sociale": "", "etat": "", "date_fermeture": "", "siege": "", "tranche_insee": ""}
+    vide = {"raison_sociale": "", "etat": "", "date_fermeture": "", "siege": "", "tranche_insee": "", "naf": "", "secteur": ""}
     if not siren:
         return vide
     for essai in range(3):
@@ -398,6 +422,8 @@ async def insee(client: httpx.AsyncClient, siren: str) -> dict:
                 "date_fermeture": x.get("date_fermeture") or "",
                 "siege": sg.get("adresse") or "",
                 "tranche_insee": x.get("tranche_effectif_salarie") or "",
+                "naf": x.get("activite_principale") or sg.get("activite_principale") or "",
+                "secteur": SECTIONS_NAF.get(x.get("section_activite_principale") or "", ""),
             }
         except Exception:
             await asyncio.sleep(1)
@@ -692,7 +718,8 @@ async def _traiter(job_id: str, orgs: list):
                 row["etat_crm"] = i_crm.get("etat", "")
                 ref = i_site or i_crm or i_nom
                 row.update({"raison_sociale": ref.get("raison_sociale", ""), "date_fermeture": ref.get("date_fermeture", ""),
-                            "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", "")})
+                            "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", ""),
+                            "naf": ref.get("naf", ""), "secteur": ref.get("secteur", "")})
                 # le site est-il bien celui de cette société ? (vaut aussi pour les sites du CRM, souvent faux)
                 if dom and s["site_joignable"] == "oui" and not adresse_seule:
                     compact = norm_nom(o["nom"]).replace(" ", "")
@@ -794,6 +821,8 @@ def excel(job) -> bytes:
         f"Adresse sûre (2 sources concordantes) : {k(lambda r: r.get('confiance_adresse') == 'haute')}",
         f"Adresse à corriger ou à ajouter au CRM : {k(lambda r: str(r.get('action_adresse', '')).startswith(('🔄', '➕')))}",
         f"Adresse à valider (une seule source ou désaccord) : {k(lambda r: r.get('confiance_adresse') == 'moyenne')}",
+        f"Domiciliation probable : {k(lambda r: str(r.get('verdict_domiciliation', '')).startswith('🎯'))}"
+        f" · siège ≠ bureaux : {k(lambda r: str(r.get('verdict_domiciliation', '')).startswith('📍'))}",
     ] + ([
         f"Effectif LinkedIn trouvé : {k(lambda r: r.get('effectif_linkedin') not in (None, ''))}",
         f"Sociétés quasi inactives (≤ 7 salariés LinkedIn) : {k(lambda r: str(r.get('statut_activite', '')).startswith('Quasi'))}",
@@ -806,6 +835,7 @@ def excel(job) -> bytes:
         "• Import HubSpot : uniquement les sociétés actives de confiance haute (clé = nom de domaine)",
         "• Adresses à valider : une seule source, ou des sources en désaccord : à regarder à la main",
         "• Adresses à corriger : nouvelle adresse donnée par 2 sources, à reporter dans le CRM",
+        "• Domiciliations : sociétés domiciliées ou dont le siège n'est pas là où elles travaillent (cibles coworking, bureaux opérés)",
         "• Suppressions : radiées avec site mort, à valider avant de les retirer",
         "• À vérifier : SIREN fermé mais site en ligne (changement de SIREN probable)", "",
         "RÈGLES",
@@ -823,6 +853,9 @@ def excel(job) -> bytes:
         "  au siège INSEE est écarté (souvent une domiciliation). Si le site affiche plusieurs bureaux, on garde celui qui concorde.",
         "  Google n'est interrogé qu'en cas de désaccord, et une fiche Google n'est retenue que si son site web est celui de la société.",
         "  Siège LinkedIn à l'étranger = ignoré.",
+        "• Verdict domiciliation : 🎯 probable si le site dit « domiciliée chez », si le siège INSEE est « chez » un tiers",
+        "  ou à une grande adresse de domiciliation (60 rue François 1er, 66 Champs-Élysées…). 📍 siège ≠ bureaux confirmés",
+        "  (domiciliation ou ancien siège). 🏢 siège en région. ✅ cohérent : siège = bureaux. 🔍 à vérifier : bureaux non confirmés.",
         "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
         "  Mode « adresse seule » : pas de recherche de dirigeants.",
         "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",
@@ -841,7 +874,7 @@ def excel(job) -> bytes:
             ("SIREN CRM", "siren_crm"), ("État SIREN CRM", "etat_crm"), ("SIREN site", "siren_site"),
             ("État SIREN site", "etat_site"), ("Page où le SIREN a été trouvé", "page_siren"),
             ("SIREN par le nom (SIRENE)", "siren_nom"), ("Raison sociale INSEE", "raison_sociale"), ("Date fermeture", "date_fermeture"),
-            ("Siège légal INSEE", "siege_insee"), ("LinkedIn (site)", "linkedin_site"),
+            ("Siège légal INSEE", "siege_insee"), ("Code NAF", "naf"), ("Secteur", "secteur"), ("LinkedIn (site)", "linkedin_site"),
             ("Statut proposé", "statut"), ("Action", "action"), ("Confiance", "confiance"), ("Note", "note_site")]
     li_ = bool(job.get("linkedin"))
     cols += [("Adresse CRM", "adresse_crm"), ("Adresse site", "adresse_site"), ("Page de l'adresse site", "page_adresse_site")]
@@ -849,20 +882,22 @@ def excel(job) -> bytes:
         cols += [("Page LinkedIn retenue", "linkedin"), ("Trouvée via", "source_linkedin"), ("Contrôle LinkedIn", "controle_linkedin"),
                  ("Adresse LinkedIn", "adresse_linkedin"), ("Fiche Google", "fiche_google"), ("Adresse Google", "adresse_google")]
     cols += [("Adresse proposée", "adresse_proposee"), ("Sources concordantes", "sources_adresse"),
-             ("Action adresse", "action_adresse"), ("Confiance adresse", "confiance_adresse")]
+             ("Action adresse", "action_adresse"), ("Confiance adresse", "confiance_adresse"),
+             ("Verdict domiciliation", "verdict_domiciliation"), ("Pourquoi", "raison_domiciliation")]
     if li_:
         cols += [("Effectif LinkedIn", "effectif_linkedin"), ("Tranche déclarée", "tranche_linkedin"), ("Statut activité", "statut_activite")]
     feuille(wb, "Résultats", [c for c, _ in cols], [[r.get(k_, "") for _, k_ in cols] for r in res])
 
     hub = [r for r in res if r["statut"] == "Active" and r["confiance"] == "haute" and r["domaine"]]
     ent = ["Company Domain Name", "Name", "SIREN", "LinkedIn Company Page", "STATUT ACTIVITÉ", "Raison sociale", "ID Pipedrive", "Date relevé",
-           "Street Address", "Postal Code", "City"]
+           "CODE NAF", "SECTEUR", "DOMICILIATION", "Street Address", "Postal Code", "City"]
     if li_:
         ent += ["EFFECTIF LINKEDIN", "DATE EFFECTIF"]
 
     def ligne_hub(r):
         l = [r["domaine"], r["nom"], r["siren_site"] or r["siren_crm"] or r["siren_nom"], r.get("linkedin") or r["linkedin_site"],
-             r.get("statut_activite") or "Active", r["raison_sociale"], r["id"], auj]
+             r.get("statut_activite") or "Active", r["raison_sociale"], r["id"], auj,
+             r.get("naf", ""), r.get("secteur", ""), re.sub(r"^\W+", "", r.get("verdict_domiciliation", "")).strip()]
         rue = cp = ville = ""
         if r.get("confiance_adresse") == "haute" and r.get("adresse_proposee"):
             rue, cp, ville = decouper_adresse(r["adresse_proposee"])
@@ -882,6 +917,12 @@ def excel(job) -> bytes:
              + ([r.get("adresse_linkedin", ""), r.get("adresse_google", "")] if li_ else [])
              + [r.get("adresse_proposee", ""), r.get("action_adresse", "")]
              + ([r.get("effectif_linkedin", "")] if li_ else []) + [""] for r in adr])
+    dom_ = [r for r in res if str(r.get("verdict_domiciliation", "")).startswith(("🎯", "📍"))]
+    feuille(wb, "Domiciliations", ["ID Pipedrive", "Société", "Verdict", "Pourquoi", "Siège légal INSEE", "Adresse des bureaux",
+                                   "Confiance adresse", "Code NAF", "Secteur"] + (["Effectif LinkedIn"] if li_ else []),
+            [[r["id"], r["nom"], r.get("verdict_domiciliation", ""), r.get("raison_domiciliation", ""), r.get("siege_insee", ""),
+              r.get("adresse_proposee", ""), r.get("confiance_adresse", ""), r.get("naf", ""), r.get("secteur", "")]
+             + ([r.get("effectif_linkedin", "")] if li_ else []) for r in dom_])
     corr = [r for r in res if str(r.get("action_adresse", "")).startswith(("🔄", "➕"))]
     feuille(wb, "Adresses à corriger", ["ID Pipedrive", "Société", "Ancienne adresse (CRM)", "Nouvelle adresse", "Sources", "Action"],
             [[r["id"], r["nom"], r.get("adresse_crm", ""), r.get("adresse_proposee", ""), r.get("sources_adresse", ""),
