@@ -52,16 +52,17 @@ async def _req(c, methode, url, **kw):
         return r
 
 
-async def index(journal) -> list:
-    """Toutes les sociétés traitées depuis moins de 6 mois (propriétés seulement, pas le contenu)."""
+async def index(journal, tout: bool = False) -> list:
+    """Sociétés traitées depuis moins de 6 mois (ou toutes, pour l'historique des effectifs). Propriétés seulement."""
     if not NOTION_KEY:
         return []
     depuis = (datetime.now(timezone.utc) - timedelta(days=DUREE_JOURS)).date().isoformat()
     out, curseur = [], None
     async with httpx.AsyncClient(timeout=30) as c:
         while True:
-            corps = {"filter": {"property": "Traitée le", "date": {"on_or_after": depuis}},
-                     "sorts": [{"property": "Traitée le", "direction": "descending"}], "page_size": 100}
+            corps = {"sorts": [{"property": "Traitée le", "direction": "descending"}], "page_size": 100}
+            if not tout:
+                corps["filter"] = {"property": "Traitée le", "date": {"on_or_after": depuis}}
             if curseur:
                 corps["start_cursor"] = curseur
             r = await _req(c, "POST", f"https://api.notion.com/v1/databases/{MEMOIRE_DB}/query", json=corps)
@@ -73,10 +74,48 @@ async def index(journal) -> list:
             for pg in j.get("results", []):
                 p = pg["properties"]
                 out.append({"page": pg["id"], "nom": _val(p, "Nom normalisé"), "siren": _val(p, "SIREN"),
-                            "domaine": _val(p, "Domaine"), "perim": _val(p, "Périmètre"), "date": _val(p, "Traitée le")})
+                            "domaine": _val(p, "Domaine"), "perim": _val(p, "Périmètre"), "date": _val(p, "Traitée le"),
+                            "hist": _val(p, "Historique effectifs")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
+
+
+def _meme(e: dict, siren: str, domaine: str, nom: str) -> bool:
+    return bool((siren and e["siren"] == siren) or (domaine and e["domaine"] == domaine) or (nom and e["nom"] == nom))
+
+
+def historique(e: dict) -> list:
+    """« 2026-10-15:48; 2026-04-02:41 » -> [(date, effectif)], du plus récent au plus ancien."""
+    out = []
+    for morceau in (e.get("hist") or "").split(";"):
+        d, _, n = morceau.strip().partition(":")
+        if d and n.strip().isdigit():
+            out.append((d[:10], int(n)))
+    return out
+
+
+MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
+
+
+def evolution(idx_tout: list, r: dict, norm_nom) -> dict:
+    """Croissance de l'effectif LinkedIn depuis la dernière mesure d'au moins 3 mois (gardée dans la mémoire)."""
+    eff = r.get("effectif_linkedin")
+    if eff in (None, ""):
+        return {}
+    siren = r.get("siren_site") or r.get("siren_crm") or r.get("siren_nom") or ""
+    nom = norm_nom(r.get("nom") or "")
+    e = next((e for e in idx_tout if _meme(e, siren, r.get("domaine", ""), nom) and e.get("hist")), None)
+    if not e:
+        return {"evolution_effectif": "première mesure", "croissance_effectif": ""}
+    limite = (datetime.now(timezone.utc) - timedelta(days=90)).date().isoformat()
+    ref = next(((d, n) for d, n in historique(e) if d <= limite), None)
+    if not ref or not ref[1]:
+        return {"evolution_effectif": "mesure précédente trop récente (moins de 3 mois)", "croissance_effectif": ""}
+    d, n = ref
+    pct = round(100 * (int(eff) - n) / n)
+    quand = f"{MOIS[int(d[5:7]) - 1]} {d[:4]}"
+    return {"evolution_effectif": f"{int(eff) - n:+d} salariés ({pct:+d} %) depuis {quand} ({n})", "croissance_effectif": pct}
 
 
 def chercher(idx: list, o: dict, perim: str, norm_nom, domaines) -> dict:
@@ -147,7 +186,7 @@ async def enregistrer(job: dict, norm_nom, journal):
                  or r.get("siren_nom") or r.get("domaine"))]
     if not nouvelles:
         return
-    idx = await index(lambda *_: None)
+    idx = job.get("_idx_tout") or await index(lambda *_: None, tout=True)
     maintenant = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ok = 0
     async with httpx.AsyncClient(timeout=30) as c:
@@ -155,8 +194,12 @@ async def enregistrer(job: dict, norm_nom, journal):
             nonlocal ok
             siren = r.get("siren_site") or r.get("siren_crm") or r.get("siren_nom") or ""
             nom = norm_nom(r.get("nom") or "")
-            anciennes = [e["page"] for e in idx if (siren and e["siren"] == siren) or (r.get("domaine") and e["domaine"] == r["domaine"])
-                         or (nom and e["nom"] == nom)]
+            meme = [e for e in idx if _meme(e, siren, r.get("domaine", ""), nom)]
+            anciennes = [e["page"] for e in meme]
+            hist = historique(meme[0]) if meme else []                  # les mesures passées suivent la société
+            if r.get("effectif_linkedin") not in (None, ""):
+                hist = [(maintenant[:10], int(r["effectif_linkedin"]))] + [h for h in hist if h[0] != maintenant[:10]]
+            hist_txt = "; ".join(f"{d}:{n}" for d, n in hist[:24])
             data = json.dumps({k: v for k, v in r.items() if k not in A_JETER}, ensure_ascii=False, default=str)
             blocs = [{"object": "block", "type": "code", "code": {"language": "json",
                       "rich_text": [{"type": "text", "text": {"content": data[i:i + 1900]}}]}} for i in range(0, len(data), 1900)]
@@ -164,7 +207,9 @@ async def enregistrer(job: dict, norm_nom, journal):
                      "Nom normalisé": _txt(nom), "SIREN": _txt(siren), "Domaine": _txt(r.get("domaine", "")),
                      "Périmètre": {"select": {"name": job["perimetre"]}}, "Traitée le": {"date": {"start": maintenant}},
                      "Lancement": _txt(job.get("nom", "")), "Nb dirigeants": {"number": len(r.get("dirigeants", []))},
-                     "Nb e-mails": {"number": sum(1 for d in r.get("dirigeants", []) if d.get("email"))}}
+                     "Nb e-mails": {"number": sum(1 for d in r.get("dirigeants", []) if d.get("email"))},
+                     "Effectif LinkedIn": {"number": int(r["effectif_linkedin"]) if r.get("effectif_linkedin") not in (None, "") else None},
+                     "Historique effectifs": _txt(hist_txt)}
             rr = await _req(c, "POST", "https://api.notion.com/v1/pages",
                             json={"parent": {"database_id": MEMOIRE_DB}, "properties": props, "children": blocs[:100]})
             if rr.status_code != 200:

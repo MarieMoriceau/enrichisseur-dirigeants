@@ -671,6 +671,12 @@ async def traiter(job_id: str, orgs: list):
         if orgs:
             job["phase"] = "Sites web et SIREN…"
             await _traiter(job_id, orgs)
+        if job["linkedin"] and any(r.get("effectif_linkedin") not in (None, "") for r in job["resultats"]):
+            job["phase"] = "Croissance des effectifs…"
+            job["_idx_tout"] = await MEM.index(lambda m: jlog(job, m), tout=True)
+            for r in job["resultats"]:
+                if not r.get("memoire"):
+                    r.update(MEM.evolution(job["_idx_tout"], r, norm_nom))
     except Exception as e:
         job["erreur"] = f"{type(e).__name__} : {e}"
         jlog(job, f"erreur : {job['erreur']}")
@@ -917,6 +923,8 @@ def excel(job) -> bytes:
         "  L'onglet Import HubSpot contacts ne contient que les NOUVEAUX dirigeants (absents de Pipedrive).",
         "• Quota : 150 sociétés par jour passent par LinkedIn (tous négos confondus). Au-delà, la suite part le lendemain à 7 h.",
         "• Mémoire : une société traitée depuis moins de 6 mois est reprise sans nouvelle recherche (colonne « Reprise de la mémoire »).",
+        "• Croissance des effectifs : comparée à la dernière mesure LinkedIn d'au moins 3 mois gardée par l'outil.",
+        "  « première mesure » = société jamais mesurée avant : la croissance apparaîtra aux passages suivants.",
         "• Rien n'est écrit dans Pipedrive ni HubSpot.",
     ]
     if job.get("journal"):
@@ -942,14 +950,15 @@ def excel(job) -> bytes:
              ("Action adresse", "action_adresse"), ("Confiance adresse", "confiance_adresse"),
              ("Verdict domiciliation", "verdict_domiciliation"), ("Pourquoi", "raison_domiciliation")]
     if li_:
-        cols += [("Effectif LinkedIn", "effectif_linkedin"), ("Tranche déclarée", "tranche_linkedin"), ("Statut activité", "statut_activite")]
+        cols += [("Effectif LinkedIn", "effectif_linkedin"), ("Évolution effectif LinkedIn", "evolution_effectif"),
+                 ("Croissance effectif (%)", "croissance_effectif"), ("Tranche déclarée", "tranche_linkedin"), ("Statut activité", "statut_activite")]
     feuille(wb, "Résultats", [c for c, _ in cols], [[r.get(k_, "") for _, k_ in cols] for r in res])
 
     hub = [r for r in res if r["statut"] == "Active" and r["confiance"] == "haute" and r["domaine"]]
     ent = ["Company Domain Name", "Name", "SIREN", "LinkedIn Company Page", "STATUT ACTIVITÉ", "Raison sociale", "ID Pipedrive", "Date relevé",
            "CODE NAF", "SECTEUR", "DOMICILIATION", "Street Address", "Postal Code", "City"]
     if li_:
-        ent += ["EFFECTIF LINKEDIN", "DATE EFFECTIF"]
+        ent += ["EFFECTIF LINKEDIN", "DATE EFFECTIF", "CROISSANCE EFFECTIF (%)"]
 
     def ligne_hub(r):
         l = [r["domaine"], r["nom"], r["siren_site"] or r["siren_crm"] or r["siren_nom"], r.get("linkedin") or r["linkedin_site"],
@@ -961,7 +970,7 @@ def excel(job) -> bytes:
         l += [rue, cp, ville]
         if li_:
             eff = r.get("effectif_linkedin", "")
-            l += [eff, auj if eff != "" else ""]
+            l += [eff, auj if eff != "" else "", r.get("croissance_effectif", "")]
         return l
     feuille(wb, "Import HubSpot", ent, [ligne_hub(r) for r in hub])
     adr = [r for r in res if r.get("confiance_adresse") == "moyenne"]
@@ -1018,11 +1027,13 @@ def excel_nego(job: dict) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Contacts"
-    ent = ["Société", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "LinkedIn"] + (["E-mail", "Déjà dans Pipedrive"] if tout else [])
+    ent = (["Société", "Effectif LinkedIn", "Évolution effectif", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "LinkedIn"]
+           + (["E-mail", "Déjà dans Pipedrive"] if tout else []))
     lignes = []
     for r in sorted(res, key=lambda r: (r.get("nom") or "").lower()):
         for d in sorted(r.get("dirigeants", []), key=lambda d: d["role"]):
-            l = [r.get("nom", ""), d["prenom"], d["nom"], d["fonction"], d["role"][2:], d["lieu"], d["linkedin"]]
+            l = [r.get("nom", ""), r.get("effectif_linkedin", ""), r.get("evolution_effectif", ""),
+                 d["prenom"], d["nom"], d["fonction"], d["role"][2:], d["lieu"], d["linkedin"]]
             if tout:
                 l += [d.get("email", ""), "oui" if d.get("dans_pipedrive") else ""]
             lignes.append(l)
