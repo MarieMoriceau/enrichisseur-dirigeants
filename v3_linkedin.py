@@ -8,7 +8,7 @@ Enrichisseur v3 — étapes 3 à 5 (LinkedIn)
 Les phantoms sont pilotés par l'API PhantomBuster : on reprend leurs réglages enregistrés
 (cookie LinkedIn, délais…) et on ne remplace que la liste à traiter.
 """
-import asyncio, csv, io, json, os, re, time, unicodedata
+import asyncio, csv, io, json, os, re, time, unicodedata, uuid
 from urllib.parse import quote
 
 import httpx
@@ -18,6 +18,8 @@ PB_URL_FINDER = os.getenv("PB_URL_FINDER_ID", "")
 PB_SCRAPER = os.getenv("PB_COMPANY_SCRAPER_ID", "")
 PB_SALESNAV = os.getenv("PB_SALESNAV_ID", "")
 PB_GMAPS = os.getenv("PB_GMAPS_ID", "")
+URL_PUBLIQUE = os.getenv("RENDER_EXTERNAL_URL", "")   # adresse publique du service, fournie par Render
+CSV_HEBERGES: dict = {}                              # jeton -> (contenu CSV, heure) servis aux phantoms
 KASPR_KEY = os.getenv("KASPR_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
 PIPEDRIVE_KEY = os.getenv("PIPEDRIVE_API_KEY", "")
@@ -226,13 +228,21 @@ class PhantomBuster:
 
     @staticmethod
     async def _heberger_csv(c: httpx.AsyncClient, colonne: str, valeurs: list) -> str:
-        """Le phantom attend une URL de tableur : on dépose un CSV temporaire sur paste.rs (comme prospection-bureaux)."""
+        """Le phantom attend une URL de tableur : l'outil sert lui-même le CSV, à son adresse publique
+        (/v3/csv/<jeton>.csv). paste.rs, utilisé avant, refuse désormais les dépôts."""
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow([colonne])
         for v in valeurs:
             w.writerow([v])
-        r = await c.post("https://paste.rs/", content=buf.getvalue().encode("utf-8"))
+        contenu = buf.getvalue()
+        if URL_PUBLIQUE:
+            jeton = uuid.uuid4().hex
+            CSV_HEBERGES[jeton] = (contenu, time.time())
+            for k in [k for k, (_, t) in CSV_HEBERGES.items() if time.time() - t > 86400]:
+                CSV_HEBERGES.pop(k, None)                    # ménage : rien ne reste plus de 24 h
+            return f"{URL_PUBLIQUE.rstrip('/')}/v3/csv/{jeton}.csv"
+        r = await c.post("https://paste.rs/", content=contenu.encode("utf-8"))   # secours, hors Render
         r.raise_for_status()
         return r.text.strip() + ".csv"
 

@@ -1029,6 +1029,15 @@ async def telecharger(jid: str):
                              media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+@router.get("/v3/csv/{jeton}.csv")
+async def csv_phantom(jeton: str):
+    """Liste de sociétés lue par les phantoms PhantomBuster (adresse à usage unique, gardée 24 h)."""
+    x = LI.CSV_HEBERGES.get(jeton)
+    if not x:
+        return JSONResponse({"erreur": "fichier inconnu ou expiré"}, 404)
+    return StreamingResponse(io.BytesIO(x[0].encode("utf-8")), media_type="text/csv; charset=utf-8")
+
+
 @router.get("/v3/historique")
 async def historique():
     try:
