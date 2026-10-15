@@ -125,3 +125,9 @@ Contrôle des contacts CRM (étape 4b du pipeline, choix « Sociétés + dirigea
 **À prévoir pour l'envoi HubSpot (après la migration)** : créer dans HubSpot deux propriétés de type date,
 `date_validation_societe` (Sociétés, alimentée par « Validée le ») et `date_validation_contact`
 (Contacts, alimentée par la date de validation du négo), ainsi que le téléphone saisi par les négos.
+
+**Rattrapage du contrôle des contacts CRM** (écran admin, encadré en haut de page) : pour les sociétés déjà en mémoire
+traitées avant ce contrôle. Rapproche les contacts Pipedrive des dirigeants déjà trouvés, puis lit les profils LinkedIn
+(si `PB_PROFILE_SCRAPER_ID` est réglé, `PROFILS_MAX` profils au plus par passage). Ni Kaspr, ni Fullenrich, ni Sales Navigator.
+Essai à blanc obligatoire sur 50 sociétés (rien n'est écrit, Excel du résultat) avant le passage réel.
+Relancer un passage plus tard reprend les contacts « à vérifier » dont le profil n'a pas encore été lu.

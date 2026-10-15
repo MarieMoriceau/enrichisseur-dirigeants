@@ -93,6 +93,9 @@ td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
 td small{display:block;color:var(--muted);font-size:12px}
 td select{width:auto;padding:5px 8px;font-size:13px}
 tr.parti td{background:var(--accent-soft)}
+.rattr{margin:18px clamp(16px,3vw,40px) 0;padding:12px 16px}
+.rattr summary{cursor:pointer;font-family:var(--display);font-weight:600;font-size:17px}
+.rattr .journal{font:12px ui-monospace,Menlo,monospace;color:var(--muted);white-space:pre-line;margin-top:8px}
 .note{font-size:13px;color:var(--muted);background:var(--tag);border-radius:6px;padding:8px 10px;margin-top:10px}
 input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>
@@ -107,6 +110,20 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
       <a href="/">Enrichisseur</a> · <a href="/v3/contacts">Écran des négos</a> · <a href="/v3/deconnexion">Se déconnecter</a></p>
   </div>
 </div></div>
+
+<details class="card rattr" id="rattr">
+  <summary>Rattrapage du contrôle des contacts CRM</summary>
+  <p class="msg">Pour les sociétés traitées avant ce contrôle : contacts Pipedrive rapprochés des dirigeants déjà trouvés, puis lecture des profils LinkedIn.
+    Ni Kaspr ni Fullenrich, pas de Sales Navigator. D'abord un essai à blanc sur 50 sociétés (rien n'est écrit), puis le passage réel.</p>
+  <div class="actions" style="margin-top:8px">
+    <button class="btn primary" id="rEssai">Essai à blanc (50 sociétés)</button>
+    <button class="btn ghost" id="rReel" disabled title="Après l'essai à blanc">Lancer pour de vrai</button>
+    <button class="btn ghost" id="rStop" hidden>Arrêter</button>
+    <a class="btn ghost" id="rXls" href="/v3/validation/api/rattrapage/excel" hidden>Excel du résultat</a>
+    <span class="msg" id="rMsg"></span>
+  </div>
+  <div class="journal" id="rJournal"></div>
+</details>
 
 <div class="wrap">
   <aside class="card liste" aria-label="Sociétés">
@@ -329,6 +346,25 @@ function suivante() {
   if (next) ouvrir(next.page); else { courant = null; $("#detail").innerHTML = `<div class="vide">Plus rien dans « ${esc(filtre)} ». Bien joué.</div>`; }
 }
 
+/* ─────────── rattrapage ─────────── */
+let rTimer = null;
+async function rEtat() {
+  let e; try { e = await api("/v3/validation/api/rattrapage"); } catch (_) { return; }
+  $("#rEssai").disabled = e.en_cours; $("#rReel").disabled = e.en_cours || !e.essai_ok; $("#rStop").hidden = !e.en_cours;
+  $("#rXls").hidden = e.en_cours || !e.fini;
+  $("#rMsg").textContent = e.en_cours ? (e.mode + " : " + (e.phase || "en cours…")) : (e.fini ? (e.mode + " terminé : " + e.fini) : (e.profil_branche ? "" : "Phantom Profile Scraper pas encore branché : pas de « probablement parti »."));
+  $("#rJournal").textContent = (e.journal || []).join("\n");
+  clearTimeout(rTimer); if (e.en_cours) rTimer = setTimeout(rEtat, 3000); else if (e.fini && e.mode === "réel") charger();
+}
+async function rLancer(mode) {
+  if (mode === "réel" && !confirm("Passage réel : la mémoire Notion de toutes les sociétés concernées va être mise à jour. On y va ?")) return;
+  try { await api("/v3/validation/api/rattrapage", {mode}); } catch (e) { $("#rMsg").textContent = e.message; return; }
+  rEtat();
+}
+$("#rEssai").onclick = () => rLancer("essai");
+$("#rReel").onclick = () => rLancer("réel");
+$("#rStop").onclick = async () => { await api("/v3/validation/api/rattrapage/stop", {}); rEtat(); };
+rEtat();
 charger();
 </script>
 </body>
