@@ -128,6 +128,9 @@ async def reprendre(job: dict, orgs: list, norm_nom, domaines, journal) -> tuple
         if not row:
             reste.append(o)                          # page illisible : on relance la recherche
             continue
+        if str(row.get("mode", "")).startswith("adresse seule") and job["perimetre"] in ("dirigeants", "tout"):
+            reste.append(o)                          # traitée avant la recherche de dirigeants des SIREN connus : on relance
+            continue
         row["memoire"] = f"oui, traitée le {e['date'][:10]}"
         row["id"] = o.get("id") or row.get("id", "")  # l'ID Pipedrive du fichier du jour prime
         reprises.append(row)
