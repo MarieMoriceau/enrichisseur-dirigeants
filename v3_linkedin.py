@@ -458,9 +458,15 @@ async def _champ_linkedin_personne(c: httpx.AsyncClient) -> str:
     if "ok" not in _CHAMP_LI_PERSONNE:
         try:
             r = await c.get("https://api.pipedrive.com/v1/personFields", params={"api_token": PIPEDRIVE_KEY, "limit": 500})
-            for f in r.json().get("data") or []:
-                if "linkedin" in (f.get("name") or "").lower():
+            champs = r.json().get("data") or []
+            voulu = os.getenv("PIPEDRIVE_CHAMP_LINKEDIN", "").strip().lower()   # nom exact du champ, si besoin de forcer
+            noms = [voulu] if voulu else ["url link", "linkedin", "url linkedin", "profil linkedin"]
+            for n in noms:                                   # chez Equation, le champ s'appelle « URL LINK »
+                f = next((f for f in champs if (f.get("name") or "").strip().lower() == n), None) \
+                    or next((f for f in champs if n in (f.get("name") or "").lower()), None)
+                if f:
                     _CHAMP_LI_PERSONNE["cle"] = f["key"]
+                    print(f"[V3 PIPEDRIVE] champ LinkedIn des personnes : « {f.get('name')} »")
                     break
         except Exception as e:
             print(f"[V3 PIPEDRIVE CHAMP LINKEDIN] {e}")
@@ -482,7 +488,9 @@ async def personnes_societe(c: httpx.AsyncClient, org_id: str) -> list:
             for p in j.get("data") or []:
                 emails = [e.get("value", "") for e in (p.get("email") or []) if isinstance(e, dict)]
                 emails = [e for e in emails if "@" in e]                  # « v » = case vide (ancienne convention)
-                li = str(p.get(cle_li) or "") if cle_li else ""
+                li = str(p.get(cle_li) or "").strip() if cle_li else ""
+                if "linkedin.com/in/" in li.lower() and not li.lower().startswith("http"):
+                    li = "https://" + li                     # « www.linkedin.com/in/… » sans https dans Pipedrive
                 out.append({"id": str(p.get("id")), "nom_complet": p.get("name", ""), "fonction": p.get("job_title") or "",
                             "email": emails[0] if emails else "",
                             "linkedin": li if "linkedin.com/in/" in li else "", "statut": "", "detail": ""})
