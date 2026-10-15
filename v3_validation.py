@@ -29,6 +29,39 @@ SOURCES = ("CRM", "Site", "LinkedIn", "Google", "Saisie")
 ACTIONS_CRM = ("garder", "marquer parti", "à revoir")
 ACTIONS_AILLEURS = ("à décider", "changer de société", "deux sociétés")   # contact déjà fiché chez une autre société
 ETATS_NOUVEAU = ("à traiter", "prêt pour HubSpot", "écarté")
+ROLES = ["1 CEO / Président / DG", "2 Fondateur", "3 COO / Opérations", "4 CFO / DAF", "5 Associé / Gérant",
+         "6 Immobilier / Services généraux", "7 Autre C-level / VP", "8 Autre"]
+CHAMPS_MODIFIABLES = ("fonction", "role", "email", "telephone", "linkedin")   # saisis à la main par l'admin ou les négos
+RE_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", re.I)
+
+
+def fiche_nouveau(d: dict, e: dict) -> dict:
+    """Nouveau dirigeant tel qu'affiché : valeurs trouvées par l'enrichisseur, remplacées par les saisies manuelles."""
+    f = {"cle": cle_contact(d), "nom_complet": d.get("nom_complet", ""), "lieu": d.get("lieu", ""),
+         "ailleurs": d.get("ailleurs_crm") or {}, "autres_societes": d.get("autres_societes") or [],
+         "etat": e.get("etat", "à traiter"), "le": e.get("le", ""), "modifie": e.get("modifie", []),
+         "source_email": d.get("source_email", "")}
+    for k in CHAMPS_MODIFIABLES:
+        f[k] = e[k] if k in e.get("modifie", []) else (e.get(k) or d.get(k, "")) if k == "telephone" else d.get(k, "")
+    return f
+
+
+def verifier_saisie(b: dict) -> tuple:
+    """Champs saisis à la main → (valeurs propres, erreur)."""
+    v = {k: re.sub(r"\s+", " ", str(b.get(k) or "")).strip()[:300] for k in CHAMPS_MODIFIABLES if k in b}
+    if v.get("telephone"):
+        t = _telephone(v["telephone"])
+        if not t:
+            return {}, "téléphone illisible (ex. 06 12 34 56 78 ou +33 6 12 34 56 78)"
+        v["telephone"] = t
+    if v.get("email") and not RE_EMAIL.fullmatch(v["email"]):
+        return {}, "e-mail illisible"
+    if v.get("linkedin"):
+        if "linkedin.com/in/" not in v["linkedin"].lower():
+            return {}, "URL LinkedIn de profil attendue (linkedin.com/in/…)"
+        if not v["linkedin"].lower().startswith("http"):
+            v["linkedin"] = "https://" + v["linkedin"]
+    return v, ""
 RE_PAGE = re.compile(r"[0-9a-f\-]{32,36}")
 
 MDP_ADMIN = os.getenv("VALIDATION_MDP_ADMIN", "")
@@ -187,6 +220,8 @@ async def admin_societe(page_id: str, req: Request):
     info["decisions"] = _json(info["decisions"], [])
     info["nouveaux"] = _json(info["nouveaux"], {})
     info["data"] = await MEM.lire(page_id)
+    info["fiches"] = [fiche_nouveau(d, info["nouveaux"].get(cle_contact(d), {})) for d in nouveaux_dirigeants(info["data"])]
+    info["roles"] = ROLES
     return info
 
 
@@ -231,8 +266,13 @@ async def valider_contacts_crm(page_id: str, req: Request):
         t = d.get("type") or "crm"
         if t not in ("crm", "ailleurs") or d.get("action") not in (ACTIONS_CRM if t == "crm" else ACTIONS_AILLEURS):
             return JSONResponse({"erreur": f"décision invalide : {t} / {d.get('action')}"}, 400)
+        propres, erreur = verifier_saisie({k: d.get(k) for k in ("email", "telephone", "linkedin") if d.get(k)})
+        if erreur:
+            return JSONResponse({"erreur": f"{d.get('nom_complet', '')} : {erreur}"}, 400)
+        d = {**d, **propres}
         decisions.append({"type": t, **{k: str(d.get(k) or "")[:300] for k in
-                          ("action", "id", "nom_complet", "fonction", "email", "linkedin", "statut", "societe_actuelle")}})
+                          ("action", "id", "nom_complet", "fonction", "email", "linkedin", "statut", "societe_actuelle",
+                           "telephone", "role")}})
     return await _maj(page_id, {"Validation": {"select": {"name": "Contacts validés"}},
                                 "Décisions contacts": MEM._txts(json.dumps(decisions, ensure_ascii=False))})
 
@@ -277,19 +317,14 @@ async def negos_societe(page_id: str, req: Request):
     etats = _json(info["nouveaux"], {})
     nouveaux = []
     for d in nouveaux_dirigeants(data):
-        e = etats.get(cle_contact(d), {})
-        nouveaux.append({"cle": cle_contact(d), "nom_complet": d.get("nom_complet", ""), "fonction": d.get("fonction", ""),
-                         "role": d.get("role", ""), "lieu": d.get("lieu", ""), "linkedin": d.get("linkedin", ""),
-                         "email": d.get("email", ""), "telephone": e.get("telephone", ""),
-                         "ailleurs": d.get("ailleurs_crm") or {}, "autres_societes": d.get("autres_societes") or [],
-                         "etat": e.get("etat", "à traiter"), "le": e.get("le", "")})
+        nouveaux.append(fiche_nouveau(d, etats.get(cle_contact(d), {})))
     crm = [{k: p.get(k, "") for k in ("nom_complet", "fonction", "linkedin", "statut", "detail")} for p in data.get("contacts_crm", [])]
     adresse_validee = info["validation"] in ("Société validée", "Contacts validés")
     return {"page": page_id, "nom": info["nom"], "domaine": info["domaine"], "siren": info["siren"], "effectif": info["effectif"],
             "lancement": info["lancement"], "traitee": info["traitee"],
             "adresse": info["adresse_retenue"] if adresse_validee else (data.get("adresse_proposee") or data.get("adresse_crm") or ""),
             "adresse_validee": adresse_validee, "linkedin_societe": data.get("linkedin", ""),
-            "nouveaux": nouveaux, "crm": crm}
+            "nouveaux": nouveaux, "crm": crm, "roles": ROLES}
 
 
 def _telephone(t: str) -> str:
@@ -306,12 +341,12 @@ async def negos_contact(page_id: str, req: Request):
     if not RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     b = await req.json()
-    cle, etat, tel_brut = str(b.get("cle") or "").lower(), b.get("etat"), str(b.get("telephone") or "").strip()
-    if etat not in ETATS_NOUVEAU:
+    cle, etat = str(b.get("cle") or "").lower(), b.get("etat")
+    if etat is not None and etat not in ETATS_NOUVEAU:
         return JSONResponse({"erreur": "état inconnu"}, 400)
-    tel = _telephone(tel_brut)
-    if tel_brut and not tel:
-        return JSONResponse({"erreur": "téléphone illisible (ex. 06 12 34 56 78 ou +33 6 12 34 56 78)"}, 400)
+    saisie, erreur = verifier_saisie(b.get("champs") or {})
+    if erreur:
+        return JSONResponse({"erreur": erreur}, 400)
     info = await _une(page_id)                          # relu juste avant d'écrire : deux négos peuvent travailler en même temps
     if not info or info["validation"] == "Écartée":
         return JSONResponse({"erreur": "société introuvable"}, 404)
@@ -319,18 +354,37 @@ async def negos_contact(page_id: str, req: Request):
     d = next((d for d in nouveaux_dirigeants(data) if cle_contact(d) == cle), None)
     if not d:
         return JSONResponse({"erreur": "contact introuvable dans cette société"}, 404)
+    if saisie.get("role") and saisie["role"] not in ROLES + [d.get("role", "")]:
+        return JSONResponse({"erreur": "rôle inconnu"}, 400)
     etats = _json(info["nouveaux"], {})
-    if etat == "à traiter" and not tel:
+    e = dict(etats.get(cle, {}))
+    modifie = set(e.get("modifie", []))
+    for k, v in saisie.items():                         # on ne garde comme « modifié » que ce qui diffère de l'enrichisseur
+        if v != (d.get(k) or ""):
+            e[k] = v
+            modifie.add(k)
+        else:
+            e.pop(k, None)
+            modifie.discard(k)
+    e["modifie"] = sorted(modifie)
+    if etat is not None:
+        e["etat"] = etat
+        e["le"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    e.setdefault("etat", "à traiter")
+    e.update({"prenom": d.get("prenom", ""), "nom": d.get("nom", ""), "nom_complet": d.get("nom_complet", ""),
+              # déjà fiché ailleurs : le négo décide de l'ajouter ; l'admin décide « changer de société » ou « deux sociétés »
+              "action": "existant" if d.get("ailleurs_crm") else "créer",
+              "fiche_existante": (d.get("ailleurs_crm") or {}).get("id", ""),
+              "modifie_par": role(req), "modifie_le": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    fiche = fiche_nouveau(d, e)
+    for k in CHAMPS_MODIFIABLES:                        # valeurs finales gardées telles quelles pour l'envoi HubSpot
+        e["final_" + k] = fiche[k]
+    if e["etat"] == "à traiter" and not e["modifie"]:
         etats.pop(cle, None)
     else:
-        etats[cle] = {"etat": etat, "telephone": tel, "le": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                      "prenom": d.get("prenom", ""), "nom": d.get("nom", ""), "nom_complet": d.get("nom_complet", ""),
-                      "fonction": d.get("fonction", ""), "email": d.get("email", ""), "linkedin": d.get("linkedin", ""),
-                      # déjà fiché ailleurs : le négo décide de l'ajouter ; l'admin décide « changer de société » ou « deux sociétés »
-                      "action": "existant" if d.get("ailleurs_crm") else "créer",
-                      "fiche_existante": (d.get("ailleurs_crm") or {}).get("id", "")}
+        etats[cle] = e
     maj = await _maj(page_id, {"Nouveaux contacts": MEM._txts(json.dumps(etats, ensure_ascii=False)),
-                               "Nb prêts HubSpot": {"number": sum(1 for e in etats.values() if e["etat"] == "prêt pour HubSpot")}})
+                               "Nb prêts HubSpot": {"number": sum(1 for x in etats.values() if x.get("etat") == "prêt pour HubSpot")}})
     if isinstance(maj, JSONResponse):
         return maj
-    return {"cle": cle, "etat": etat, "telephone": tel, "le": etats.get(cle, {}).get("le", ""), "nb_prets": maj["nb_prets"]}
+    return fiche | {"nb_prets": maj["nb_prets"]}

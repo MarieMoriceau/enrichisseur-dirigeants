@@ -96,6 +96,20 @@ tr.parti td{background:var(--accent-soft)}
 .rattr{margin:18px clamp(16px,3vw,40px) 0;padding:12px 16px}
 .rattr summary{cursor:pointer;font-family:var(--display);font-weight:600;font-size:17px}
 .rattr .journal{font:12px ui-monospace,Menlo,monospace;color:var(--muted);white-space:pre-line;margin-top:8px}
+table.saisie{min-width:980px}
+table.saisie td{vertical-align:top}
+table.saisie td:first-child{min-width:230px}
+.edit{width:100%;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+select.edit{padding:6px 6px;min-width:150px}
+.edit.modif{border-color:var(--warn);background:var(--warn-soft)}
+.edit:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.lien-li{font-size:12px;margin-left:4px}
+tr.pret td{background:var(--ok-soft)}
+tr.ecarte td{opacity:.55}
+.boutons{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.boutons .btn{padding:6px 10px;font-size:13px}
+.legende{font-size:12.5px;color:var(--muted);margin:4px 0 8px}
+.legende i{display:inline-block;width:10px;height:10px;border:1px solid var(--warn);background:var(--warn-soft);border-radius:2px;margin-right:4px;vertical-align:-1px}
 .note{font-size:13px;color:var(--muted);background:var(--tag);border-radius:6px;padding:8px 10px;margin-top:10px}
 input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>
@@ -301,57 +315,119 @@ async function envoyerSociete(corps, suite) {
   } catch (e) { message(e.message, true); document.querySelectorAll(".actions .btn").forEach(b => b.disabled = false); }
 }
 
-/* ─────────── écran 2 : contacts CRM (nouveaux contacts : lecture seule, gérés par les négos) ─────────── */
+
+/* ─────────── tableau de saisie des nouveaux contacts (commun admin / négos) ─────────── */
+const CHAMPS = ["linkedin", "fonction", "role", "email", "telephone"];
+function champ(x, k, extra = "") {
+  const m = (x.modifie || []).includes(k) ? " modif" : "";
+  const ph = {linkedin: "https://www.linkedin.com/in/…", fonction: "Fonction", email: "prenom.nom@societe.fr", telephone: "06 12 34 56 78"}[k];
+  const type = {email: "email", telephone: "tel", linkedin: "url"}[k] || "text";
+  return `<input class="edit${m}" data-k="${k}" type="${type}" value="${esc(x[k] || "")}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}" ${extra}>`;
+}
+function selectRole(x, roles) {
+  const opts = [...roles]; if (x.role && !opts.includes(x.role)) opts.unshift(x.role);
+  const m = (x.modifie || []).includes("role") ? " modif" : "";
+  return `<select class="edit${m}" data-k="role" aria-label="Rôle de ${esc(x.nom_complet)}"><option value="">—</option>${opts.map(o => `<option ${o === x.role ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
+}
+function ligneSaisie(x, i, roles, finDeLigne, societe) {
+  const cls = x.etat === "prêt pour HubSpot" ? "pret" : x.etat === "écarté" ? "ecarte" : "";
+  return `<tr id="l${i}" class="${cls}">
+    <td><b>${esc(x.nom_complet)}</b>${x.linkedin ? `<a class="lien-li" href="${esc(x.linkedin)}" target="_blank" rel="noopener">ouvrir ↗</a>` : ""}
+      <div style="margin-top:4px">${champ(x, "linkedin")}</div>
+      ${x.ailleurs && x.ailleurs.id ? `<small>Déjà dans Pipedrive chez <b>${esc(x.ailleurs.org_nom)}</b> (fiche ${esc(x.ailleurs.id)})</small>` : ""}
+      ${x.autres_societes && x.autres_societes.length ? `<small>Aussi dirigeant de : ${esc(x.autres_societes.join(", "))}</small>` : ""}
+      ${x.lieu ? `<small>${esc(x.lieu)}</small>` : ""}</td>
+    <td>${champ(x, "fonction")}</td>
+    <td>${selectRole(x, roles)}</td>
+    <td>${champ(x, "email")}${x.source_email && !(x.modifie || []).includes("email") ? `<small>trouvé par ${esc(x.source_email)}</small>` : ""}</td>
+    <td>${champ(x, "telephone")}</td>
+    <td>${finDeLigne(x, i)}<span class="msg" data-m="${i}"></span></td>
+  </tr>`;
+}
+function tableSaisie(liste, roles, finDeLigne, titreFin) {
+  return `<p class="legende"><i></i>case modifiée à la main (remplace la valeur trouvée par l'enrichisseur)</p>
+    <div class="tab-wrap"><table class="saisie"><thead><tr><th>Contact et LinkedIn</th><th>Fonction</th><th>Rôle</th><th>E-mail</th><th>Téléphone</th><th>${titreFin}</th></tr></thead>
+    <tbody>${liste.map((x, i) => ligneSaisie(x, i, roles, finDeLigne)).join("")}</tbody></table></div>`;
+}
+function champsLigne(i) {
+  const o = {}; document.querySelectorAll(`#l${i} [data-k]`).forEach(e => o[e.dataset.k] = e.value.trim()); return o;
+}
+async function sauverContact(liste, i, etat, roles, finDeLigne, apres) {
+  const x = liste[i], m = document.querySelector(`[data-m="${i}"]`);
+  document.querySelectorAll(`#l${i} button`).forEach(b => b.disabled = true);
+  m.textContent = "Enregistrement…"; m.className = "msg";
+  try {
+    const corps = {cle: x.cle, champs: champsLigne(i)}; if (etat) corps.etat = etat;
+    const r = await api("/v3/contacts/api/contact/" + courant, corps);
+    liste[i] = Object.assign({}, x, r);
+    document.getElementById("l" + i).outerHTML = ligneSaisie(liste[i], i, roles, finDeLigne);
+    const m2 = document.querySelector(`[data-m="${i}"]`); m2.textContent = "Enregistré"; m2.className = "msg";
+    apres && apres(r);
+  } catch (e) { m.textContent = e.message; m.className = "msg err"; document.querySelectorAll(`#l${i} button`).forEach(b => b.disabled = false); }
+}
+
+/* ─────────── écran 2 : contacts CRM (admin) + nouveaux contacts (modifiables, décision des négos) ─────────── */
+function finAdmin(x, i) {
+  const e = x.etat || "à traiter";
+  return `<span class="pill ${e === "prêt pour HubSpot" ? "ok" : e === "écarté" ? "ko" : ""}">négos : ${esc(e)}</span>
+    <div class="boutons"><button class="btn ghost" data-s="${i}">Enregistrer</button></div>`;
+}
 function ecranContacts() {
   const d = info.data || {};
-  const avant = Object.fromEntries((info.decisions || []).filter(x => (x.type || "crm") === "crm").map(x => [String(x.id), x.action]));
+  const avant = Object.fromEntries((info.decisions || []).filter(x => (x.type || "crm") === "crm").map(x => [String(x.id), x]));
+  const avantA = Object.fromEntries((info.decisions || []).filter(x => x.type === "ailleurs").map(x => [String(x.id), x.action]));
   const ordre = {"probablement parti":0,"à vérifier":1,"toujours là":2};
   const crm = [...(d.contacts_crm || [])].sort((a, b) => (ordre[a.statut] ?? 3) - (ordre[b.statut] ?? 3));
-  const nouveaux = (d.dirigeants || []).filter(x => !x.dans_pipedrive);
-  const ailleurs = nouveaux.filter(x => x.ailleurs_crm && x.ailleurs_crm.id);
-  const avantA = Object.fromEntries((info.decisions || []).filter(x => x.type === "ailleurs").map(x => [String(x.id), x.action]));
-  const etatN = x => (info.nouveaux || {})[String(x.linkedin || x.nom_complet).trim().toLowerCase()] || {};
+  const fiches = info.fiches || [];
+  const ailleurs = fiches.filter(x => x.ailleurs && x.ailleurs.id);
   const choix = (opts, val) => opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("");
-  const defC = x => avant[String(x.id)] || ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
+  const defC = x => (avant[String(x.id)] || {}).action || ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
+  const val = (x, k) => { const a = avant[String(x.id)]; return a && a[k] ? a[k] : (x[k] || ""); };
+  const modifC = (x, k) => { const a = avant[String(x.id)]; return a && a[k] && a[k] !== (x[k] || "") ? " modif" : ""; };
+  const inp = (x, i, k, ph, type) => `<input class="edit${modifC(x, k)}" data-c${k}="${i}" type="${type}" value="${esc(val(x, k))}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}">`;
   const pillC = s => `<span class="pill ${s === "probablement parti" ? "ko" : s === "à vérifier" ? "warn" : "ok"}">${esc(s || "non contrôlé")}</span>`;
   const sansContacts = !["dirigeants","tout"].includes(info.perimetre);
   $("#ecran").innerHTML = `
     <p class="note">Adresse retenue : <b>${esc(info.adresse_retenue)}</b>${info.source_retenue ? " (" + esc(info.source_retenue) + ")" : ""}</p>
     ${sansContacts ? `<p class="note">Société traitée en « ${esc(info.perimetre)} » : pas de recherche de contacts. Relancez-la en « Tout » pour les avoir.</p>` : ""}
     <h3>Contacts déjà au CRM <span class="pill">${crm.length}</span></h3>
-    ${crm.length ? `<div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Contact Pipedrive</th><th>Contrôle</th><th>E-mail CRM</th></tr></thead><tbody>
+    ${crm.length ? `<p class="legende"><i></i>case corrigée à la main (remplace la valeur de Pipedrive)</p>
+      <div class="tab-wrap"><table class="saisie"><thead><tr><th>Contact Pipedrive</th><th>Décision</th><th>Contrôle</th><th>LinkedIn</th><th>E-mail</th><th>Téléphone</th></tr></thead><tbody>
       ${crm.map((x, i) => `<tr class="${x.statut === "probablement parti" ? "parti" : ""}">
-        <td><select data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à revoir"], defC(x))}</select></td>
-        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction || "")} · fiche ${esc(x.id)}</small></td>
+        <td><b>${esc(x.nom_complet)}</b>${val(x, "linkedin") ? `<a class="lien-li" href="${esc(val(x, "linkedin"))}" target="_blank" rel="noopener">ouvrir ↗</a>` : ""}<small>${esc(x.fonction || "")} · fiche ${esc(x.id)}</small></td>
+        <td><select class="edit" data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à revoir"], defC(x))}</select></td>
         <td>${pillC(x.statut)}<small>${esc(x.detail || "")}</small></td>
-        <td>${esc(x.email || "—")}</td></tr>`).join("")}</tbody></table></div>`
-      : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché, ou société traitée avant l'ajout de ce contrôle (relancez-la pour l'avoir)."}</p>`}
+        <td>${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</td>
+        <td>${inp(x, i, "email", "prenom.nom@societe.fr", "email")}</td>
+        <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}</td></tr>`).join("")}</tbody></table></div>`
+      : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché, ou société traitée avant ce contrôle (lancez le rattrapage)."}</p>`}
     ${ailleurs.length ? `<h3>Déjà dans Pipedrive chez une autre société <span class="pill">${ailleurs.length}</span></h3>
       <p class="msg" style="margin:0 0 8px">Trouvés dirigeants ici, mais fichés ailleurs. Le négo dit s'il faut l'ajouter ; vous décidez s'il change de société ou appartient aux deux.</p>
       <div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Contact</th><th>Fiché chez</th><th>Négos</th></tr></thead><tbody>
-      ${ailleurs.map((x, i) => { const e = etatN(x); return `<tr>
-        <td><select data-a="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["à décider","changer de société","deux sociétés"], avantA[String(x.ailleurs_crm.id)] || "à décider")}</select></td>
-        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} chez ${esc(info.nom)}</small></td>
-        <td>${esc(x.ailleurs_crm.org_nom)}<small>fiche ${esc(x.ailleurs_crm.id)}</small></td>
-        <td><span class="pill ${e.etat === "prêt pour HubSpot" ? "ok" : e.etat === "écarté" ? "ko" : ""}">${esc(e.etat === "prêt pour HubSpot" ? "à ajouter" : (e.etat || "à traiter"))}</span></td></tr>`; }).join("")}
+      ${ailleurs.map((x, i) => `<tr>
+        <td><select class="edit" data-a="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["à décider","changer de société","deux sociétés"], avantA[String(x.ailleurs.id)] || "à décider")}</select></td>
+        <td>${esc(x.nom_complet)}<small>${esc(x.fonction)} chez ${esc(info.nom)}</small></td>
+        <td>${esc(x.ailleurs.org_nom)}<small>fiche ${esc(x.ailleurs.id)}</small></td>
+        <td><span class="pill ${x.etat === "prêt pour HubSpot" ? "ok" : x.etat === "écarté" ? "ko" : ""}">${esc(x.etat === "prêt pour HubSpot" ? "à ajouter" : x.etat)}</span></td></tr>`).join("")}
       </tbody></table></div>` : ""}
     <div class="actions">
       <button class="btn primary" id="okCont" ${crm.length || ailleurs.length ? "" : "disabled"}>Valider les contacts CRM</button>
       <span class="msg" id="msg">${info.validation === "Contacts validés" ? "Déjà validés le " + esc(info.validee) + " : vous pouvez modifier et revalider." : ""}</span>
     </div>
-    <h3>Nouveaux contacts <span class="pill">${nouveaux.length}</span></h3>
-    ${nouveaux.length ? `<div class="tab-wrap"><table class="ro"><thead><tr><th>Dirigeant</th><th>Rôle</th><th>Téléphone</th><th>Négos</th></tr></thead><tbody>
-      ${nouveaux.map(x => { const e = etatN(x); return `<tr>
-        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} · ${esc(x.email || "pas d'e-mail")}${x.ailleurs_crm && x.ailleurs_crm.id ? " · déjà dans Pipedrive chez " + esc(x.ailleurs_crm.org_nom) + " (votre décision plus haut)" : ""}${x.autres_societes && x.autres_societes.length ? " · aussi dirigeant de " + esc(x.autres_societes.join(", ")) : ""}</small></td>
-        <td>${esc(x.role)}</td><td>${esc(e.telephone || "—")}</td>
-        <td><span class="pill ${e.etat === "prêt pour HubSpot" ? "ok" : e.etat === "écarté" ? "ko" : ""}">${esc(e.etat || "à traiter")}</span></td></tr>`; }).join("")}
-      </tbody></table></div><p class="note">Lecture seule : les négos les valident dans <a href="/v3/contacts">Nouveaux contacts</a>.</p>` : `<p class="msg">Aucun nouveau dirigeant.</p>`}`;
+    <h3>Nouveaux contacts <span class="pill">${fiches.length}</span></h3>
+    <div id="nouveaux">${fiches.length ? tableSaisie(fiches, info.roles || [], finAdmin, "Négos") : `<p class="msg">Aucun nouveau dirigeant.</p>`}</div>
+    ${fiches.length ? `<p class="note">Vous pouvez compléter ou corriger ces contacts (« Enregistrer ») ; la décision de les envoyer revient aux négos, dans <a href="/v3/contacts">Nouveaux contacts</a>.</p>` : ""}`;
+  const brancherAdmin = () => document.querySelectorAll("#nouveaux [data-s]").forEach(b => b.onclick = () =>
+    sauverContact(fiches, +b.dataset.s, null, info.roles || [], finAdmin, () => brancherAdmin()));
+  brancherAdmin();
   $("#okCont").onclick = async () => {
+    const lire = (k, i) => (document.querySelector(`[data-c${k}="${i}"]`) || {}).value || "";
     const decisions = [
       ...crm.map((x, i) => ({type:"crm", action: document.querySelector(`[data-c="${i}"]`).value, id:x.id,
-        nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:x.statut})),
-      ...ailleurs.map((x, i) => ({type:"ailleurs", action: document.querySelector(`[data-a="${i}"]`).value, id:x.ailleurs_crm.id,
-        nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:"fiché ailleurs", societe_actuelle:x.ailleurs_crm.org_nom})),
+        nom_complet:x.nom_complet, fonction:x.fonction, statut:x.statut,
+        linkedin: lire("linkedin", i).trim(), email: lire("email", i).trim(), telephone: lire("telephone", i).trim()})),
+      ...ailleurs.map((x, i) => ({type:"ailleurs", action: document.querySelector(`[data-a="${i}"]`).value, id:x.ailleurs.id,
+        nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:"fiché ailleurs", societe_actuelle:x.ailleurs.org_nom})),
     ];
     $("#okCont").disabled = true; message("Enregistrement dans Notion…");
     try {

@@ -104,6 +104,10 @@ l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blan
 2. **Contacts CRM** (une fois la société validée) : contacts Pipedrive « probablement parti » / « à vérifier » / « toujours là »,
    décision garder / marquer parti / à revoir. Les nouveaux contacts y sont visibles en lecture seule, avec l'avancement des négos.
 
+**Saisie manuelle** : sur les nouveaux contacts (négos et admin) et sur les contacts CRM (admin), LinkedIn, fonction, rôle, e-mail
+et téléphone sont modifiables. Les cases corrigées à la main sont surlignées et remplacent la valeur de l'enrichisseur ou de Pipedrive
+(gardées dans Notion : `modifie`, `final_*`, `modifie_par`).
+
 **`/v3/contacts`, pour les négos (mot de passe négos ; le mot de passe admin y donne aussi accès)**
 - Nouveaux dirigeants, visibles dès la fin du lancement : profil LinkedIn affiché, téléphone à compléter,
   « Valider pour HubSpot » ou « Écarter ». Liste commune à tous les négos.
