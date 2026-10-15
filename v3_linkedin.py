@@ -230,6 +230,7 @@ def role(titre: str) -> str:
 # Filtre « Géographie : France » de Sales Navigator (identifiant LinkedIn de la France). Vide = pas de filtre à la source ;
 # le tri par lieu (en_france) reste de toute façon appliqué ensuite, en filet de sécurité.
 SN_REGION_FRANCE = os.getenv("SN_REGION_FRANCE", "105015875")
+PLAFOND_SN = 150          # profils lus par recherche Sales Navigator (au-delà, le lot est coupé en deux)
 
 
 def url_salesnav(entreprises: list) -> str:
@@ -602,18 +603,30 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         cibles = [r for r in res if r.get("linkedin_id")]
         par_id = {r["linkedin_id"]: r for r in cibles}
         if cibles and PB_SALESNAV:
-            lots = [cibles[i:i + 18] for i in range(0, len(cibles), 18)]
-            for n_lot, lot in enumerate(lots, 1):
+            # Sales Navigator ne renvoie que PLAFOND_SN profils par recherche : un gros compte (IGN, 1 200 salariés) peut remplir
+            # le lot à lui seul et priver les autres. Un lot qui atteint le plafond est coupé en deux et relancé.
+            file_lots = [cibles[i:i + 12] for i in range(0, len(cibles), 12)]
+            n_lot = 0
+            while file_lots:
                 if stop():
                     return
-                job["phase"] = f"Sales Navigator : dirigeants, lot {n_lot}/{len(lots)}…"
+                lot = file_lots.pop(0)
+                n_lot += 1
+                job["phase"] = f"Sales Navigator : dirigeants, lot {n_lot} ({len(lot)} sociétés, {len(file_lots)} lots en attente)…"
                 try:
                     lignes = await pb.executer(c, PB_SALESNAV, f"v3_{jid}_salesnav_{n_lot}", stop,
                                                url_directe=url_salesnav([(r["linkedin_id"], r.get("nom_linkedin") or r["nom"]) for r in lot]),
-                                               resultats_par_recherche=150)
+                                               resultats_par_recherche=PLAFOND_SN)
                 except Exception as e:
                     journal(f"Sales Navigator lot {n_lot} en échec : {e}")
                     continue
+                if len(lignes) >= PLAFOND_SN and len(lot) > 1:
+                    m = len(lot) // 2
+                    file_lots[:0] = [lot[:m], lot[m:]]
+                    journal(f"Sales Navigator lot {n_lot} : plafond de {PLAFOND_SN} profils atteint, lot coupé en deux et relancé")
+                    continue
+                if len(lignes) >= PLAFOND_SN:
+                    journal(f"Sales Navigator : {lot[0]['nom']} compte plus de {PLAFOND_SN} dirigeants, seuls les {PLAFOND_SN} premiers sont lus")
                 job["sn_lignes"] = job.get("sn_lignes", 0) + len(lignes)
                 for l in lignes:
                     cid = re.sub(r"\D", "", str(l.get("companyId") or ""))[:12]
@@ -623,6 +636,9 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         continue
                     if not en_france(l.get("location", "")):      # consigne : dirigeants basés en France uniquement
                         job["hors_france"] = job.get("hors_france", 0) + 1
+                        continue
+                    url_p = (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "")
+                    if url_p and any(d["linkedin"].endswith(url_p.split("linkedin.com", 1)[-1]) for d in r.get("dirigeants", [])):
                         continue
                     r.setdefault("dirigeants", []).append({
                         "prenom": (l.get("firstName") or "").strip(), "nom": (l.get("lastName") or "").strip(),
