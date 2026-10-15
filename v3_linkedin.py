@@ -211,14 +211,19 @@ def role(titre: str) -> str:
         return "1 CEO / Président / DG"
     if re.search(r"fondat|founder", x):
         return "2 Fondateur"
-    if re.search(r"\b(coo|chief operating|directeur des operations|directrice des operations)\b", x):
+    if re.search(r"\b(coo|chief operating|directeur des operations|directrice des operations|directeur operations|"
+                 r"operations director|director of operations|head of operations|vp operations)\b", x):
         return "3 COO / Opérations"
-    if re.search(r"\b(cfo|daf|chief financial|directeur financier|directrice financiere|directeur administratif)\b", x):
+    if re.search(r"\b(cfo|daf|raf|chief financial|directeur financier|directrice financiere|directeur administratif|"
+                 r"directrice administrative|responsable administratif et financier|responsable administrative et financiere|"
+                 r"finance director|financial director|director of finance|head of finance|vp finance)\b", x):
         return "4 CFO / DAF"
     if re.search(r"\b(associe|associee|partner|gerant|gerante)\b", x):
         return "5 Associé / Gérant"
+    if re.search(r"immobili|real estate|workplace|facilit|services generaux|environnement de travail|office manager", x):
+        return "6 Immobilier / Services généraux"
     if re.search(r"\b(cto|cmo|chro|drh|chief|vp|vice[- ]president)\b", x):
-        return "6 Autre C-level / VP"
+        return "7 Autre C-level / VP"
     return ""
 
 
@@ -228,14 +233,16 @@ SN_REGION_FRANCE = os.getenv("SN_REGION_FRANCE", "105015875")
 
 
 def url_salesnav(entreprises: list) -> str:
-    """Recherche Sales Navigator : entreprises actuelles (par identifiant LinkedIn) × niveaux CXO, Associé, VP."""
+    """Recherche Sales Navigator : entreprises actuelles (par identifiant LinkedIn) × niveaux CXO (310), Propriétaire / Associé (320),
+    VP (300), Directeur (220) × géographie France."""
     vals = ",".join(
         f"(id:urn%3Ali%3Aorganization%3A{int(i)},text:{quote(re.sub(r'[,()]', ' ', n), safe='')},selectionType:INCLUDED)"
         for i, n in entreprises)
     region = (f",(type:REGION,values:List((id:{SN_REGION_FRANCE},text:France,selectionType:INCLUDED)))"
               if SN_REGION_FRANCE else "")
     q = (f"(filters:List((type:CURRENT_COMPANY,values:List({vals})),(type:SENIORITY_LEVEL,values:List("
-         f"(id:310,selectionType:INCLUDED),(id:320,selectionType:INCLUDED),(id:300,selectionType:INCLUDED))){region}))")
+         f"(id:310,selectionType:INCLUDED),(id:320,selectionType:INCLUDED),(id:300,selectionType:INCLUDED),"
+         f"(id:220,selectionType:INCLUDED))){region}))")
     return "https://www.linkedin.com/sales/search/people?query=" + quote(q, safe="():,")
 
 
