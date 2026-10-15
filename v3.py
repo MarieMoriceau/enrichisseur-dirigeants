@@ -29,6 +29,8 @@ import v3_validation as VALID
 router.include_router(VALID.router)              # écrans de validation (admin / négos)
 import v3_rattrapage as RATTRAPAGE
 router.include_router(RATTRAPAGE.router)         # rattrapage du contrôle des contacts CRM
+import v3_import as IMPORT
+router.include_router(IMPORT.router)             # import d'un Excel de lancement dans la mémoire
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")

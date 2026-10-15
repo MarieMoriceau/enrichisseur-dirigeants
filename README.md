@@ -137,3 +137,8 @@ traitées avant ce contrôle. Rapproche les contacts Pipedrive des dirigeants d�
 (si `PB_PROFILE_SCRAPER_ID` est réglé, `PROFILS_MAX` profils au plus par passage). Ni Kaspr, ni Fullenrich, ni Sales Navigator.
 Essai à blanc obligatoire sur 50 sociétés (rien n'est écrit, Excel du résultat) avant le passage réel.
 Relancer un passage plus tard reprend les contacts « à vérifier » dont le profil n'a pas encore été lu.
+
+**Import d'un Excel de lancement** (encadré Rattrapage, écran admin) : pour un lancement fait avant la mémoire des sociétés.
+L'Excel de l'outil (onglets Résultats et Dirigeants) est retraduit en fiches mémoire, sans relancer de recherche ;
+les sociétés déjà en mémoire (même SIREN, domaine ou nom) sont laissées telles quelles. Aperçu obligatoire avant l'import.
+Lancer ensuite le rattrapage pour le contrôle des contacts CRM.

@@ -123,6 +123,14 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
     <span class="msg" id="rMsg"></span>
   </div>
   <div class="journal" id="rJournal"></div>
+  <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+  <p class="msg"><b>Lancement fait avant la mémoire ?</b> Importez son Excel (celui de l'outil, pas la version contacts) : ses sociétés entrent en mémoire sans relancer de recherche. Les sociétés déjà en mémoire sont laissées telles quelles. Puis relancez le rattrapage.</p>
+  <div class="actions" style="margin-top:8px">
+    <input type="file" id="iFichier" accept=".xlsx" aria-label="Excel de lancement">
+    <button class="btn ghost" id="iApercu">Aperçu</button>
+    <button class="btn primary" id="iImport" disabled title="Après l'aperçu">Importer</button>
+    <span class="msg" id="iMsg"></span>
+  </div>
 </details>
 
 <div class="wrap">
@@ -364,6 +372,23 @@ async function rLancer(mode) {
 $("#rEssai").onclick = () => rLancer("essai");
 $("#rReel").onclick = () => rLancer("réel");
 $("#rStop").onclick = async () => { await api("/v3/validation/api/rattrapage/stop", {}); rEtat(); };
+/* ─────────── import d'un Excel de lancement ─────────── */
+async function importer(mode) {
+  const f = $("#iFichier").files[0];
+  if (!f) { $("#iMsg").textContent = "Choisissez d'abord le fichier."; return; }
+  const fd = new FormData(); fd.append("fichier", f); fd.append("mode", mode);
+  $("#iMsg").textContent = mode === "importer" ? "Import en cours…" : "Lecture du fichier…";
+  const r = await fetch("/v3/validation/api/import", {method: "POST", body: fd});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $("#iMsg").textContent = j.erreur || "erreur"; return; }
+  if (mode === "importer") { $("#iMsg").textContent = `${j.importe} sociétés importées (« ${j.lancement} »). Lancez maintenant l'essai à blanc du rattrapage.`; $("#iImport").disabled = true; charger(); return; }
+  $("#iMsg").textContent = `${j.a_importer.length} sociétés à importer (${j.dirigeants} dirigeants), ${j.deja_en_memoire.length} déjà en mémoire laissées telles quelles.` +
+    (j.a_importer.length ? " À importer : " + j.a_importer.join(", ") : "");
+  $("#iImport").disabled = !j.a_importer.length;
+}
+$("#iApercu").onclick = () => importer("apercu");
+$("#iImport").onclick = () => { if (confirm("Importer ces sociétés dans la mémoire Notion ?")) importer("importer"); };
+$("#iFichier").onchange = () => { $("#iImport").disabled = true; $("#iMsg").textContent = ""; };
 rEtat();
 charger();
 </script>
