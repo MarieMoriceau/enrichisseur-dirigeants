@@ -123,8 +123,9 @@ Contrôle des contacts CRM (étape 4b du pipeline, choix « Sociétés + dirigea
 | `PROFILS_MAX` | profils lus au plus par lancement (80 par défaut, quota LinkedIn) |
 
 **Contacts présents dans plusieurs sociétés** (HubSpot associe un contact à plusieurs sociétés) :
-- nouveau dirigeant déjà fiché dans Pipedrive chez une autre société (même nom, et même profil LinkedIn quand les deux sont connus)
-  → « Rattacher aussi » dans l'écran des négos, action `rattacher` (pas de doublon créé)
+- nouveau dirigeant déjà fiché dans Pipedrive chez une autre société (même nom, et même profil LinkedIn quand les deux sont connus) :
+  le négo décide de l'ajouter (« Ajouter à … ») ou de l'écarter ; l'admin décide ensuite « changer de société » ou « deux sociétés »
+  (décisions de type `ailleurs` dans Décisions contacts). Aucun doublon créé.
 - même dirigeant trouvé pour plusieurs sociétés d'un lancement → « Aussi dirigeant de … » ; à l'envoi : un seul contact, associé à chacune
 - contrôle du profil : 2ᵉ poste chez nous encore en cours → « toujours là » ; société absente des 2 derniers postes → « à vérifier » (on ne conclut pas)
 

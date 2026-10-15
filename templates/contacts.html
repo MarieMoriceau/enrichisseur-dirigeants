@@ -186,14 +186,14 @@ function carte(x, i) {
       <h4>${esc(x.nom_complet)}</h4>
       ${x.linkedin ? `<a class="li" href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.linkedin)}</a>` : `<span class="li msg">pas de profil LinkedIn</span>`}
       <div class="info"><b>${esc(x.fonction)}</b> · ${esc(x.role)}<br>${esc(x.email || "pas d'e-mail trouvé")} · ${esc(x.lieu)}</div>
-      ${x.ailleurs && x.ailleurs.id ? `<p class="note" style="margin:6px 0 0">Déjà au CRM chez <b>${esc(x.ailleurs.org_nom)}</b> (fiche ${esc(x.ailleurs.id)}) : on le rattache aussi à ${esc(INFO.nom)}, sans créer de doublon.</p>` : ""}
+      ${x.ailleurs && x.ailleurs.id ? `<p class="note" style="margin:6px 0 0">Déjà dans Pipedrive chez <b>${esc(x.ailleurs.org_nom)}</b> (fiche ${esc(x.ailleurs.id)}). À vous de dire s'il faut l'ajouter à ${esc(INFO.nom)} ; Marie ou Michel décideront ensuite s'il change de société ou appartient aux deux.</p>` : ""}
       ${x.autres_societes && x.autres_societes.length ? `<p class="note" style="margin:6px 0 0">Aussi dirigeant de : ${esc(x.autres_societes.join(", "))}. Un seul contact HubSpot, associé à chaque société.</p>` : ""}
     </div>
     <div class="act">
       <input type="tel" inputmode="tel" placeholder="Téléphone (facultatif)" value="${esc(x.telephone)}" aria-label="Téléphone de ${esc(x.nom_complet)}" data-t="${i}">
       <div class="boutons">
         ${x.etat === "à traiter"
-          ? `<button class="btn primary" data-a="prêt pour HubSpot" data-i="${i}">${x.ailleurs && x.ailleurs.id ? "Rattacher aussi" : "Valider pour HubSpot"}</button>
+          ? `<button class="btn primary" data-a="prêt pour HubSpot" data-i="${i}">${x.ailleurs && x.ailleurs.id ? "Ajouter à " + esc(INFO.nom) : "Valider pour HubSpot"}</button>
              <button class="btn ghost" data-a="écarté" data-i="${i}">Écarter</button>`
           : `<span class="pill ${x.etat === "écarté" ? "ko" : "ok"}">${esc(x.etat)}${x.le ? " le " + esc(x.le.slice(0,10)) : ""}</span>
              <button class="btn ghost" data-a="${x.etat === "écarté" ? "à traiter" : "prêt pour HubSpot"}" data-i="${i}">${x.etat === "écarté" ? "Annuler" : "Mettre à jour"}</button>`}

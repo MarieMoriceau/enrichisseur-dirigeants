@@ -27,6 +27,7 @@ import v3_memoire as MEM
 router = APIRouter()
 SOURCES = ("CRM", "Site", "LinkedIn", "Google", "Saisie")
 ACTIONS_CRM = ("garder", "marquer parti", "à revoir")
+ACTIONS_AILLEURS = ("à décider", "changer de société", "deux sociétés")   # contact déjà fiché chez une autre société
 ETATS_NOUVEAU = ("à traiter", "prêt pour HubSpot", "écarté")
 RE_PAGE = re.compile(r"[0-9a-f\-]{32,36}")
 
@@ -227,10 +228,11 @@ async def valider_contacts_crm(page_id: str, req: Request):
     b = await req.json()
     decisions = []
     for d in b.get("decisions") or []:
-        if d.get("action") not in ACTIONS_CRM:
-            return JSONResponse({"erreur": f"décision invalide : {d.get('action')}"}, 400)
-        decisions.append({"type": "crm", **{k: str(d.get(k) or "")[:300] for k in
-                          ("action", "id", "nom_complet", "fonction", "email", "linkedin", "statut")}})
+        t = d.get("type") or "crm"
+        if t not in ("crm", "ailleurs") or d.get("action") not in (ACTIONS_CRM if t == "crm" else ACTIONS_AILLEURS):
+            return JSONResponse({"erreur": f"décision invalide : {t} / {d.get('action')}"}, 400)
+        decisions.append({"type": t, **{k: str(d.get(k) or "")[:300] for k in
+                          ("action", "id", "nom_complet", "fonction", "email", "linkedin", "statut", "societe_actuelle")}})
     return await _maj(page_id, {"Validation": {"select": {"name": "Contacts validés"}},
                                 "Décisions contacts": MEM._txts(json.dumps(decisions, ensure_ascii=False))})
 
@@ -324,8 +326,8 @@ async def negos_contact(page_id: str, req: Request):
         etats[cle] = {"etat": etat, "telephone": tel, "le": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                       "prenom": d.get("prenom", ""), "nom": d.get("nom", ""), "nom_complet": d.get("nom_complet", ""),
                       "fonction": d.get("fonction", ""), "email": d.get("email", ""), "linkedin": d.get("linkedin", ""),
-                      # HubSpot : un contact peut être associé à plusieurs sociétés → on rattache au lieu de créer un doublon
-                      "action": "rattacher" if d.get("ailleurs_crm") else "créer",
+                      # déjà fiché ailleurs : le négo décide de l'ajouter ; l'admin décide « changer de société » ou « deux sociétés »
+                      "action": "existant" if d.get("ailleurs_crm") else "créer",
                       "fiche_existante": (d.get("ailleurs_crm") or {}).get("id", "")}
     maj = await _maj(page_id, {"Nouveaux contacts": MEM._txts(json.dumps(etats, ensure_ascii=False)),
                                "Nb prêts HubSpot": {"number": sum(1 for e in etats.values() if e["etat"] == "prêt pour HubSpot")}})

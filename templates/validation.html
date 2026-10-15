@@ -304,10 +304,12 @@ async function envoyerSociete(corps, suite) {
 /* ─────────── écran 2 : contacts CRM (nouveaux contacts : lecture seule, gérés par les négos) ─────────── */
 function ecranContacts() {
   const d = info.data || {};
-  const avant = Object.fromEntries((info.decisions || []).map(x => [String(x.id), x.action]));
+  const avant = Object.fromEntries((info.decisions || []).filter(x => (x.type || "crm") === "crm").map(x => [String(x.id), x.action]));
   const ordre = {"probablement parti":0,"à vérifier":1,"toujours là":2};
   const crm = [...(d.contacts_crm || [])].sort((a, b) => (ordre[a.statut] ?? 3) - (ordre[b.statut] ?? 3));
   const nouveaux = (d.dirigeants || []).filter(x => !x.dans_pipedrive);
+  const ailleurs = nouveaux.filter(x => x.ailleurs_crm && x.ailleurs_crm.id);
+  const avantA = Object.fromEntries((info.decisions || []).filter(x => x.type === "ailleurs").map(x => [String(x.id), x.action]));
   const etatN = x => (info.nouveaux || {})[String(x.linkedin || x.nom_complet).trim().toLowerCase()] || {};
   const choix = (opts, val) => opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("");
   const defC = x => avant[String(x.id)] || ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
@@ -324,20 +326,33 @@ function ecranContacts() {
         <td>${pillC(x.statut)}<small>${esc(x.detail || "")}</small></td>
         <td>${esc(x.email || "—")}</td></tr>`).join("")}</tbody></table></div>`
       : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché, ou société traitée avant l'ajout de ce contrôle (relancez-la pour l'avoir)."}</p>`}
+    ${ailleurs.length ? `<h3>Déjà dans Pipedrive chez une autre société <span class="pill">${ailleurs.length}</span></h3>
+      <p class="msg" style="margin:0 0 8px">Trouvés dirigeants ici, mais fichés ailleurs. Le négo dit s'il faut l'ajouter ; vous décidez s'il change de société ou appartient aux deux.</p>
+      <div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Contact</th><th>Fiché chez</th><th>Négos</th></tr></thead><tbody>
+      ${ailleurs.map((x, i) => { const e = etatN(x); return `<tr>
+        <td><select data-a="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["à décider","changer de société","deux sociétés"], avantA[String(x.ailleurs_crm.id)] || "à décider")}</select></td>
+        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} chez ${esc(info.nom)}</small></td>
+        <td>${esc(x.ailleurs_crm.org_nom)}<small>fiche ${esc(x.ailleurs_crm.id)}</small></td>
+        <td><span class="pill ${e.etat === "prêt pour HubSpot" ? "ok" : e.etat === "écarté" ? "ko" : ""}">${esc(e.etat === "prêt pour HubSpot" ? "à ajouter" : (e.etat || "à traiter"))}</span></td></tr>`; }).join("")}
+      </tbody></table></div>` : ""}
     <div class="actions">
-      <button class="btn primary" id="okCont" ${crm.length ? "" : "disabled"}>Valider les contacts CRM</button>
+      <button class="btn primary" id="okCont" ${crm.length || ailleurs.length ? "" : "disabled"}>Valider les contacts CRM</button>
       <span class="msg" id="msg">${info.validation === "Contacts validés" ? "Déjà validés le " + esc(info.validee) + " : vous pouvez modifier et revalider." : ""}</span>
     </div>
     <h3>Nouveaux contacts <span class="pill">${nouveaux.length}</span></h3>
     ${nouveaux.length ? `<div class="tab-wrap"><table class="ro"><thead><tr><th>Dirigeant</th><th>Rôle</th><th>Téléphone</th><th>Négos</th></tr></thead><tbody>
       ${nouveaux.map(x => { const e = etatN(x); return `<tr>
-        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} · ${esc(x.email || "pas d'e-mail")}${x.ailleurs_crm && x.ailleurs_crm.id ? " · déjà au CRM chez " + esc(x.ailleurs_crm.org_nom) + " (à rattacher)" : ""}${x.autres_societes && x.autres_societes.length ? " · aussi dirigeant de " + esc(x.autres_societes.join(", ")) : ""}</small></td>
+        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} · ${esc(x.email || "pas d'e-mail")}${x.ailleurs_crm && x.ailleurs_crm.id ? " · déjà dans Pipedrive chez " + esc(x.ailleurs_crm.org_nom) + " (votre décision plus haut)" : ""}${x.autres_societes && x.autres_societes.length ? " · aussi dirigeant de " + esc(x.autres_societes.join(", ")) : ""}</small></td>
         <td>${esc(x.role)}</td><td>${esc(e.telephone || "—")}</td>
         <td><span class="pill ${e.etat === "prêt pour HubSpot" ? "ok" : e.etat === "écarté" ? "ko" : ""}">${esc(e.etat || "à traiter")}</span></td></tr>`; }).join("")}
       </tbody></table></div><p class="note">Lecture seule : les négos les valident dans <a href="/v3/contacts">Nouveaux contacts</a>.</p>` : `<p class="msg">Aucun nouveau dirigeant.</p>`}`;
   $("#okCont").onclick = async () => {
-    const decisions = crm.map((x, i) => ({action: document.querySelector(`[data-c="${i}"]`).value, id:x.id,
-        nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:x.statut}));
+    const decisions = [
+      ...crm.map((x, i) => ({type:"crm", action: document.querySelector(`[data-c="${i}"]`).value, id:x.id,
+        nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:x.statut})),
+      ...ailleurs.map((x, i) => ({type:"ailleurs", action: document.querySelector(`[data-a="${i}"]`).value, id:x.ailleurs_crm.id,
+        nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:"fiché ailleurs", societe_actuelle:x.ailleurs_crm.org_nom})),
+    ];
     $("#okCont").disabled = true; message("Enregistrement dans Notion…");
     try {
       const maj = await api("/v3/validation/api/contacts/" + courant, {decisions});
