@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nouveaux contacts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&family=Roboto:wght@400;500;700&display=swap">
+<style>
+:root{
+  --rouge:#B90009; --violet:#3C214B; --bleu:#77A1BA;
+  --bg:#F4F3F6; --panel:#FFFFFF; --ink:#231829; --muted:#62596A; --line:#DEDAE3;
+  --tag:#E8EFF4; --tag-ink:#3F667D; --accent:#B90009; --accent-soft:#F7E3E4;
+  --ok:#1F7A4D; --ok-soft:#E3F2EA; --warn:#9A6200; --warn-soft:#FBF0DC;
+  --display:"Source Serif 4",Georgia,serif;
+  --body:Roboto,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#17111B; --panel:#221A28; --ink:#EEE9F2; --muted:#A99FB1; --line:#362B3E;
+  --tag:#243441; --tag-ink:#A9C6D8; --accent:#E0474E; --accent-soft:#3A1A1F;
+  --ok:#6FCF9C; --ok-soft:#173226; --warn:#E5B45C; --warn-soft:#352812; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#17111B; --panel:#221A28; --ink:#EEE9F2; --muted:#A99FB1; --line:#362B3E;
+  --tag:#243441; --tag-ink:#A9C6D8; --accent:#E0474E; --accent-soft:#3A1A1F;
+  --ok:#6FCF9C; --ok-soft:#173226; --warn:#E5B45C; --warn-soft:#352812; color-scheme:dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5}
+a{color:var(--tag-ink)}
+.band{background:var(--violet);color:#fff;border-bottom:4px solid var(--rouge)}
+.band-in{padding:20px clamp(16px,3vw,40px) 22px;display:flex;align-items:center;gap:20px}
+.logo{width:42px;height:auto;flex:none}
+.eyebrow{font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--bleu)}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(24px,3.6vw,32px);line-height:1.1;margin:2px 0 4px}
+.sub{color:#D9D0E0;margin:0;font-size:14px}
+.sub a{color:#D9D0E0}
+.wrap{padding:22px clamp(16px,3vw,40px) 56px;display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:18px;align-items:start}
+@media (max-width:900px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}
+.liste{position:sticky;top:12px;max-height:calc(100vh - 24px);display:flex;flex-direction:column;padding:12px}
+@media (max-width:900px){.liste{position:static;max-height:none}}
+.filtres{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.filtres button{font:500 12.5px var(--body);border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:4px 10px;cursor:pointer}
+.filtres button[aria-pressed=true]{background:var(--violet);border-color:var(--violet);color:#fff}
+input[type=search],input[type=text],select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%}
+.items{overflow:auto;margin-top:10px;border-top:1px solid var(--line)}
+.item{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;padding:9px 6px;cursor:pointer}
+.item:hover{background:var(--tag)}
+.item[aria-current=true]{background:var(--tag);box-shadow:inset 3px 0 0 var(--rouge)}
+.item b{font-weight:500;display:block}
+.item small{color:var(--muted);font-size:12px}
+.pill{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:4px;background:var(--tag);color:var(--tag-ink);white-space:nowrap;display:inline-block}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.ko{background:var(--accent-soft);color:var(--accent)} .pill.warn{background:var(--warn-soft);color:var(--warn)}
+.vide{color:var(--muted);padding:30px 10px;text-align:center}
+.tete{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:14px}
+.tete h2{font-family:var(--display);font-weight:600;font-size:26px;margin:0}
+.tete .meta{color:var(--muted);font-size:13px}
+.etapes{display:flex;gap:6px;margin-bottom:16px}
+.etapes button{font:500 14px var(--body);border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:6px;padding:8px 14px;cursor:pointer}
+.etapes button[aria-pressed=true]{border-color:var(--violet);box-shadow:inset 0 -3px 0 var(--rouge)}
+.etapes button:disabled{opacity:.45;cursor:not-allowed}
+.etapes .num{font-size:11px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:1px 6px;border-radius:4px;margin-right:6px}
+h3{font-family:var(--display);font-weight:600;font-size:18px;margin:18px 0 8px}
+.reco{background:var(--tag);border-radius:8px;padding:12px 14px;font-size:14px}
+.reco b{font-weight:500}
+.adresses{display:grid;gap:6px}
+.adr{display:grid;grid-template-columns:auto 86px 1fr auto;gap:10px;align-items:start;border:1px solid var(--line);border-radius:6px;padding:9px 11px;cursor:pointer}
+.adr:has(input:checked){border-color:var(--violet);background:var(--tag)}
+.adr input[type=radio]{margin-top:4px;accent-color:var(--violet)}
+.adr .src{font-weight:500;font-size:13px;color:var(--muted)}
+.adr .txt{font-size:14.5px}
+.adr .txt small{display:block;color:var(--muted);font-size:12px}
+.adr.absente{opacity:.55;cursor:default}
+.adr input[type=text]{padding:6px 9px}
+.faits{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.fait{border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.fait span{display:block;font-size:12px;color:var(--muted)}
+.fait b{font-family:var(--display);font-size:22px;font-weight:600;line-height:1.2}
+.fait p{margin:4px 0 0;font-size:13px}
+.btn{font:500 14px var(--body);border:0;border-radius:6px;padding:10px 16px;cursor:pointer}
+.btn.primary{background:var(--violet);color:#fff}.btn.primary:hover{background:var(--rouge)}
+.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.btn:disabled{opacity:.5;cursor:wait}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px;align-items:center}
+.msg{font-size:13.5px;color:var(--muted)}
+.msg.err{color:var(--accent)}
+.tab-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);padding:6px 8px}
+td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
+td small{display:block;color:var(--muted);font-size:12px}
+td select{width:auto;padding:5px 8px;font-size:13px}
+tr.parti td{background:var(--accent-soft)}
+.note{font-size:13px;color:var(--muted);background:var(--tag);border-radius:6px;padding:8px 10px;margin-top:10px}
+input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.contact{border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:1fr minmax(220px,260px);gap:14px;align-items:start}
+.contact + .contact{margin-top:8px}
+.contact.pret{border-color:var(--ok);background:var(--ok-soft)}
+.contact.ecarte{opacity:.6}
+.contact h4{margin:0;font-size:16px;font-weight:500}
+.contact .li{font-size:13px;word-break:break-all;display:inline-block;margin-top:2px}
+.contact .info{font-size:13.5px;color:var(--muted);margin-top:4px}
+.contact .info b{color:var(--ink);font-weight:500}
+.contact .act{display:grid;gap:6px}
+.contact .act input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%}
+.contact .act .boutons{display:flex;gap:6px}
+.contact .act .btn{padding:8px 12px;font-size:13.5px;flex:1}
+@media (max-width:720px){.contact{grid-template-columns:1fr}}
+.ro td{color:var(--muted)}
+.deco{color:#D9D0E0;font-size:13px}
+</style>
+</head>
+<body>
+<div class="band"><div class="band-in">
+<svg viewBox="0 0 810.7 1176.1" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Equation" class="logo"><g fill="#FFFFFF"><path d="M128,315c-2.9,0-5.6,0.3-8.2,0.8c11.9,9.3,25.4,16.1,40.2,20.1C153.7,321.5,143.4,315,128,315z"/><path d="M480.2,340.1c-19.1,13.8-30.5,30.8-30.5,46.9c0,22,14.7,31.6,39.5,31.6c26.5,0,35-14.1,35-32.2 c0-6-1.3-14.1-4.6-23.2C505,359.6,490.9,352.5,480.2,340.1z"/><path d="M579.8,348.3c-18.7,0-29.6-7.6-34.4-24c-15.3,1.5-28.9,6.2-39.9,13.6c6.6,8.7,11.1,17.4,14,25.3 c9.3,2.3,18.7,3.3,27.4,3.3c24.8,0,44.6-5.5,59.3-16.6c-1.4-2.8-2.9-5.4-4.7-7.7C595.3,346.1,588.2,348.3,579.8,348.3z"/><path d="M556.3,323.8c20.2,0,35.5,5.5,45.1,18.4c8.7-5.6,15.3-14.7,20.8-26.4c-14.4-3-29.7-4.4-45.1-4.4 c-11.8,0-23.1,1.1-33.8,3c0.5,3.6,1.2,6.9,2,9.9C548.9,324,552.5,323.8,556.3,323.8z"/><path d="M430.4,66.9h19.2c11.3,0,11.8,1.5,11.8,37.3v144.4V281c0,27,7.5,46,18.8,59c16.2-11.7,38-21.1,63.2-25.6 c-0.6-4.6-0.9-9.6-0.9-15.2v-15.1v-27.5V66.4c0-4.4-1.5-6.9-4.4-6.9H430.4c-2.9,0-4.4,0.5-4.4,2.9v1 C426,66.4,427.4,66.9,430.4,66.9z"/><path d="M606.1,349.9c5.1,10.3,7.7,24,7.7,41.6v21.4c0,17.5,0,22-73.3,42.9c-67.7,18.6-101,33.3-101,87.4 c0,50.2,37.2,76.7,86.3,76.7c44.6,0,76.7-19.2,91.4-58.1h1.1c3.9,38.9,33.8,58.1,74.5,58.1c33.3,0,51.9-13,59.2-31.6 c1.7-3.4,1.1-4.5-1.1-5.6l-2.8-1.1c-2.3-1.1-3.9-0.6-5.1,2.8c-3.9,9.6-10.7,16.9-19.7,16.9c-11.3,0-16.4-7.9-16.4-40.6V407.9 c0-19.1-4.6-34.9-12.6-47.7h-58.5c-2.9,0-4.4-2.5-4.4-6.9V318c26.7,7.1,49.6,20.6,63,42.2h45.1c2.9,0,4.4-0.5,4.4-2.9v-1 c0-2.9-1.5-3.4-4.4-3.4h-19.2c-11.3,0-11.8-1.5-11.8-37.3v-66.8c-0.1,0-0.2,0-0.3,0c0-26.3,0-54.1,0.3-54.1V66.4 c0-4.4-1.5-6.9-4.4-6.9H598.9c-2.9,0-4.4,0.5-4.4,2.9v1c0,2.9,1.5,3.4,4.4,3.4h16.7c11.3,0,11.8,1.5,11.8,37.3V253v46.2v3.9 c-1.6,4.5-3.4,8.7-5.2,12.7c2.5,0.5,5,1.1,7.5,1.7C624.5,331.2,616.6,342,606.1,349.9z M613.8,547.8 c-10.2,29.3-25.9,47.9-48.5,47.9c-21.4,0-33.8-22.6-33.8-63.7c0-32.2,8.5-55.8,35.5-70.5c14.1-7.9,31-15.2,46.8-20.9V547.8z"/><path d="M135.6,566.3c69.2,0,100.1-41.7,107.2-83.5c0.5-2.8,0-4.3-1.9-4.7l-3.3-0.5c-2.4-0.5-3.8,0.9-4.3,3.8 c-7.1,38.9-32.2,70.7-78.7,70.7c-59.7,0-69.2-51.7-69.2-115.7V425h141.3c13.3,0,17.1-3.8,17.1-14.2v-1.9c0-30.4-10.7-54-27.8-70.8 c-7.7,1.2-16,1.8-25,1.8c-10.9,0-21.2-1.4-31-4c5.8,13.1,8.3,32.8,8.3,60.2c0,15.6-4.7,19.4-19.9,19.4H85.8 c0-60.6,7.5-94.3,34-99.7c-3.1-2.4-6.1-5-9-7.7C40.8,316.4,0,369.7,0,440.2C0,519.9,55.5,566.3,135.6,566.3z"/><path d="M216,338.1c37.3-5.6,60.6-24.4,74.5-51.7h1.2v110v186c0,47.2-0.6,49.7-16.8,49.7h-34.2c-4.3,0-6.2,0.6-6.2,4.3 v1.2c0,3.7,1.9,4.3,6.2,4.3h192c4.3,0,6.2-0.6,6.2-4.3v-1.2c0-3.7-1.9-4.3-6.2-4.3h-22.4c-15.5,0-16.2-2.5-16.2-49.7V49.2h0V8.7 c0-3.7-0.6-5-5-5h-0.6c-3.7,0-6.2,1.2-10.6,3.1l-74.6,31.1h-1.9C279.3,13.7,248.2,0,212.1,0C117.1,0,62.4,72.1,62.4,175.9 c0,56.1,18,103.1,48.5,132.2c6.3-0.7,12.7-1.2,19.5-1.2C163.5,306.9,194.7,317.3,216,338.1z M239.5,19.9 c24.9,0,43.5,11.2,52.2,24.9v29.4v185.6c-11.8,32.3-28,53.4-58.4,53.4c-40.4,0-59-42.9-59-142.9C174.2,67.7,194.1,19.9,239.5,19.9z "/><path d="M745.4,1110.9h-18.1c-11,0-11.4-1.4-11.4-36.2v-41.5v-72.5v-7.1c0-67.6-49.1-82.9-85.7-82.9 c-42.4,0-70.5,15.7-82.9,49.1h-1v-36.2c0-4.3-1.4-6.7-4.3-6.7H441.6c-2.9,0-4.3,0.5-4.3,2.9v1c0,2.9,1.4,3.3,4.3,3.3h18.6 c11,0,11.4,1.4,11.4,36.2v35.1v93.1v26.3c0,34.8-0.5,36.2-11.4,36.2h-18.6c-2.9,0-4.3,0.5-4.3,3.3v1c0,2.4,1.4,2.9,4.3,2.9h133.8 c2.9,0,4.3-0.5,4.3-2.9v-1c0-2.9-1.4-3.3-4.3-3.3h-13.8c-11,0-11.4-1.4-11.4-36.2v-31.2V931.7c10-26.2,23.3-43.3,49.1-43.3 c26.7,0,37.6,14.3,37.6,47.6v26.9v74.4v37.5c0,34.8-0.5,36.2-11.4,36.2h-13.3c-2.9,0-4.3,0.5-4.3,3.3v1c0,2.4,1.4,2.9,4.3,2.9 h133.4c2.9,0,4.3-0.5,4.3-2.9v-1C749.7,1111.4,748.3,1110.9,745.4,1110.9z"/><path d="M274,1042.4h-25.1c-3.9,0-5.8,0.6-5.8,4.5v1.3c0,3.2,1.9,3.9,5.8,3.9h187.2c3.9,0,5.8-0.6,5.8-3.9v-1.3 c0-3.9-1.9-4.5-5.8-4.5H411c-14.8,0-15.4-1.9-15.4-48.9v-83.4v-34.5c0-5.8-1.9-9-5.8-9H248.9c-3.9,0-5.8,0.6-5.8,3.9v1.3 c0,3.9,1.9,4.5,5.8,4.5H274c14.8,0,15.4,1.9,15.4,48.9v68.4C289.4,1040.4,288.8,1042.4,274,1042.4z"/><path d="M810.7,684.6c0-6.9-3.5-8-10.4-8l-112.9,0c7.1,6.1,13,13,17.7,20.7l95.2,0c6.9,0,10.3-1.2,10.3-6.9 L810.7,684.6z"/><path d="M511.6,697.3l113.5,0c-1.8-7.9-4.3-14.8-7.4-20.7l-98.4,0C516.1,682.4,513.6,689.3,511.6,697.3z"/><path d="M629.7,747.3c0.3,69-13.5,103.7-61.4,104c-47.9,0.2-61.4-32-61.7-96.7c-0.1-23,1.3-42,5.1-57.3l-76.2,0 c-11.9,16.7-18,36.5-17.9,58.5c0.3,63.9,52.7,103.8,148.7,103.4c97.6-0.4,152.3-48,152-113c-0.1-18.5-4.5-34.9-13-48.8l-80,0 C628.3,710.9,629.6,727.5,629.7,747.3z"/><path d="M568,651c24.9-0.1,40.5,8.3,49.8,25.6l69.7,0c-24.9-21.5-64.6-33.3-117.4-33.1c-50.1,0.2-88.9,12.5-114.8,33.1 l64.1,0C528.8,659.5,544.1,651.1,568,651z"/><path d="M455.2,676.6l-252.3,0l-0.1-74.9c0-3-0.6-10.6-1.1-17.1c-0.4-4.8-5.8-7.3-9.7-4.5 c-20.1,11.5-38.9,20.2-57.7,25.9c-18.8,5.6-40.1,12.5-55.8,15.5c-4.5-0.1-5.7,3.5-5.6,8.1v48.4l-5.3,0.1c0,0.3-0.1,0.6-0.1,1 l-39,0.9c-5.7,0-8.6,1-8.6,6.7l0,2.9c0,4.8,2.9,5.7,8.6,5.7l44.4,0v218v1.5v114.5c0.1,98.4,69.6,147,136.3,147 c71.7-0.1,107-29.7,115.6-88c0.9-4.8,0-7.6-4.8-8.6l-4.8-1c-4.8-1-7.6,1.9-8.6,7.7c-5.7,39.2-24.8,64-57.3,64.1 c-38.2,0-45.9-30.5-45.9-75.5l-0.1-143.5c0,0,0,0,0,0L203,697.3l232.4,0C440.8,689.7,447.5,682.7,455.2,676.6z"/><path d="M396.1,772.8c0-32.6-25.2-54.5-61.1-54.5c-36.5,0-61.8,21.9-61.8,54.5c0,33.2,27.2,55.1,63.8,55.1 C371.5,827.9,396.1,804.7,396.1,772.8z"/></g></svg>
+  <div>
+    <div class="eyebrow">Equation SIE · Enrichisseur v3</div>
+    <h1>Nouveaux contacts</h1>
+    <p class="sub">Les dirigeants trouvés par l'enrichisseur et absents du CRM. Complétez le téléphone si vous l'avez, puis validez pour HubSpot. <a class="deco" href="/v3/deconnexion">Se déconnecter</a></p>
+  </div>
+</div></div>
+
+<div class="wrap">
+  <aside class="card liste" aria-label="Sociétés">
+    <div class="filtres" id="filtres" role="group" aria-label="Filtrer"></div>
+    <input type="search" id="cherche" placeholder="Chercher une société…" aria-label="Chercher">
+    <div class="items" id="items"><div class="vide">Chargement…</div></div>
+  </aside>
+  <main class="card" id="detail"><div class="vide">Choisissez une société dans la liste.</div></main>
+</div>
+<script>
+const ROLE = "{{ROLE}}";
+const FILTRES = ["À traiter", "Terminées", "Toutes"];
+let SOC = [], filtre = "À traiter", courant = null;
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const norm = a => String(a || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+async function api(url, corps) {
+  const r = await fetch(url, corps ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(corps)} : {});
+  if (r.status === 401) { location.href = "/v3/connexion?suite=/v3/contacts"; throw new Error("reconnexion"); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.erreur || ("erreur " + r.status));
+  return j;
+}
+const finie = s => s.nb_nouveaux != null && s.nb_traites >= s.nb_nouveaux;
+async function charger() {
+  try { SOC = (await api("/v3/contacts/api/societes")).societes; }
+  catch (e) { $("#items").innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  dessinerFiltres(); dessinerListe();
+}
+function dessinerFiltres() {
+  const n = f => SOC.filter(s => f === "Toutes" || (f === "Terminées") === finie(s)).length;
+  $("#filtres").innerHTML = FILTRES.map(f => `<button aria-pressed="${f === filtre}" data-f="${f}">${f} · ${n(f)}</button>`).join("");
+  $("#filtres").querySelectorAll("button").forEach(b => b.onclick = () => { filtre = b.dataset.f; dessinerFiltres(); dessinerListe(); });
+}
+function visibles() {
+  const q = norm($("#cherche").value);
+  return SOC.filter(s => (filtre === "Toutes" || (filtre === "Terminées") === finie(s)) && (!q || norm(s.nom + " " + s.domaine).includes(q)));
+}
+function dessinerListe() {
+  const v = visibles();
+  $("#items").innerHTML = v.length ? v.map(s => `
+    <button class="item" data-p="${s.page}" aria-current="${s.page === courant}">
+      <b>${esc(s.nom)}</b>
+      <small>${s.nb_nouveaux ?? "?"} nouveau(x) · ${s.nb_prets || 0} prêt(s) pour HubSpot · ${esc(s.traitee)}</small>
+    </button>`).join("") : `<div class="vide">Rien ici.</div>`;
+  $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
+}
+$("#cherche").oninput = dessinerListe;
+
+let INFO = null;
+async function ouvrir(page) {
+  courant = page; dessinerListe();
+  $("#detail").innerHTML = `<div class="vide">Lecture…</div>`;
+  try { INFO = await api("/v3/contacts/api/societe/" + page); }
+  catch (e) { $("#detail").innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
+  dessiner();
+}
+function carte(x, i) {
+  const cls = x.etat === "prêt pour HubSpot" ? "pret" : x.etat === "écarté" ? "ecarte" : "";
+  return `<div class="contact ${cls}" id="c${i}">
+    <div>
+      <h4>${esc(x.nom_complet)}</h4>
+      ${x.linkedin ? `<a class="li" href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.linkedin)}</a>` : `<span class="li msg">pas de profil LinkedIn</span>`}
+      <div class="info"><b>${esc(x.fonction)}</b> · ${esc(x.role)}<br>${esc(x.email || "pas d'e-mail trouvé")} · ${esc(x.lieu)}</div>
+    </div>
+    <div class="act">
+      <input type="tel" inputmode="tel" placeholder="Téléphone (facultatif)" value="${esc(x.telephone)}" aria-label="Téléphone de ${esc(x.nom_complet)}" data-t="${i}">
+      <div class="boutons">
+        ${x.etat === "à traiter"
+          ? `<button class="btn primary" data-a="prêt pour HubSpot" data-i="${i}">Valider pour HubSpot</button>
+             <button class="btn ghost" data-a="écarté" data-i="${i}">Écarter</button>`
+          : `<span class="pill ${x.etat === "écarté" ? "ko" : "ok"}">${esc(x.etat)}${x.le ? " le " + esc(x.le.slice(0,10)) : ""}</span>
+             <button class="btn ghost" data-a="${x.etat === "écarté" ? "à traiter" : "prêt pour HubSpot"}" data-i="${i}">${x.etat === "écarté" ? "Annuler" : "Mettre à jour"}</button>`}
+      </div>
+      <span class="msg" data-m="${i}"></span>
+    </div>
+  </div>`;
+}
+function dessiner() {
+  const s = INFO;
+  $("#detail").innerHTML = `
+    <div class="tete"><h2>${esc(s.nom)}</h2>
+      <span class="meta">${[s.domaine ? `<a href="https://${esc(s.domaine)}" target="_blank" rel="noopener">${esc(s.domaine)}</a>` : "",
+        s.effectif != null ? esc(s.effectif) + " salariés LinkedIn" : "", s.linkedin_societe ? `<a href="${esc(s.linkedin_societe)}" target="_blank" rel="noopener">page LinkedIn</a>` : ""].filter(Boolean).join(" · ")}</span></div>
+    <p class="note">Bureaux : <b>${esc(s.adresse || "inconnue")}</b> ${s.adresse_validee ? `<span class="pill ok">adresse validée</span>` : `<span class="pill warn">adresse pas encore validée</span>`}</p>
+    <h3>Nouveaux contacts <span class="pill">${s.nouveaux.length}</span></h3>
+    <div id="nouveaux">${s.nouveaux.length ? s.nouveaux.map(carte).join("") : `<p class="msg">Aucun nouveau contact.</p>`}</div>
+    <h3>Déjà au CRM <span class="pill">${s.crm.length}</span></h3>
+    ${s.crm.length ? `<div class="tab-wrap"><table class="ro"><thead><tr><th>Contact</th><th>Fonction</th><th>Contrôle</th></tr></thead><tbody>
+      ${s.crm.map(x => `<tr><td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}</td>
+        <td>${esc(x.fonction)}</td><td>${esc(x.statut || "non contrôlé")}<small>${esc(x.detail)}</small></td></tr>`).join("")}
+      </tbody></table></div><p class="note">Lecture seule : les contacts déjà au CRM sont gérés par Marie et Michel.</p>` : `<p class="msg">Aucun contact rattaché à cette société dans le CRM.</p>`}
+    <p class="note">« Valider pour HubSpot » met le contact en attente d'envoi. L'envoi réel se fera après la migration HubSpot.</p>`;
+  $("#detail").querySelectorAll("[data-a]").forEach(b => b.onclick = () => enregistrer(+b.dataset.i, b.dataset.a));
+}
+async function enregistrer(i, etat) {
+  const x = INFO.nouveaux[i], tel = document.querySelector(`[data-t="${i}"]`).value.trim(), m = document.querySelector(`[data-m="${i}"]`);
+  document.querySelectorAll(`#c${i} button`).forEach(b => b.disabled = true);
+  m.textContent = "Enregistrement…"; m.className = "msg";
+  try {
+    const r = await api("/v3/contacts/api/contact/" + courant, {cle: x.cle, etat, telephone: tel});
+    Object.assign(x, {etat: r.etat, telephone: r.telephone, le: r.le});
+    const s = SOC.find(s => s.page === courant);
+    if (s) { s.nb_prets = r.nb_prets; s.nb_traites = INFO.nouveaux.filter(n => n.etat !== "à traiter").length; }
+    document.getElementById("c" + i).outerHTML = carte(x, i);
+    document.querySelectorAll(`#c${i} [data-a]`).forEach(b => b.onclick = () => enregistrer(+b.dataset.i, b.dataset.a));
+    dessinerFiltres(); dessinerListe();
+  } catch (e) { m.textContent = e.message; m.className = "msg err"; document.querySelectorAll(`#c${i} button`).forEach(b => b.disabled = false); }
+}
+charger();
+</script>
+</body>
+</html>

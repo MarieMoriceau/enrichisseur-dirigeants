@@ -215,6 +215,7 @@ async def enregistrer(job: dict, norm_nom, journal):
                      "Périmètre": {"select": {"name": job["perimetre"]}}, "Traitée le": {"date": {"start": maintenant}},
                      "Lancement": _txt(job.get("nom", "")), "Nb dirigeants": {"number": len(r.get("dirigeants", []))},
                      "Nb e-mails": {"number": sum(1 for d in r.get("dirigeants", []) if d.get("email"))},
+                     "Nb nouveaux contacts": {"number": sum(1 for d in r.get("dirigeants", []) if not d.get("dans_pipedrive"))},
                      "Effectif LinkedIn": {"number": int(r["effectif_linkedin"]) if r.get("effectif_linkedin") not in (None, "") else None},
                      "Historique effectifs": _txt(hist_txt),
                      "Validation": {"select": {"name": "À valider"}}}       # nouvelles données : à revoir dans l'onglet Validation

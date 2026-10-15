@@ -93,17 +93,22 @@ enrichisseur/
 
 ---
 
-## ✅ Onglet Validation (v3) — `/v3/validation`
+## ✅ Validation des résultats (v3) — deux écrans
 
-Réservé à Marie (les négociateurs n'y ont pas accès). Lit la base Notion « Enrichisseur v3 — Mémoire des sociétés ».
+Les deux écrans lisent la base Notion « Enrichisseur v3 — Mémoire des sociétés ». **Rien n'est envoyé dans un CRM** depuis ces écrans :
+l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blanc sur 50 lignes avant tout envoi réel.
 
+**`/v3/validation`, réservé à Marie et Michel Bastian (mot de passe admin)**
 1. **Société** : adresses CRM / site / LinkedIn / Google, recommandation de l'outil, effectif LinkedIn, domiciliation.
    On coche l'adresse retenue (ou on la saisit), puis « Valider la société » ou « Écarter ».
-2. **Contacts** (ouvert une fois la société validée) : nouveaux dirigeants (créer / ignorer) et contacts Pipedrive
-   « probablement parti » / « à vérifier » / « toujours là » (garder / marquer parti / à revoir).
+2. **Contacts CRM** (une fois la société validée) : contacts Pipedrive « probablement parti » / « à vérifier » / « toujours là »,
+   décision garder / marquer parti / à revoir. Les nouveaux contacts y sont visibles en lecture seule, avec l'avancement des négos.
 
-Les décisions restent dans Notion (champs Validation, Adresse retenue, Décisions contacts). **Rien n'est envoyé dans un CRM** :
-l'envoi HubSpot viendra après la migration, avec un test à blanc sur 50 lignes avant tout envoi réel.
+**`/v3/contacts`, pour les négos (mot de passe négos ; le mot de passe admin y donne aussi accès)**
+- Nouveaux dirigeants, visibles dès la fin du lancement : profil LinkedIn affiché, téléphone à compléter,
+  « Valider pour HubSpot » ou « Écarter ». Liste commune à tous les négos.
+- Contacts déjà au CRM : lecture seule.
+- Les sociétés écartées par l'admin disparaissent de cet écran.
 
 Contrôle des contacts CRM (étape 4b du pipeline, choix « Sociétés + dirigeants » et « Tout ») :
 - absent des dirigeants Sales Navigator → « à vérifier »
@@ -111,5 +116,12 @@ Contrôle des contacts CRM (étape 4b du pipeline, choix « Sociétés + dirigea
 
 | Variable Render | Rôle |
 |---|---|
+| `VALIDATION_MDP_ADMIN` | mot de passe de l'écran admin (Marie + Michel) |
+| `VALIDATION_MDP_NEGOS` | mot de passe de l'écran des négos |
+| `VALIDATION_SECRET` | facultatif : clé de signature de la connexion (changer = déconnecter tout le monde) |
 | `PB_PROFILE_SCRAPER_ID` | ID du phantom LinkedIn Profile Scraper (sans lui, les contacts restent « à vérifier ») |
 | `PROFILS_MAX` | profils lus au plus par lancement (80 par défaut, quota LinkedIn) |
+
+**À prévoir pour l'envoi HubSpot (après la migration)** : créer dans HubSpot deux propriétés de type date,
+`date_validation_societe` (Sociétés, alimentée par « Validée le ») et `date_validation_contact`
+(Contacts, alimentée par la date de validation du négo), ainsi que le téléphone saisi par les négos.

@@ -103,7 +103,8 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
   <div>
     <div class="eyebrow">Equation SIE · Enrichisseur v3</div>
     <h1>Validation des résultats</h1>
-    <p class="sub">Société par société : l'adresse à retenir, puis les contacts. Rien ne part dans un CRM depuis cette page. <a href="/">← Retour à l'enrichisseur</a></p>
+    <p class="sub">Réservé à Marie et Michel. Société par société : l'adresse à retenir, puis les contacts déjà au CRM. Rien ne part dans un CRM depuis cette page.
+      <a href="/">Enrichisseur</a> · <a href="/v3/contacts">Écran des négos</a> · <a href="/v3/deconnexion">Se déconnecter</a></p>
   </div>
 </div></div>
 
@@ -129,6 +130,7 @@ const norm = a => String(a || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ
 
 async function api(url, corps) {
   const r = await fetch(url, corps ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(corps)} : {});
+  if (r.status === 401 || r.status === 403) { location.href = "/v3/connexion?suite=/v3/validation"; throw new Error("reconnexion"); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.erreur || ("erreur " + r.status));
   return j;
@@ -185,7 +187,7 @@ function dessinerDetail() {
     </div>
     <div class="etapes" role="group" aria-label="Étapes">
       <button data-e="societe" aria-pressed="${ecran === "societe"}"><span class="num">1</span>Société</button>
-      <button data-e="contacts" aria-pressed="${ecran === "contacts"}" ${ok ? "" : "disabled title='Validez d’abord la société'"}><span class="num">2</span>Contacts</button>
+      <button data-e="contacts" aria-pressed="${ecran === "contacts"}" ${ok ? "" : "disabled title='Validez d’abord la société'"}><span class="num">2</span>Contacts CRM</button>
     </div>
     <div id="ecran"></div>`;
   $("#detail").querySelectorAll(".etapes button").forEach(b => b.onclick = () => { ecran = b.dataset.e; dessinerDetail(); });
@@ -274,29 +276,22 @@ async function envoyerSociete(corps, suite) {
   } catch (e) { message(e.message, true); document.querySelectorAll(".actions .btn").forEach(b => b.disabled = false); }
 }
 
-/* ─────────── écran 2 : contacts ─────────── */
+/* ─────────── écran 2 : contacts CRM (nouveaux contacts : lecture seule, gérés par les négos) ─────────── */
 function ecranContacts() {
   const d = info.data || {};
-  const avant = Object.fromEntries((info.decisions || []).map(x => [x.type + "|" + (x.id || x.linkedin || x.nom_complet), x.action]));
-  const nouveaux = (d.dirigeants || []).filter(x => !x.dans_pipedrive).sort((a, b) => String(a.role).localeCompare(String(b.role)));
-  const crm = [...(d.contacts_crm || [])].sort((a, b) => ({"probablement parti":0,"à vérifier":1,"toujours là":2}[a.statut] ?? 3) - ({"probablement parti":0,"à vérifier":1,"toujours là":2}[b.statut] ?? 3));
+  const avant = Object.fromEntries((info.decisions || []).map(x => [String(x.id), x.action]));
+  const ordre = {"probablement parti":0,"à vérifier":1,"toujours là":2};
+  const crm = [...(d.contacts_crm || [])].sort((a, b) => (ordre[a.statut] ?? 3) - (ordre[b.statut] ?? 3));
+  const nouveaux = (d.dirigeants || []).filter(x => !x.dans_pipedrive);
+  const etatN = x => (info.nouveaux || {})[String(x.linkedin || x.nom_complet).trim().toLowerCase()] || {};
   const choix = (opts, val) => opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("");
-  const defN = x => avant["nouveau|" + (x.linkedin || x.nom_complet)] || (/^[1-5]/.test(String(x.role)) ? "créer" : "ignorer");
-  const defC = x => avant["crm|" + x.id] || ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
+  const defC = x => avant[String(x.id)] || ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
   const pillC = s => `<span class="pill ${s === "probablement parti" ? "ko" : s === "à vérifier" ? "warn" : "ok"}">${esc(s || "non contrôlé")}</span>`;
   const sansContacts = !["dirigeants","tout"].includes(info.perimetre);
   $("#ecran").innerHTML = `
     <p class="note">Adresse retenue : <b>${esc(info.adresse_retenue)}</b>${info.source_retenue ? " (" + esc(info.source_retenue) + ")" : ""}</p>
-    ${sansContacts ? `<p class="note">Cette société a été traitée en « ${esc(info.perimetre)} » : pas de recherche de dirigeants. Relancez-la en « Tout » pour avoir ses contacts.</p>` : ""}
-    <h3>Nouveaux dirigeants <span class="pill">${nouveaux.length}</span></h3>
-    ${nouveaux.length ? `<div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Dirigeant</th><th>Rôle</th><th>E-mail</th><th>Lieu</th></tr></thead><tbody>
-      ${nouveaux.map((x, i) => `<tr>
-        <td><select data-n="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["créer","ignorer"], defN(x))}</select></td>
-        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)}</small></td>
-        <td>${esc(x.role)}</td>
-        <td>${esc(x.email || "—")}<small>${esc(x.source_email || "")}</small></td>
-        <td>${esc(x.lieu)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="msg">Aucun nouveau dirigeant.</p>`}
-    <h3>Déjà au CRM <span class="pill">${crm.length}</span></h3>
+    ${sansContacts ? `<p class="note">Société traitée en « ${esc(info.perimetre)} » : pas de recherche de contacts. Relancez-la en « Tout » pour les avoir.</p>` : ""}
+    <h3>Contacts déjà au CRM <span class="pill">${crm.length}</span></h3>
     ${crm.length ? `<div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Contact Pipedrive</th><th>Contrôle</th><th>E-mail CRM</th></tr></thead><tbody>
       ${crm.map((x, i) => `<tr class="${x.statut === "probablement parti" ? "parti" : ""}">
         <td><select data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à revoir"], defC(x))}</select></td>
@@ -305,17 +300,19 @@ function ecranContacts() {
         <td>${esc(x.email || "—")}</td></tr>`).join("")}</tbody></table></div>`
       : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché, ou société traitée avant l'ajout de ce contrôle (relancez-la pour l'avoir)."}</p>`}
     <div class="actions">
-      <button class="btn primary" id="okCont">Valider les contacts</button>
+      <button class="btn primary" id="okCont" ${crm.length ? "" : "disabled"}>Valider les contacts CRM</button>
       <span class="msg" id="msg">${info.validation === "Contacts validés" ? "Déjà validés le " + esc(info.validee) + " : vous pouvez modifier et revalider." : ""}</span>
     </div>
-    <p class="note">Rien n'est envoyé : les décisions sont gardées dans la mémoire Notion. L'envoi dans HubSpot viendra après la migration, avec un test à blanc sur 50 lignes d'abord.</p>`;
+    <h3>Nouveaux contacts <span class="pill">${nouveaux.length}</span></h3>
+    ${nouveaux.length ? `<div class="tab-wrap"><table class="ro"><thead><tr><th>Dirigeant</th><th>Rôle</th><th>Téléphone</th><th>Négos</th></tr></thead><tbody>
+      ${nouveaux.map(x => { const e = etatN(x); return `<tr>
+        <td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.nom_complet)}</a>` : esc(x.nom_complet)}<small>${esc(x.fonction)} · ${esc(x.email || "pas d'e-mail")}</small></td>
+        <td>${esc(x.role)}</td><td>${esc(e.telephone || "—")}</td>
+        <td><span class="pill ${e.etat === "prêt pour HubSpot" ? "ok" : e.etat === "écarté" ? "ko" : ""}">${esc(e.etat || "à traiter")}</span></td></tr>`; }).join("")}
+      </tbody></table></div><p class="note">Lecture seule : les négos les valident dans <a href="/v3/contacts">Nouveaux contacts</a>.</p>` : `<p class="msg">Aucun nouveau dirigeant.</p>`}`;
   $("#okCont").onclick = async () => {
-    const decisions = [
-      ...nouveaux.map((x, i) => ({type:"nouveau", action: document.querySelector(`[data-n="${i}"]`).value, id: x.linkedin || x.nom_complet,
-          prenom:x.prenom, nom:x.nom, nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:"nouveau"})),
-      ...crm.map((x, i) => ({type:"crm", action: document.querySelector(`[data-c="${i}"]`).value, id:x.id,
-          nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:x.statut})),
-    ];
+    const decisions = crm.map((x, i) => ({action: document.querySelector(`[data-c="${i}"]`).value, id:x.id,
+        nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:x.statut}));
     $("#okCont").disabled = true; message("Enregistrement dans Notion…");
     try {
       const maj = await api("/v3/validation/api/contacts/" + courant, {decisions});
