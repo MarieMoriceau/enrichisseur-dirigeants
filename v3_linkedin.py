@@ -493,6 +493,7 @@ async def personnes_societe(c: httpx.AsyncClient, org_id: str) -> list:
                     li = "https://" + li                     # « www.linkedin.com/in/… » sans https dans Pipedrive
                 tels = [t.get("value", "") for t in (p.get("phone") or []) if isinstance(t, dict) and re.search(r"\d{6}", str(t.get("value", "")))]
                 out.append({"id": str(p.get("id")), "nom_complet": p.get("name", ""), "fonction": p.get("job_title") or "",
+                            "role": role(p.get("job_title") or ""),
                             "email": emails[0] if emails else "", "telephone": tels[0] if tels else "",
                             "linkedin": li if "linkedin.com/in/" in li else "", "statut": "", "detail": ""})
             pag = (j.get("additional_data") or {}).get("pagination") or {}

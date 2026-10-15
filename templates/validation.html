@@ -385,6 +385,8 @@ function ecranContacts() {
   const val = (x, k) => { const a = avant[String(x.id)]; return a && a[k] ? a[k] : (x[k] || ""); };
   const modifC = (x, k) => { const a = avant[String(x.id)]; return a && a[k] && a[k] !== (x[k] || "") ? " modif" : ""; };
   const inp = (x, i, k, ph, type) => `<input class="edit${modifC(x, k)}" data-c${k}="${i}" type="${type}" value="${esc(val(x, k))}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}">`;
+  const roleC = (x, i) => { const v = val(x, "role"); const opts = [...(info.roles || [])]; if (v && !opts.includes(v)) opts.unshift(v);
+    return `<select class="edit${modifC(x, "role")}" data-crole="${i}" aria-label="Rôle de ${esc(x.nom_complet)}"><option value="">—</option>${opts.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`; };
   const pillC = s => `<span class="pill ${s === "probablement parti" ? "ko" : s === "à vérifier" ? "warn" : "ok"}">${esc(s || "non contrôlé")}</span>`;
   const sansContacts = !["dirigeants","tout"].includes(info.perimetre);
   $("#ecran").innerHTML = `
@@ -392,14 +394,16 @@ function ecranContacts() {
     ${sansContacts ? `<p class="note">Société traitée en « ${esc(info.perimetre)} » : pas de recherche de contacts. Relancez-la en « Tout » pour les avoir.</p>` : ""}
     <h3>Contacts déjà au CRM <span class="pill">${crm.length}</span></h3>
     ${crm.length ? `<p class="legende"><i></i>case corrigée à la main (remplace la valeur de Pipedrive)</p>
-      <div class="tab-wrap"><table class="saisie"><thead><tr><th>Contact Pipedrive</th><th>Décision</th><th>Contrôle</th><th>LinkedIn</th><th>E-mail</th><th>Téléphone</th></tr></thead><tbody>
+      <div class="tab-wrap"><table class="saisie"><thead><tr><th>Contact et LinkedIn</th><th>Fonction</th><th>Rôle</th><th>E-mail</th><th>Téléphone</th><th>Contrôle et décision</th></tr></thead><tbody>
       ${crm.map((x, i) => `<tr class="${x.statut === "probablement parti" ? "parti" : ""}">
-        <td><b>${esc(x.nom_complet)}</b>${val(x, "linkedin") ? `<a class="lien-li" href="${esc(val(x, "linkedin"))}" target="_blank" rel="noopener">ouvrir ↗</a>` : ""}<small>${esc(x.fonction || "")} · fiche ${esc(x.id)}</small></td>
-        <td><select class="edit" data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à revoir"], defC(x))}</select></td>
-        <td>${pillC(x.statut)}<small>${esc(x.detail || "")}</small></td>
-        <td>${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</td>
+        <td><b>${esc(x.nom_complet)}</b>${val(x, "linkedin") ? `<a class="lien-li" href="${esc(val(x, "linkedin"))}" target="_blank" rel="noopener">ouvrir ↗</a>` : ""}
+          <div style="margin-top:4px">${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</div><small>fiche Pipedrive ${esc(x.id)}</small></td>
+        <td>${inp(x, i, "fonction", "Fonction", "text")}</td>
+        <td>${roleC(x, i)}</td>
         <td>${inp(x, i, "email", "prenom.nom@societe.fr", "email")}</td>
-        <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}</td></tr>`).join("")}</tbody></table></div>`
+        <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}</td>
+        <td>${pillC(x.statut)}<small>${esc(x.detail || "")}</small>
+          <div style="margin-top:6px"><select class="edit" data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à revoir"], defC(x))}</select></div></td></tr>`).join("")}</tbody></table></div>`
       : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché, ou société traitée avant ce contrôle (lancez le rattrapage)."}</p>`}
     ${ailleurs.length ? `<h3>Déjà dans Pipedrive chez une autre société <span class="pill">${ailleurs.length}</span></h3>
       <p class="msg" style="margin:0 0 8px">Trouvés dirigeants ici, mais fichés ailleurs. Le négo dit s'il faut l'ajouter ; vous décidez s'il change de société ou appartient aux deux.</p>
@@ -424,7 +428,7 @@ function ecranContacts() {
     const lire = (k, i) => (document.querySelector(`[data-c${k}="${i}"]`) || {}).value || "";
     const decisions = [
       ...crm.map((x, i) => ({type:"crm", action: document.querySelector(`[data-c="${i}"]`).value, id:x.id,
-        nom_complet:x.nom_complet, fonction:x.fonction, statut:x.statut,
+        nom_complet:x.nom_complet, statut:x.statut, fonction: lire("fonction", i).trim(), role: lire("role", i),
         linkedin: lire("linkedin", i).trim(), email: lire("email", i).trim(), telephone: lire("telephone", i).trim()})),
       ...ailleurs.map((x, i) => ({type:"ailleurs", action: document.querySelector(`[data-a="${i}"]`).value, id:x.ailleurs.id,
         nom_complet:x.nom_complet, fonction:x.fonction, email:x.email, linkedin:x.linkedin, statut:"fiché ailleurs", societe_actuelle:x.ailleurs.org_nom})),

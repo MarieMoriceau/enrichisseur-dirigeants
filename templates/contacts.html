@@ -261,9 +261,10 @@ function dessiner() {
     <p class="note">Complétez ou corrigez librement (e-mail ou téléphone trouvé ailleurs, fonction, rôle, LinkedIn), puis « Valider pour HubSpot ». « Enregistrer » garde vos saisies sans décider.
       Un contact déjà dans Pipedrive ailleurs : vous dites s'il faut l'ajouter, Marie ou Michel décident ensuite s'il change de société.</p>
     <h3>Déjà au CRM <span class="pill">${s.crm.length}</span></h3>
-    ${s.crm.length ? `<div class="tab-wrap"><table class="ro"><thead><tr><th>Contact</th><th>LinkedIn</th><th>Fonction</th><th>Contrôle</th></tr></thead><tbody>
-      ${s.crm.map(x => `<tr><td>${esc(x.nom_complet)}</td><td>${x.linkedin ? `<a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.linkedin.replace(/^https?:\/\/(www\.)?/, ""))}</a>` : "—"}</td>
-        <td>${esc(x.fonction)}</td><td>${esc(x.statut || "non contrôlé")}<small>${esc(x.detail)}</small></td></tr>`).join("")}
+    ${s.crm.length ? `<div class="tab-wrap"><table class="ro saisie"><thead><tr><th>Contact et LinkedIn</th><th>Fonction</th><th>Rôle</th><th>E-mail</th><th>Téléphone</th><th>Contrôle</th></tr></thead><tbody>
+      ${s.crm.map(x => `<tr><td><b style="color:var(--ink)">${esc(x.nom_complet)}</b>${x.linkedin ? `<small><a href="${esc(x.linkedin)}" target="_blank" rel="noopener">${esc(x.linkedin.replace(/^https?:\/\/(www\.)?/, ""))}</a></small>` : "<small>pas de LinkedIn</small>"}</td>
+        <td>${esc(x.fonction || "—")}</td><td>${esc(x.role || "—")}</td><td>${esc(x.email || "—")}</td><td>${esc(x.telephone || "—")}</td>
+        <td>${esc(x.statut || "non contrôlé")}<small>${esc(x.detail)}</small></td></tr>`).join("")}
       </tbody></table></div><p class="note">Lecture seule : les contacts déjà au CRM sont gérés par Marie et Michel.</p>` : `<p class="msg">Aucun contact rattaché à cette société dans le CRM.</p>`}
     <p class="note">« Valider pour HubSpot » met le contact en attente d'envoi. L'envoi réel se fera après la migration HubSpot.</p>`;
   brancher();

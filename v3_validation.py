@@ -23,6 +23,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import v3_memoire as MEM
+import v3_linkedin as LI
 
 router = APIRouter()
 SOURCES = ("CRM", "Site", "LinkedIn", "Google", "Saisie")
@@ -220,6 +221,8 @@ async def admin_societe(page_id: str, req: Request):
     info["decisions"] = _json(info["decisions"], [])
     info["nouveaux"] = _json(info["nouveaux"], {})
     info["data"] = await MEM.lire(page_id)
+    for p in info["data"].get("contacts_crm", []):
+        p.setdefault("role", LI.role(p.get("fonction", "")))
     info["fiches"] = [fiche_nouveau(d, info["nouveaux"].get(cle_contact(d), {})) for d in nouveaux_dirigeants(info["data"])]
     info["roles"] = ROLES
     return info
@@ -266,7 +269,7 @@ async def valider_contacts_crm(page_id: str, req: Request):
         t = d.get("type") or "crm"
         if t not in ("crm", "ailleurs") or d.get("action") not in (ACTIONS_CRM if t == "crm" else ACTIONS_AILLEURS):
             return JSONResponse({"erreur": f"décision invalide : {t} / {d.get('action')}"}, 400)
-        propres, erreur = verifier_saisie({k: d.get(k) for k in ("email", "telephone", "linkedin") if d.get(k)})
+        propres, erreur = verifier_saisie({k: d.get(k) for k in ("email", "telephone", "linkedin", "fonction", "role") if d.get(k)})
         if erreur:
             return JSONResponse({"erreur": f"{d.get('nom_complet', '')} : {erreur}"}, 400)
         d = {**d, **propres}
@@ -318,7 +321,13 @@ async def negos_societe(page_id: str, req: Request):
     nouveaux = []
     for d in nouveaux_dirigeants(data):
         nouveaux.append(fiche_nouveau(d, etats.get(cle_contact(d), {})))
-    crm = [{k: p.get(k, "") for k in ("nom_complet", "fonction", "linkedin", "statut", "detail")} for p in data.get("contacts_crm", [])]
+    corr = {str(x.get("id")): x for x in _json(info["decisions"], []) if (x.get("type") or "crm") == "crm"}
+    crm = []
+    for p in data.get("contacts_crm", []):
+        c = {k: p.get(k, "") for k in ("nom_complet", "fonction", "linkedin", "email", "telephone", "statut", "detail")}
+        c["role"] = p.get("role") or LI.role(p.get("fonction", ""))
+        c.update({k: v for k, v in corr.get(str(p.get("id")), {}).items() if k in CHAMPS_MODIFIABLES and v})
+        crm.append(c)
     adresse_validee = info["validation"] in ("Société validée", "Contacts validés")
     return {"page": page_id, "nom": info["nom"], "domaine": info["domaine"], "siren": info["siren"], "effectif": info["effectif"],
             "lancement": info["lancement"], "traitee": info["traitee"],
