@@ -79,6 +79,7 @@ async def notion_finir(job: dict, excel: bytes | None, nom_fichier: str):
         "Nb contacts": {"number": sum(len(r.get("dirigeants", [])) for r in res)},
         "Nb emails": {"number": sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email"))},
         "Durée (min)": {"number": round(((job["fin"] or time.time()) - job["debut"]) / 60, 1)},
+        "Nb LinkedIn": {"number": job.get("li_utilise", 0)},   # la réservation du départ est remplacée par l'usage réel
         "Terminé le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")}},
     }
     if job.get("erreur"):

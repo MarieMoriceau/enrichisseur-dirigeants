@@ -518,6 +518,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             try:
                 lignes = await pb.executer(c, PB_SCRAPER, f"v3_{jid}_scraper", stop,
                                            valeurs=[r["linkedin"] for r in a_scraper], colonne="linkedinUrl")
+                job["li_utilise"] = len(a_scraper)          # sociétés réellement passées par LinkedIn (compteur 150/jour)
             except Exception as e:
                 journal(f"Company Scraper en échec : {e}")
                 lignes = []

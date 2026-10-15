@@ -156,8 +156,6 @@ footer a{color:var(--tag-ink)}
             <span><b>Tout</b><small>+ e-mails (Pipedrive, puis Kaspr, puis Fullenrich).</small></span></label>
           <small id="liInfo">vérification de la configuration…</small>
           <small id="quotaInfo"></small>
-          <label class="check" style="grid-column:1/-1;border:0;padding:0;margin-top:4px"><input type="checkbox" name="forcer" id="forcer">
-            <span>Ignorer la mémoire<small>Par défaut, une société déjà traitée depuis moins de 6 mois est reprise telle quelle, sans nouvelle recherche ni quota. Cochez pour tout relancer.</small></span></label>
         </fieldset>
         <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(l'Excel vous y sera envoyé à la fin)</span></label>
         <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
@@ -234,7 +232,7 @@ footer a{color:var(--tag-ink)}
         <summary>Quota LinkedIn, mémoire et fichiers reçus</summary>
         <ul class="steps">
           <li><b>Quota</b> : 150 sociétés par jour passent par LinkedIn, tous négos confondus (c'est le même compte LinkedIn). Le compteur s'affiche sous les choix. Au-delà, l'outil traite ce qui rentre aujourd'hui et programme la suite le lendemain à 7 h. Vous êtes prévenu par mail tout de suite, puis vous recevez l'Excel de chaque partie.</li>
-          <li><b>Mémoire</b> : une société déjà traitée depuis moins de 6 mois est reprise telle quelle, sans nouvelle recherche, sans quota et sans crédits. Elle est signalée dans la colonne « Reprise de la mémoire ». Pour tout relancer quand même, cochez « Ignorer la mémoire ».</li>
+          <li><b>Mémoire</b> : une société déjà traitée depuis moins de 6 mois est reprise telle quelle, sans nouvelle recherche, sans quota et sans crédits. Elle est signalée dans la colonne « Reprise de la mémoire ». Au-delà de 6 mois, la société est recherchée à nouveau, automatiquement.</li>
           <li><b>Fichiers</b> : avec les dirigeants, vous recevez par mail la version courte (dirigeants et e-mails). Le fichier complet (sociétés, adresses, effectifs, domiciliation) est envoyé en copie à Marie, et reste téléchargeable dans l'outil.</li>
         </ul>
       </details>
