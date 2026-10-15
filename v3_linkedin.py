@@ -231,9 +231,12 @@ def role(titre: str) -> str:
 # le tri par lieu (en_france) reste de toute façon appliqué ensuite, en filet de sécurité.
 SN_REGION_FRANCE = os.getenv("SN_REGION_FRANCE", "105015875")
 PLAFOND_SN = 150          # profils lus par recherche Sales Navigator (au-delà, le lot est coupé en deux)
+# Au-delà de ce nombre de salariés LinkedIn, on ne cherche plus les « directeurs » (trop nombreux, rarement décideurs
+# d'un déménagement) : seulement C-level, propriétaires / associés et VP.
+SN_DIRECTEURS_MAX = int(os.getenv("SN_DIRECTEURS_MAX", "200"))
 
 
-def url_salesnav(entreprises: list) -> str:
+def url_salesnav(entreprises: list, directeurs: bool = True) -> str:
     """Recherche Sales Navigator : entreprises actuelles (par identifiant LinkedIn) × niveaux CXO (310), Propriétaire / Associé (320),
     VP (300), Directeur (220) × géographie France."""
     vals = ",".join(
@@ -242,8 +245,8 @@ def url_salesnav(entreprises: list) -> str:
     region = (f",(type:REGION,values:List((id:{SN_REGION_FRANCE},text:France,selectionType:INCLUDED)))"
               if SN_REGION_FRANCE else "")
     q = (f"(filters:List((type:CURRENT_COMPANY,values:List({vals})),(type:SENIORITY_LEVEL,values:List("
-         f"(id:310,selectionType:INCLUDED),(id:320,selectionType:INCLUDED),(id:300,selectionType:INCLUDED),"
-         f"(id:220,selectionType:INCLUDED))){region}))")
+         f"(id:310,selectionType:INCLUDED),(id:320,selectionType:INCLUDED),(id:300,selectionType:INCLUDED)"
+         f"{',(id:220,selectionType:INCLUDED)' if directeurs else ''})){region}))")
     return "https://www.linkedin.com/sales/search/people?query=" + quote(q, safe="():,")
 
 
@@ -605,24 +608,35 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         if cibles and PB_SALESNAV:
             # Sales Navigator ne renvoie que PLAFOND_SN profils par recherche : un gros compte (IGN, 1 200 salariés) peut remplir
             # le lot à lui seul et priver les autres. Un lot qui atteint le plafond est coupé en deux et relancé.
-            file_lots = [cibles[i:i + 12] for i in range(0, len(cibles), 12)]
+            def grande(r):
+                try:
+                    return int(r.get("effectif_linkedin")) > SN_DIRECTEURS_MAX
+                except (TypeError, ValueError):
+                    return False                            # effectif inconnu : on garde les directeurs
+            petites = [r for r in cibles if not grande(r)]
+            grandes = [r for r in cibles if grande(r)]
+            if grandes:
+                journal(f"Sales Navigator : {len(grandes)} sociétés de plus de {SN_DIRECTEURS_MAX} salariés, sans le niveau Directeur "
+                        f"({', '.join(r['nom'] for r in grandes[:6])}{'…' if len(grandes) > 6 else ''})")
+            file_lots = ([(petites[i:i + 12], True) for i in range(0, len(petites), 12)]
+                         + [(grandes[i:i + 12], False) for i in range(0, len(grandes), 12)])
             n_lot = 0
             while file_lots:
                 if stop():
                     return
-                lot = file_lots.pop(0)
+                lot, avec_dir = file_lots.pop(0)
                 n_lot += 1
                 job["phase"] = f"Sales Navigator : dirigeants, lot {n_lot} ({len(lot)} sociétés, {len(file_lots)} lots en attente)…"
                 try:
                     lignes = await pb.executer(c, PB_SALESNAV, f"v3_{jid}_salesnav_{n_lot}", stop,
-                                               url_directe=url_salesnav([(r["linkedin_id"], r.get("nom_linkedin") or r["nom"]) for r in lot]),
+                                               url_directe=url_salesnav([(r["linkedin_id"], r.get("nom_linkedin") or r["nom"]) for r in lot], avec_dir),
                                                resultats_par_recherche=PLAFOND_SN)
                 except Exception as e:
                     journal(f"Sales Navigator lot {n_lot} en échec : {e}")
                     continue
                 if len(lignes) >= PLAFOND_SN and len(lot) > 1:
                     m = len(lot) // 2
-                    file_lots[:0] = [lot[:m], lot[m:]]
+                    file_lots[:0] = [(lot[:m], avec_dir), (lot[m:], avec_dir)]
                     journal(f"Sales Navigator lot {n_lot} : plafond de {PLAFOND_SN} profils atteint, lot coupé en deux et relancé")
                     continue
                 if len(lignes) >= PLAFOND_SN:

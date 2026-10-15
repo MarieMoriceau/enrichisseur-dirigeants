@@ -917,7 +917,7 @@ def excel(job) -> bytes:
         "  (domiciliation ou ancien siège). 🏢 siège en région. ✅ cohérent : siège = bureaux. 🔍 à vérifier : bureaux non confirmés.",
         "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
         "  Seuls les dirigeants basés en France sont gardés (lieu LinkedIn), pour la liste comme pour les e-mails.",
-        "  Niveaux recherchés : C-level, propriétaires et associés, VP, directeurs. Rôles 1 à 5 enrichis en e-mail ;",
+        "  Niveaux recherchés : C-level, propriétaires et associés, VP, et directeurs jusqu'à 200 salariés LinkedIn. Rôles 1 à 5 enrichis en e-mail ;",
         "  6 (immobilier, services généraux) et 7 (autres C-level) seulement listés.",
         "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",
         "  L'onglet Import HubSpot contacts ne contient que les NOUVEAUX dirigeants (absents de Pipedrive).",
