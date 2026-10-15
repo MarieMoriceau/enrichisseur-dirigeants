@@ -478,6 +478,11 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                     r["fiche_google"] = "❌ fiches Google écartées (homonymes) : " + ", ".join(l.get("title", "") for l in cands[:3])
         if stop():
             return
+        perim = job.get("perimetre", "tout")
+        if perim == "societes":
+            journal("Choix « Sociétés » : pas de recherche de dirigeants ni d'e-mails")
+            job["phase"] = ""
+            return
 
         # 4. Sales Navigator : dirigeants (seulement les sociétés « complètes », pas le mode adresse seule)
         cibles = [r for r in res if r.get("linkedin_id") and not r.get("mode", "").startswith("adresse")]
@@ -508,6 +513,11 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         "idf": bool(RE_IDF.search(l.get("location", "") or "")),
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),
                         "email": "", "source_email": "", "dans_pipedrive": ""})
+
+        if perim == "dirigeants":
+            journal("Choix « Sociétés + dirigeants » : pas de recherche d'e-mails (ni Kaspr ni Fullenrich)")
+            job["phase"] = ""
+            return
 
         # 5. e-mails des dirigeants utiles (rôles 1 à 5, en Île-de-France ou lieu inconnu, 4 max par société)
         a_faire = []

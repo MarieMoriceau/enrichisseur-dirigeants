@@ -638,8 +638,11 @@ def excel(job) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Lisez-moi"
+    perim = job.get("perimetre") or ("tout" if job.get("linkedin") else "siren")
+    libelle = {"siren": "SIREN et statut (étapes 0 à 2)", "societes": "Sociétés : SIREN, adresse, effectif (étapes 0 à 3)",
+               "dirigeants": "Sociétés + dirigeants, sans e-mails (étapes 0 à 4)", "tout": "Tout (étapes 0 à 5)"}[perim]
     lignes = [
-        f"ENRICHISSEUR V3 · {'étapes 0 à 5' if job.get('linkedin') else 'étapes 0 à 2'} · {auj}", "",
+        f"ENRICHISSEUR V3 · {libelle} · {auj}", "",
         f"{n} organisations traitées",
         f"Déjà dans le CRM avec un SIREN (adresse seule) : {k(lambda r: r.get('mode', '').startswith('adresse'))}",
         f"Site joignable : {k(lambda r: r['site_joignable'] == 'oui')}",
@@ -656,8 +659,10 @@ def excel(job) -> bytes:
         f"Adresse à corriger (LinkedIn + Google concordent) : {k(lambda r: str(r.get('action_adresse', '')).startswith('🔄'))}",
         f"Adresse à valider (une seule source ou désaccord) : {k(lambda r: r.get('confiance_adresse') == 'moyenne')}",
         f"Sociétés quasi inactives (≤ 7 salariés LinkedIn) : {k(lambda r: str(r.get('statut_activite', '')).startswith('Quasi'))}",
-        f"Dirigeants trouvés : {sum(len(r.get('dirigeants', [])) for r in res)} · avec e-mail : {sum(1 for r in res for d in r.get('dirigeants', []) if d['email'])}",
-    ] if job.get("linkedin") else []) + ["",
+    ] if job.get("linkedin") else []) + ([
+        f"Dirigeants trouvés : {sum(len(r.get('dirigeants', [])) for r in res)}"
+        + (f" · avec e-mail : {sum(1 for r in res for d in r.get('dirigeants', []) if d['email'])}" if perim == "tout" else ""),
+    ] if perim in ("dirigeants", "tout") else []) + ["",
         "ONGLETS",
         "• Résultats : tout le détail, ligne par ligne",
         "• Import HubSpot : uniquement les sociétés actives de confiance haute (clé = nom de domaine)",
@@ -728,12 +733,18 @@ def excel(job) -> bytes:
         corr = [r for r in res if str(r.get("action_adresse", "")).startswith("🔄")]
         feuille(wb, "Adresses à corriger", ["ID Pipedrive", "Société", "Ancienne adresse (CRM)", "Nouvelle adresse", "Sources"],
                 [[r["id"], r["nom"], r.get("adresse_crm", ""), r.get("adresse_proposee", ""), "LinkedIn + Google"] for r in corr])
+    if perim in ("dirigeants", "tout"):
         dir_ = [(r, d) for r in res for d in sorted(r.get("dirigeants", []), key=lambda d: d["role"])]
-        feuille(wb, "Dirigeants", ["ID Pipedrive", "Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "Île-de-France",
-                                   "LinkedIn", "Déjà dans Pipedrive", "E-mail", "Source e-mail"],
-                [[r["id"], r["nom"], r["domaine"], d["prenom"], d["nom"], d["fonction"], d["role"], d["lieu"],
-                  "oui" if d["idf"] else "non", d["linkedin"], d.get("dans_pipedrive", ""), d["email"], d.get("source_email", "")]
-                 for r, d in dir_])
+        ent_d = ["ID Pipedrive", "Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "Lieu", "Île-de-France", "LinkedIn"]
+        if perim == "tout":
+            ent_d += ["Déjà dans Pipedrive", "E-mail", "Source e-mail"]
+
+        def ligne_d(r, d):
+            l = [r["id"], r["nom"], r["domaine"], d["prenom"], d["nom"], d["fonction"], d["role"], d["lieu"],
+                 "oui" if d["idf"] else "non", d["linkedin"]]
+            return l + ([d.get("dans_pipedrive", ""), d["email"], d.get("source_email", "")] if perim == "tout" else [])
+        feuille(wb, "Dirigeants", ent_d, [ligne_d(r, d) for r, d in dir_])
+    if perim == "tout":
         contacts = [(r, d) for r, d in dir_ if d["email"] and r["domaine"] and not d.get("dans_pipedrive")]
         feuille(wb, "Import HubSpot contacts", ["First Name", "Last Name", "Email", "Job Title", "LinkedIn URL",
                                                "Company Domain Name", "Rôle", "Date relevé"],
@@ -752,7 +763,10 @@ def excel(job) -> bytes:
 # ───────────────────────── routes ─────────────────────────
 @router.post("/v3/run")
 async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
-              linkedin: str = Form("")):
+              linkedin: str = Form(""), perimetre: str = Form("")):
+    # perimetre : siren | societes | dirigeants | tout (l'ancienne case « linkedin » vaut « tout »)
+    if perimetre not in ("siren", "societes", "dirigeants", "tout"):
+        perimetre = "tout" if linkedin in ("on", "1", "true") else "siren"
     if fichier is not None and fichier.filename:
         orgs = lire_fichier(fichier.filename, await fichier.read())
     else:
@@ -761,12 +775,14 @@ async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), li
         return JSONResponse({"erreur": "Aucune société lue : déposez un fichier avec une colonne de noms, ou collez une liste."}, 400)
     if limite and limite > 0:
         orgs = orgs[:limite]
-    avec_li = linkedin in ("on", "1", "true") and LI.pb_configure()
+    if perimetre != "siren" and not LI.pb_configure():
+        return JSONResponse({"erreur": "PhantomBuster n'est pas configuré dans Render : seul « SIREN et statut » est possible."}, 400)
+    avec_li = perimetre != "siren"
     if avec_li and len(orgs) > LI.MAX_LINKEDIN:
         return JSONResponse({"erreur": f"Avec les étapes LinkedIn, {LI.MAX_LINKEDIN} sociétés maximum par lancement "
                                        f"(quota LinkedIn). Mettez {LI.MAX_LINKEDIN} dans « Lignes à traiter »."}, 400)
     jid = uuid.uuid4().hex[:8]
-    JOBS[jid] = {"id": jid, "linkedin": avec_li, "phase": "Sites web et SIREN…", "journal": [],"total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours", "stop": False,
+    JOBS[jid] = {"id": jid, "linkedin": avec_li, "perimetre": perimetre, "phase": "Sites web et SIREN…", "journal": [],"total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours", "stop": False,
                  "debut": time.time(), "fin": None}
     asyncio.create_task(traiter(jid, orgs))
     return {"job": jid, "total": len(orgs)}
@@ -779,7 +795,7 @@ async def status(jid: str):
         return JSONResponse({"erreur": "job inconnu (le service a peut-être redémarré)"}, 404)
     res = j["resultats"]
     return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
-            "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False),
+            "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False), "perimetre": j.get("perimetre", ""),
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
             "emails": sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email")),
