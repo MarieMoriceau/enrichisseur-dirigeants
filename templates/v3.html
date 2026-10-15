@@ -91,6 +91,17 @@ input:focus-visible,button:focus-visible,a:focus-visible,.drop:focus-within{outl
 .tag.warn{background:var(--accent-soft);color:var(--accent)}
 .status{font-size:14px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.guide{padding:6px 18px}
+.guide details{border-bottom:1px solid var(--line);padding:10px 0}
+.guide details:last-child{border-bottom:0}
+.guide summary{cursor:pointer;font-family:var(--display);font-weight:600;font-size:17px;list-style:none;display:flex;align-items:center;gap:8px}
+.guide summary::-webkit-details-marker{display:none}
+.guide summary::before{content:"+";color:var(--accent);font-family:var(--body);font-weight:700;width:14px}
+.guide details[open] summary::before{content:"–"}
+.guide p,.guide .steps{margin:10px 0 4px 22px;font-size:14px}
+.guide .note{margin-left:22px}
+.aide-lien{color:#D9D0E0;font-size:13px;display:inline-block;margin-top:10px}
+.aide-lien:hover{color:#fff}
 footer{border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:13px;display:grid;gap:6px}
 footer b{color:var(--ink);font-weight:500}
 footer a{color:var(--tag-ink)}
@@ -103,7 +114,8 @@ footer a{color:var(--tag-ink)}
   <div>
     <div class="eyebrow">Equation SIE · Enrichissement de fichiers</div>
     <h1>Enrichisseur v3</h1>
-    <p class="sub">Va chercher sur le site de chaque société son SIREN et sa page LinkedIn officielle, puis vérifie à l'INSEE qu'elle est toujours active.</p>
+    <p class="sub">Pour chaque société : le bon SIREN, si elle est encore active, l'adresse réelle de ses bureaux, son effectif LinkedIn, ses dirigeants et leurs mails.</p>
+    <a class="aide-lien" href="#aide">Mode d'emploi</a>
   </div>
 </div></div>
 
@@ -191,17 +203,66 @@ footer a{color:var(--tag-ink)}
   </section>
 
   <section class="floor">
-    <div class="floor-head"><span class="floor-num">?</span><h2>Ce que contient l'Excel</h2></div>
-    <div class="card">
-      <ol class="steps">
-        <li><b>Résultats</b> : le détail ligne par ligne, avec la page où le SIREN a été trouvé, et l'adresse et l'effectif LinkedIn.</li>
-        <li><b>Adresses à valider</b> : les sociétés dont LinkedIn affiche une autre adresse que le CRM.</li>
-        <li><b>Dirigeants</b> et <b>Import HubSpot contacts</b> : CEO, fondateurs, COO, CFO, associés, avec leur e-mail Kaspr.</li>
-        <li><b>Import HubSpot</b> : uniquement les sociétés actives dont le SIREN est sûr. La clé est le nom de domaine.</li>
-        <li><b>Suppressions</b> : SIREN fermé et site mort. À valider, et pas avant le contrôle LinkedIn.</li>
-        <li><b>À vérifier</b> : SIREN fermé mais site en ligne. La société a sûrement changé de SIREN.</li>
-      </ol>
-      <p class="note">L'adresse INSEE est celle du siège légal, souvent une domiciliation. Elle n'est jamais proposée comme adresse des bureaux.</p>
+    <div class="floor-head" id="aide"><span class="floor-num">?</span><h2>Mode d'emploi</h2><span class="count">cliquez sur un titre pour le déplier</span></div>
+    <div class="card guide">
+      <details open>
+        <summary>À quoi sert l'outil</summary>
+        <p>Remettre à jour une liste de sociétés : le bon SIREN, si elle est encore active, l'adresse réelle de ses bureaux, son effectif réel (celui de LinkedIn, pas celui de l'INSEE), ses dirigeants et leurs mails.</p>
+        <p>L'outil ne touche ni à Pipedrive ni à HubSpot. Il produit un Excel, prêt à importer dans HubSpot.</p>
+      </details>
+      <details>
+        <summary>Lancer un enrichissement, pas à pas</summary>
+        <ol class="steps">
+          <li>Déposez un fichier (export Pipedrive des organisations, ou n'importe quel Excel ou CSV avec une colonne de noms), ou collez une liste de sociétés, une par ligne. Une colonne code postal, adresse ou site web aide à trouver la bonne société.</li>
+          <li>Choisissez ce que vous voulez récupérer (voir plus bas).</li>
+          <li>Saisissez votre adresse mail : l'Excel vous y sera envoyé à la fin.</li>
+          <li>Indiquez le nombre de lignes à traiter (0 pour tout le fichier), puis cliquez sur <b>Lancer</b>.</li>
+          <li>Suivez l'avancement à l'écran, ou fermez l'onglet : le traitement continue et l'Excel arrive par mail.</li>
+          <li>Vos anciens lancements sont dans <b>Lancements précédents</b>, avec le lien vers leur Excel. Un lancement encore en cours s'y rouvre avec <b>Suivre</b>.</li>
+        </ol>
+        <p class="note">Toujours un essai sur une cinquantaine de lignes avant un gros fichier. Et pas plus de 150 sociétés par lancement dès qu'on passe par LinkedIn.</p>
+      </details>
+      <details>
+        <summary>Quel choix faire ?</summary>
+        <ul class="steps">
+          <li><b>SIREN et statut</b> : SIREN, société active ou radiée. Gratuit, environ 1 minute pour 50 sociétés. Idéal pour un premier tri.</li>
+          <li><b>Sociétés</b> : en plus, l'adresse des bureaux et l'effectif LinkedIn. Utilise le quota LinkedIn, comptez 20 à 40 minutes.</li>
+          <li><b>Sociétés + dirigeants</b> : en plus, CEO, fondateurs, COO, CFO, associés. Sans leurs mails.</li>
+          <li><b>Tout</b> : en plus, les mails des dirigeants. Consomme des crédits Kaspr et Fullenrich : à réserver aux sociétés que vous allez vraiment contacter.</li>
+        </ul>
+      </details>
+      <details>
+        <summary>Lire l'Excel</summary>
+        <ul class="steps">
+          <li><b>Résultats</b> : tout le détail, ligne par ligne.</li>
+          <li><b>Import HubSpot</b> : uniquement les sociétés actives dont le SIREN est sûr, avec adresse et effectif quand ils sont fiables.</li>
+          <li><b>Adresses à valider</b> : une seule source pour l'adresse, ou des sources qui ne sont pas d'accord. À regarder à la main.</li>
+          <li><b>Adresses à corriger</b> : LinkedIn et Google Maps donnent la même adresse, différente de celle du CRM.</li>
+          <li><b>Dirigeants</b> et <b>Import HubSpot contacts</b> : les dirigeants trouvés. L'import ne contient que les nouveaux, absents de Pipedrive.</li>
+          <li><b>Suppressions</b> : sociétés radiées dont le site est mort. À valider avant de les retirer du CRM.</li>
+          <li><b>À vérifier</b> : SIREN fermé mais site encore en ligne. La société a sûrement changé de SIREN.</li>
+        </ul>
+        <p class="note">Une société qui affiche 7 salariés ou moins sur LinkedIn est marquée « quasi inactive ». L'adresse INSEE est celle du siège légal, souvent une domiciliation : elle n'est jamais proposée comme adresse des bureaux.</p>
+      </details>
+      <details>
+        <summary>Comment l'outil décide</summary>
+        <ul class="steps">
+          <li>Société déjà dans Pipedrive avec un SIREN : on ne cherche que son adresse physique.</li>
+          <li>SIREN : lu dans les mentions légales du site, puis vérifié à l'INSEE. Sans site connu, l'outil cherche la société dans SIRENE par son nom, puis son site sur le web.</li>
+          <li>Adresse : retenue quand deux sources sont d'accord parmi le CRM, LinkedIn et Google Maps. Une fiche Google n'est prise que si son site web est celui de la société.</li>
+          <li>Dirigeants : Sales Navigator, filtré sur la page LinkedIn de la société, pour écarter les homonymes.</li>
+          <li>Mails : un dirigeant déjà dans Pipedrive n'est pas enrichi. Sinon Kaspr, puis Fullenrich en secours.</li>
+        </ul>
+      </details>
+      <details>
+        <summary>Un souci ?</summary>
+        <ul class="steps">
+          <li><b>La page met du temps à s'ouvrir</b> : le service s'endort quand personne ne s'en sert. Patientez une minute.</li>
+          <li><b>Pas de mail reçu</b> : regardez dans les indésirables, puis récupérez l'Excel dans Lancements précédents.</li>
+          <li><b>Lancement en « erreur »</b> : le service a redémarré pendant le traitement. Relancez-le.</li>
+          <li><b>0 effectif LinkedIn</b> ou <b>choix grisés</b> : prévenez Marie, c'est un réglage à refaire côté PhantomBuster ou Render.</li>
+        </ul>
+      </details>
     </div>
   </section>
 
