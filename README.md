@@ -90,3 +90,26 @@ enrichisseur/
 ├── render.yaml       # Config déploiement Render
 └── README.md
 ```
+
+---
+
+## ✅ Onglet Validation (v3) — `/v3/validation`
+
+Réservé à Marie (les négociateurs n'y ont pas accès). Lit la base Notion « Enrichisseur v3 — Mémoire des sociétés ».
+
+1. **Société** : adresses CRM / site / LinkedIn / Google, recommandation de l'outil, effectif LinkedIn, domiciliation.
+   On coche l'adresse retenue (ou on la saisit), puis « Valider la société » ou « Écarter ».
+2. **Contacts** (ouvert une fois la société validée) : nouveaux dirigeants (créer / ignorer) et contacts Pipedrive
+   « probablement parti » / « à vérifier » / « toujours là » (garder / marquer parti / à revoir).
+
+Les décisions restent dans Notion (champs Validation, Adresse retenue, Décisions contacts). **Rien n'est envoyé dans un CRM** :
+l'envoi HubSpot viendra après la migration, avec un test à blanc sur 50 lignes avant tout envoi réel.
+
+Contrôle des contacts CRM (étape 4b du pipeline, choix « Sociétés + dirigeants » et « Tout ») :
+- absent des dirigeants Sales Navigator → « à vérifier »
+- profil LinkedIn lu par le phantom **LinkedIn Profile Scraper** : autre employeur → « probablement parti »
+
+| Variable Render | Rôle |
+|---|---|
+| `PB_PROFILE_SCRAPER_ID` | ID du phantom LinkedIn Profile Scraper (sans lui, les contacts restent « à vérifier ») |
+| `PROFILS_MAX` | profils lus au plus par lancement (80 par défaut, quota LinkedIn) |

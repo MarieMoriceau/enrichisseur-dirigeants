@@ -18,6 +18,8 @@ PB_URL_FINDER = os.getenv("PB_URL_FINDER_ID", "")
 PB_SCRAPER = os.getenv("PB_COMPANY_SCRAPER_ID", "")
 PB_SALESNAV = os.getenv("PB_SALESNAV_ID", "")
 PB_GMAPS = os.getenv("PB_GMAPS_ID", "")
+PB_PROFILS = os.getenv("PB_PROFILE_SCRAPER_ID", "")      # LinkedIn Profile Scraper : où travaillent les contacts du CRM
+PROFILS_MAX = int(os.getenv("PROFILS_MAX", "80"))      # profils lus au plus par lancement (quota LinkedIn)
 URL_PUBLIQUE = os.getenv("RENDER_EXTERNAL_URL", "")   # adresse publique du service, fournie par Render
 CSV_HEBERGES: dict = {}                              # jeton -> (contenu CSV, heure) servis aux phantoms
 KASPR_KEY = os.getenv("KASPR_API_KEY", "")
@@ -444,6 +446,121 @@ async def personne_pipedrive(c: httpx.AsyncClient, nom_complet: str, r: dict, re
         print(f"[V3 PIPEDRIVE PERSONNE] {nom_complet}: {e}")
     return {}
 
+# ───────────────────────── contacts déjà au CRM : toujours dans la société ? ─────────────────────────
+_CHAMP_LI_PERSONNE: dict = {}
+
+
+async def _champ_linkedin_personne(c: httpx.AsyncClient) -> str:
+    """Clé interne du champ « LinkedIn » des personnes Pipedrive (lue une fois)."""
+    if "ok" not in _CHAMP_LI_PERSONNE:
+        try:
+            r = await c.get("https://api.pipedrive.com/v1/personFields", params={"api_token": PIPEDRIVE_KEY, "limit": 500})
+            for f in r.json().get("data") or []:
+                if "linkedin" in (f.get("name") or "").lower():
+                    _CHAMP_LI_PERSONNE["cle"] = f["key"]
+                    break
+        except Exception as e:
+            print(f"[V3 PIPEDRIVE CHAMP LINKEDIN] {e}")
+        _CHAMP_LI_PERSONNE["ok"] = True
+    return _CHAMP_LI_PERSONNE.get("cle", "")
+
+
+async def personnes_societe(c: httpx.AsyncClient, org_id: str) -> list:
+    """Personnes rattachées à l'organisation Pipedrive."""
+    if not (PIPEDRIVE_KEY and str(org_id).isdigit()):
+        return []
+    cle_li = await _champ_linkedin_personne(c)
+    out, debut = [], 0
+    try:
+        while True:
+            r = await c.get(f"https://api.pipedrive.com/v1/organizations/{org_id}/persons",
+                            params={"api_token": PIPEDRIVE_KEY, "start": debut, "limit": 100})
+            j = r.json()
+            for p in j.get("data") or []:
+                emails = [e.get("value", "") for e in (p.get("email") or []) if isinstance(e, dict)]
+                emails = [e for e in emails if "@" in e]                  # « v » = case vide (ancienne convention)
+                li = str(p.get(cle_li) or "") if cle_li else ""
+                out.append({"id": str(p.get("id")), "nom_complet": p.get("name", ""), "fonction": p.get("job_title") or "",
+                            "email": emails[0] if emails else "",
+                            "linkedin": li if "linkedin.com/in/" in li else "", "statut": "", "detail": ""})
+            pag = (j.get("additional_data") or {}).get("pagination") or {}
+            if not pag.get("more_items_in_collection"):
+                return out
+            debut = pag.get("next_start", debut + 100)
+    except Exception as e:
+        print(f"[V3 PIPEDRIVE PERSONNES] {org_id}: {e}")
+        return out
+
+
+def _entreprise_actuelle(l: dict) -> tuple:
+    """(nom, identifiant LinkedIn) du poste actuel lu par le Profile Scraper (noms de colonnes variables)."""
+    nom = next((l[k] for k in ("company", "companyName", "currentCompany", "currentCompanyName") if l.get(k)), "")
+    url = next((l[k] for k in ("companyUrl", "currentCompanyUrl", "companyLinkedinUrl") if l.get(k)), "")
+    cid = re.sub(r"\D", "", str(l.get("companyId") or "")) or (re.search(r"/company/(\d+)", url or "") or [None, ""])[1]
+    return nom, cid
+
+
+async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, journal, stop):
+    """Pour chaque société : les contacts Pipedrive sont-ils toujours là ?
+       présent parmi les dirigeants Sales Navigator → ✅ toujours là
+       absent → 🔍 à vérifier ; puis lecture du profil LinkedIn (si connu) → 🚪 probablement parti / ✅ toujours là"""
+    avec_crm = [r for r in cibles if str(r.get("id") or "").isdigit()]
+    for i, r in enumerate(avec_crm, 1):
+        if stop():
+            return
+        job["phase"] = f"Pipedrive : contacts déjà connus {i}/{len(avec_crm)}…"
+        r["contacts_crm"] = await personnes_societe(c, r["id"])
+        for p in r["contacts_crm"]:
+            d = next((d for d in r.get("dirigeants", []) if ressemblance(p["nom_complet"], d["nom_complet"]) >= 0.9), None)
+            if d:
+                p["statut"], p["detail"] = "toujours là", f"dans Sales Navigator : {d['fonction']}"
+                d["dans_pipedrive"] = d.get("dans_pipedrive") or f"oui (fiche {p['id']})"
+                if p["email"] and not d.get("email"):
+                    d["email"], d["source_email"] = p["email"], "Pipedrive"
+            else:
+                p["statut"], p["detail"] = "à vérifier", "absent des dirigeants Sales Navigator"
+    a_lire = [(r, p) for r in avec_crm for p in r.get("contacts_crm", []) if p["statut"] == "à vérifier" and p["linkedin"]]
+    if len(a_lire) > PROFILS_MAX:
+        journal(f"profils LinkedIn : {len(a_lire)} contacts à vérifier, seuls les {PROFILS_MAX} premiers sont lus (PROFILS_MAX)")
+        a_lire = a_lire[:PROFILS_MAX]
+    if not (a_lire and PB_PROFILS) or stop():
+        if a_lire and not PB_PROFILS:
+            journal("profils LinkedIn : PB_PROFILE_SCRAPER_ID absent, les contacts restent « à vérifier »")
+        return
+    job["phase"] = f"LinkedIn : lecture de {len(a_lire)} profils de contacts du CRM…"
+    try:
+        lignes = await pb.executer(c, PB_PROFILS, f"v3_{job['id']}_profils", stop,
+                                   valeurs=[p["linkedin"] for _, p in a_lire], colonne="profileUrl")
+    except Exception as e:
+        journal(f"Profile Scraper en échec : {e}")
+        return
+    job["profils_lus"] = len(a_lire)
+    def cle(u):
+        return re.sub(r"[?#].*$", "", (u or "").lower()).rstrip("/").split("linkedin.com", 1)[-1]
+    par_url = {}
+    for l in lignes:
+        for k in ("query", "profileUrl", "linkedinProfileUrl", "linkedInProfileUrl"):
+            if l.get(k):
+                par_url.setdefault(cle(l[k]), l)
+    partis = 0
+    for r, p in a_lire:
+        l = par_url.get(cle(p["linkedin"]))
+        if not l:
+            p["detail"] += " ; profil non lu"
+            continue
+        nom_ent, cid = _entreprise_actuelle(l)
+        poste = l.get("jobTitle") or l.get("headline") or ""
+        meme = (cid and cid == r.get("linkedin_id")) or (nom_ent and max(
+            ressemblance(nom_ent, r.get("nom", "")), ressemblance(nom_ent, r.get("nom_linkedin") or "")) >= 0.8)
+        if meme:
+            p["statut"], p["detail"] = "toujours là", f"profil LinkedIn : {poste or 'poste non lu'} chez {nom_ent}"
+        elif nom_ent:
+            p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : désormais {poste + ' chez ' if poste else 'chez '}{nom_ent}"
+            partis += 1
+        else:
+            p["detail"] += " ; profil lu, aucun poste actuel affiché"
+    journal(f"contacts du CRM : {partis} probablement partis sur {len(a_lire)} profils lus")
+
 
 async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> dict:
     """contacts = [(dirigeant, société)] → {index: e-mail}. E-mails seulement (pas de téléphone) pour limiter les crédits."""
@@ -666,6 +783,11 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             journal("⚠️ Sales Navigator n'a renvoyé aucun dirigeant : le filtre France (SN_REGION_FRANCE) est peut-être mal réglé")
         if job.get("hors_france"):
             journal(f"Sales Navigator : {job['hors_france']} dirigeants basés hors de France écartés")
+        # 4b. contacts déjà dans Pipedrive : toujours dans la société ?
+        if PIPEDRIVE_KEY and cibles and not stop():
+            await controler_contacts_crm(job, cibles, pb, c, ressemblance, journal, stop)
+        if stop():
+            return
         if perim == "dirigeants":
             journal("Choix « Sociétés + dirigeants » : pas de recherche d'e-mails (ni Kaspr ni Fullenrich)")
             job["phase"] = ""
@@ -683,6 +805,8 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             for i, (r, d) in enumerate(a_faire, 1):
                 if stop():
                     return
+                if d.get("dans_pipedrive"):                 # déjà rapproché par l'étape 4b
+                    continue
                 job["phase"] = f"Pipedrive : dirigeants déjà connus ? {i}/{len(a_faire)}…"
                 p = await personne_pipedrive(c, d["nom_complet"], r, ressemblance)
                 if p:

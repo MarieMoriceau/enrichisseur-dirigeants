@@ -30,6 +30,12 @@ def _txt(v):
     return {"rich_text": [{"text": {"content": str(v or "")[:2000]}}]}
 
 
+def _txts(v):
+    """Texte long (plus de 2 000 caractères) découpé en morceaux pour une propriété Notion."""
+    v = str(v or "")
+    return {"rich_text": [{"text": {"content": v[i:i + 2000]}} for i in range(0, len(v), 2000)][:100]}
+
+
 def _val(p, nom):
     x = p.get(nom) or {}
     t = x.get("type")
@@ -75,7 +81,8 @@ async def index(journal, tout: bool = False) -> list:
                 p = pg["properties"]
                 out.append({"page": pg["id"], "nom": _val(p, "Nom normalisé"), "siren": _val(p, "SIREN"),
                             "domaine": _val(p, "Domaine"), "perim": _val(p, "Périmètre"), "date": _val(p, "Traitée le"),
-                            "hist": _val(p, "Historique effectifs")})
+                            "hist": _val(p, "Historique effectifs"), "validation": _val(p, "Validation"),
+                            "adresse_retenue": _val(p, "Adresse retenue"), "source_retenue": _val(p, "Source adresse retenue")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -209,7 +216,13 @@ async def enregistrer(job: dict, norm_nom, journal):
                      "Lancement": _txt(job.get("nom", "")), "Nb dirigeants": {"number": len(r.get("dirigeants", []))},
                      "Nb e-mails": {"number": sum(1 for d in r.get("dirigeants", []) if d.get("email"))},
                      "Effectif LinkedIn": {"number": int(r["effectif_linkedin"]) if r.get("effectif_linkedin") not in (None, "") else None},
-                     "Historique effectifs": _txt(hist_txt)}
+                     "Historique effectifs": _txt(hist_txt),
+                     "Validation": {"select": {"name": "À valider"}}}       # nouvelles données : à revoir dans l'onglet Validation
+            ancienne = next((e for e in meme if e.get("adresse_retenue")), None)
+            if ancienne:                                                     # l'adresse déjà retenue suit la société
+                props["Adresse retenue"] = _txt(ancienne["adresse_retenue"])
+                if ancienne.get("source_retenue"):
+                    props["Source adresse retenue"] = {"select": {"name": ancienne["source_retenue"]}}
             rr = await _req(c, "POST", "https://api.notion.com/v1/pages",
                             json={"parent": {"database_id": MEMOIRE_DB}, "properties": props, "children": blocs[:100]})
             if rr.status_code != 200:

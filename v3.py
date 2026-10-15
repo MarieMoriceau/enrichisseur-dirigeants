@@ -25,6 +25,9 @@ import v3_memoire as MEM
 router = APIRouter()
 JOBS: dict = {}
 
+import v3_validation as VALID
+router.include_router(VALID.router)              # onglet Validation (Marie seule)
+
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 INSEE_API = "https://recherche-entreprises.api.gouv.fr/search"
@@ -1004,6 +1007,14 @@ def excel(job) -> bytes:
                  "oui" if d["idf"] else "non", d["linkedin"]]
             return l + ([d.get("dans_pipedrive", ""), d["email"], d.get("source_email", "")] if perim == "tout" else [])
         feuille(wb, "Dirigeants", ent_d, [ligne_d(r, d) for r, d in dir_])
+        crm = [(r, p) for r in res for p in r.get("contacts_crm", [])]
+        if crm:
+            ordre = {"probablement parti": 0, "à vérifier": 1, "toujours là": 2}
+            crm.sort(key=lambda x: (ordre.get(x[1]["statut"], 3), x[0]["nom"]))
+            feuille(wb, "Contacts CRM", ["ID Pipedrive", "Société", "ID personne", "Nom", "Fonction CRM", "E-mail CRM",
+                                         "LinkedIn", "Statut", "Détail"],
+                    [[r["id"], r["nom"], p["id"], p["nom_complet"], p["fonction"], p["email"], p["linkedin"], p["statut"], p["detail"]]
+                     for r, p in crm])
     if perim == "tout":
         contacts = [(r, d) for r, d in dir_ if d["email"] and r["domaine"] and not d.get("dans_pipedrive")]
         feuille(wb, "Import HubSpot contacts", ["First Name", "Last Name", "Email", "Job Title", "LinkedIn URL",
