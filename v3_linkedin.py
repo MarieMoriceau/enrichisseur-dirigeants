@@ -30,6 +30,24 @@ IDF = ("75", "77", "78", "91", "92", "93", "94", "95")
 RE_IDF = re.compile(r"paris|[iî]le-de-france|hauts-de-seine|seine-saint-denis|val-de-marne|yvelines|essonne|"
                     r"val-d'oise|seine-et-marne|boulogne|levallois|neuilly|courbevoie|puteaux|issy|saint-cloud|"
                     r"saint-mand|montreuil|clichy|suresnes|nanterre|la d[ée]fense", re.I)
+# Lieu LinkedIn en France : « …, France », une région française, ou une grande agglomération française (« Lyon et périphérie »)
+RE_FRANCE = re.compile(
+    r"\bfrance\b|[iî]le-de-france|auvergne|rh[ôo]ne-alpes|bourgogne|franche-comt|bretagne|centre-val|corse|grand est|"
+    r"hauts-de-france|normandie|nouvelle-aquitaine|occitanie|pays de la loire|provence|c[ôo]te d.azur|"
+    r"\b(paris|lyon|lille|marseille|toulouse|bordeaux|nantes|nice|strasbourg|montpellier|rennes|grenoble|rouen|toulon|"
+    r"saint-[ée]tienne|clermont-ferrand|tours|orl[ée]ans|angers|dijon|reims|le havre|metz|nancy|besan[çc]on|brest|caen|"
+    r"limoges|avignon|chamb[ée]ry|annecy|mulhouse|perpignan|pau|bayonne|la rochelle|poitiers|amiens|valence|le mans|"
+    r"n[îi]mes|aix-en-provence|lorient|vannes|quimper|troyes|la roche-sur-yon|cannes|antibes)\b(?! *,? *(texas|ontario|kentucky|tennessee))",
+    re.I)
+PAYS_ETRANGERS = re.compile(r"[ée]tats-unis|united states|royaume-uni|united kingdom|canada|qu[ée]bec|montr[ée]al|belgique|suisse|"
+                            r"allemagne|espagne|italie|pays-bas|luxembourg|maroc|tunisie|alg[ée]rie|s[ée]n[ée]gal|"
+                            r"[ée]mirats|arabie|chine|inde|singapour|japon|australie|br[ée]sil|argentine|mexique|isra[ëe]l|portugal|irlande|laos", re.I)
+
+
+def en_france(lieu: str) -> bool:
+    """Le dirigeant est-il basé en France ? Lieu vide = on ne sait pas = écarté (consigne : France uniquement)."""
+    l = (lieu or "").strip()
+    return bool(l) and bool(RE_FRANCE.search(l)) and not PAYS_ETRANGERS.search(l)
 
 
 def pb_configure() -> bool:
@@ -587,6 +605,9 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                     rl = role(l.get("title", ""))
                     if not r or not rl:
                         continue
+                    if not en_france(l.get("location", "")):      # consigne : dirigeants basés en France uniquement
+                        job["hors_france"] = job.get("hors_france", 0) + 1
+                        continue
                     r.setdefault("dirigeants", []).append({
                         "prenom": (l.get("firstName") or "").strip(), "nom": (l.get("lastName") or "").strip(),
                         "nom_complet": (l.get("fullName") or "").strip(),
@@ -595,16 +616,18 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),
                         "email": "", "source_email": "", "dans_pipedrive": ""})
 
+        if job.get("hors_france"):
+            journal(f"Sales Navigator : {job['hors_france']} dirigeants basés hors de France écartés")
         if perim == "dirigeants":
             journal("Choix « Sociétés + dirigeants » : pas de recherche d'e-mails (ni Kaspr ni Fullenrich)")
             job["phase"] = ""
             return
 
-        # 5. e-mails des dirigeants utiles (rôles 1 à 5, en Île-de-France ou lieu inconnu, 4 max par société)
+        # 5. e-mails des dirigeants utiles (rôles 1 à 5, basés en France, 4 max par société)
         a_faire = []
         for r in cibles:
             ds = sorted(r.get("dirigeants", []), key=lambda d: d["role"])
-            for d in [d for d in ds if d["role"][0] in "12345" and (d["idf"] or not d["lieu"])][:4]:
+            for d in [d for d in ds if d["role"][0] in "12345"][:4]:
                 a_faire.append((r, d))
 
         # 5a. déjà dans Pipedrive ? alors ni Kaspr ni Fullenrich (on reprend l'e-mail de la fiche s'il existe)
