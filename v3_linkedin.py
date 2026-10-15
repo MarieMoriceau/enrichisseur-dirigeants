@@ -496,11 +496,16 @@ async def personnes_societe(c: httpx.AsyncClient, org_id: str) -> list:
 
 
 def _entreprise_actuelle(l: dict) -> tuple:
-    """(nom, identifiant LinkedIn) du poste actuel lu par le Profile Scraper (noms de colonnes variables)."""
-    nom = next((l[k] for k in ("company", "companyName", "currentCompany", "currentCompanyName") if l.get(k)), "")
-    url = next((l[k] for k in ("companyUrl", "currentCompanyUrl", "companyLinkedinUrl") if l.get(k)), "")
-    cid = re.sub(r"\D", "", str(l.get("companyId") or "")) or (re.search(r"/company/(\d+)", url or "") or [None, ""])[1]
-    return nom, cid
+    """(nom, identifiant LinkedIn, poste, en cours ?) du dernier poste lu par le Profile Scraper.
+       Colonnes du phantom (oct. 2026) : companyName, linkedinCompanyId, linkedinCompanyUrl, linkedinJobTitle, linkedinJobDateRange."""
+    nom = next((l[k] for k in ("companyName", "company", "currentCompany", "currentCompanyName") if l.get(k)), "")
+    url = next((l[k] for k in ("linkedinCompanyUrl", "companyUrl", "currentCompanyUrl") if l.get(k)), "")
+    cid = next((re.sub(r"\D", "", str(l[k])) for k in ("linkedinCompanyId", "companyId") if l.get(k)), "") \
+        or (re.search(r"/company/(\d+)", url or "") or [None, ""])[1]
+    poste = next((l[k] for k in ("linkedinJobTitle", "jobTitle", "linkedinHeadline", "headline") if l.get(k)), "")
+    periode = str(l.get("linkedinJobDateRange") or "")
+    en_cours = (not periode) or bool(re.search(r"present|aujourd|actuel|now", periode, re.I))
+    return nom, cid, poste, en_cours, periode
 
 
 async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, journal, stop):
@@ -551,11 +556,13 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
         if not l:
             p["detail"] += " ; profil non lu"
             continue
-        nom_ent, cid = _entreprise_actuelle(l)
-        poste = l.get("jobTitle") or l.get("headline") or ""
+        nom_ent, cid, poste, en_cours, periode = _entreprise_actuelle(l)
         meme = (cid and cid == r.get("linkedin_id")) or (nom_ent and max(
             ressemblance(nom_ent, r.get("nom", "")), ressemblance(nom_ent, r.get("nom_linkedin") or "")) >= 0.8)
-        if meme:
+        if meme and not en_cours:                    # dernier poste = chez nous, mais terminé
+            p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : poste chez {nom_ent} terminé ({periode})"
+            partis += 1
+        elif meme:
             p["statut"], p["detail"] = "toujours là", f"profil LinkedIn : {poste or 'poste non lu'} chez {nom_ent}"
         elif nom_ent:
             p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : désormais {poste + ' chez ' if poste else 'chez '}{nom_ent}"
