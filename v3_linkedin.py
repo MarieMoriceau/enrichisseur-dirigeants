@@ -309,6 +309,9 @@ class PhantomBuster:
                 arg[k] = resultats_par_recherche * n if (resultats and resultats_par_recherche) else n
             elif resultats_par_recherche and ("persearch" in kl or kl == "numberofprofiles"):
                 arg[k] = resultats_par_recherche
+        for k in list(arg):                                  # jamais d'envoi direct vers un CRM depuis PhantomBuster
+            if "crm" in k.lower() and isinstance(arg[k], bool):
+                arg[k] = False
         arg["csvName"] = nom_csv
         for essai in range(4):
             r = await c.post(f"{PB_API}/agents/launch", headers={**self.h, "Content-Type": "application/json"},
