@@ -93,9 +93,6 @@ td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
 td small{display:block;color:var(--muted);font-size:12px}
 td select{width:auto;padding:5px 8px;font-size:13px}
 tr.parti td{background:var(--accent-soft)}
-.rattr{margin:18px clamp(16px,3vw,40px) 0;padding:12px 16px}
-.rattr summary{cursor:pointer;font-family:var(--display);font-weight:600;font-size:17px}
-.rattr .journal{font:12px ui-monospace,Menlo,monospace;color:var(--muted);white-space:pre-line;margin-top:8px}
 table.saisie{min-width:980px}
 table.saisie td{vertical-align:top}
 table.saisie td:first-child{min-width:230px}
@@ -125,27 +122,8 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
   </div>
 </div></div>
 
-<details class="card rattr" id="rattr">
-  <summary>Rattrapage du contrôle des contacts CRM</summary>
-  <p class="msg">Pour les sociétés traitées avant ce contrôle : contacts Pipedrive rapprochés des dirigeants déjà trouvés, puis lecture des profils LinkedIn.
-    Ni Kaspr ni Fullenrich, pas de Sales Navigator. D'abord un essai à blanc sur 50 sociétés (rien n'est écrit), puis le passage réel.</p>
-  <div class="actions" style="margin-top:8px">
-    <button class="btn primary" id="rEssai">Essai à blanc (50 sociétés)</button>
-    <button class="btn ghost" id="rReel" disabled title="Après l'essai à blanc">Lancer pour de vrai</button>
-    <button class="btn ghost" id="rStop" hidden>Arrêter</button>
-    <a class="btn ghost" id="rXls" href="/v3/validation/api/rattrapage/excel" hidden>Excel du résultat</a>
-    <span class="msg" id="rMsg"></span>
-  </div>
-  <div class="journal" id="rJournal"></div>
-  <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
-  <p class="msg"><b>Lancement fait avant la mémoire ?</b> Importez son Excel (celui de l'outil, pas la version contacts) : ses sociétés entrent en mémoire sans relancer de recherche. Les sociétés déjà en mémoire sont laissées telles quelles. Puis relancez le rattrapage.</p>
-  <div class="actions" style="margin-top:8px">
-    <input type="file" id="iFichier" accept=".xlsx" aria-label="Excel de lancement">
-    <button class="btn ghost" id="iApercu">Aperçu</button>
-    <button class="btn primary" id="iImport" disabled title="Après l'aperçu">Importer</button>
-    <span class="msg" id="iMsg"></span>
-  </div>
-</details>
+<!-- Encadré « Rattrapage » retiré le 16/10 : le contrôle des contacts CRM tourne dans chaque lancement (étape 4b).
+     Le code reste dans v3_rattrapage.py / v3_import.py si besoin de le rebrancher. -->
 
 <div class="wrap">
   <aside class="card liste" aria-label="Sociétés">
@@ -404,7 +382,7 @@ function ecranContacts() {
         <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}</td>
         <td>${pillC(x.statut)}<small>${esc(x.detail || "")}</small>
           <div style="margin-top:6px"><select class="edit" data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à revoir"], defC(x))}</select></div></td></tr>`).join("")}</tbody></table></div>`
-      : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché, ou société traitée avant ce contrôle (lancez le rattrapage)."}</p>`}
+      : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché à cette société."}</p>`}
     ${ailleurs.length ? `<h3>Déjà dans Pipedrive chez une autre société <span class="pill">${ailleurs.length}</span></h3>
       <p class="msg" style="margin:0 0 8px">Trouvés dirigeants ici, mais fichés ailleurs. Le négo dit s'il faut l'ajouter ; vous décidez s'il change de société ou appartient aux deux.</p>
       <div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Contact</th><th>Fiché chez</th><th>Négos</th></tr></thead><tbody>
@@ -449,42 +427,6 @@ function suivante() {
   if (next) ouvrir(next.page); else { courant = null; $("#detail").innerHTML = `<div class="vide">Plus rien dans « ${esc(filtre)} ». Bien joué.</div>`; }
 }
 
-/* ─────────── rattrapage ─────────── */
-let rTimer = null;
-async function rEtat() {
-  let e; try { e = await api("/v3/validation/api/rattrapage"); } catch (_) { return; }
-  $("#rEssai").disabled = e.en_cours; $("#rReel").disabled = e.en_cours || !e.essai_ok; $("#rStop").hidden = !e.en_cours;
-  $("#rXls").hidden = e.en_cours || !e.fini;
-  $("#rMsg").textContent = e.en_cours ? (e.mode + " : " + (e.phase || "en cours…")) : (e.fini ? (e.mode + " terminé : " + e.fini) : (e.profil_branche ? "" : "Phantom Profile Scraper pas encore branché : pas de « probablement parti »."));
-  $("#rJournal").textContent = (e.journal || []).join("\n");
-  clearTimeout(rTimer); if (e.en_cours) rTimer = setTimeout(rEtat, 3000); else if (e.fini && e.mode === "réel") charger();
-}
-async function rLancer(mode) {
-  if (mode === "réel" && !confirm("Passage réel : la mémoire Notion de toutes les sociétés concernées va être mise à jour. On y va ?")) return;
-  try { await api("/v3/validation/api/rattrapage", {mode}); } catch (e) { $("#rMsg").textContent = e.message; return; }
-  rEtat();
-}
-$("#rEssai").onclick = () => rLancer("essai");
-$("#rReel").onclick = () => rLancer("réel");
-$("#rStop").onclick = async () => { await api("/v3/validation/api/rattrapage/stop", {}); rEtat(); };
-/* ─────────── import d'un Excel de lancement ─────────── */
-async function importer(mode) {
-  const f = $("#iFichier").files[0];
-  if (!f) { $("#iMsg").textContent = "Choisissez d'abord le fichier."; return; }
-  const fd = new FormData(); fd.append("fichier", f); fd.append("mode", mode);
-  $("#iMsg").textContent = mode === "importer" ? "Import en cours…" : "Lecture du fichier…";
-  const r = await fetch("/v3/validation/api/import", {method: "POST", body: fd});
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { $("#iMsg").textContent = j.erreur || "erreur"; return; }
-  if (mode === "importer") { $("#iMsg").textContent = `${j.importe} sociétés importées (« ${j.lancement} »). Lancez maintenant l'essai à blanc du rattrapage.`; $("#iImport").disabled = true; charger(); return; }
-  $("#iMsg").textContent = `${j.a_importer.length} sociétés à importer (${j.dirigeants} dirigeants), ${j.deja_en_memoire.length} déjà en mémoire laissées telles quelles.` +
-    (j.a_importer.length ? " À importer : " + j.a_importer.join(", ") : "");
-  $("#iImport").disabled = !j.a_importer.length;
-}
-$("#iApercu").onclick = () => importer("apercu");
-$("#iImport").onclick = () => { if (confirm("Importer ces sociétés dans la mémoire Notion ?")) importer("importer"); };
-$("#iFichier").onchange = () => { $("#iImport").disabled = true; $("#iMsg").textContent = ""; };
-rEtat();
 charger();
 </script>
 </body>
