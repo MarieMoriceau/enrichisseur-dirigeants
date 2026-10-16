@@ -170,6 +170,13 @@ footer a{color:var(--tag-ink)}
           <small id="liInfo">vérification de la configuration…</small>
           <small id="quotaInfo"></small>
         </fieldset>
+        <label for="origine" style="margin-top:14px">Origine de la liste</label>
+        <select id="origine" name="origine">
+          <option value="auto" selected>Automatique (d'après le fichier)</option>
+          <option value="negos">Demande de négo · LinkedIn de 9 h à 19 h</option>
+          <option value="outils">Liste outils (géolocalisation, prospection hebdo) · LinkedIn de 7 h à 9 h, 50 par jour</option>
+        </select>
+        <small id="origineInfo" style="display:block;color:var(--muted)">Les exports de la géolocalisation et de la prospection hebdo sont reconnus tout seuls.</small>
         <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(l'Excel vous y sera envoyé à la fin)</span></label>
         <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
         <div class="row">
@@ -329,6 +336,7 @@ $("f").onsubmit=async e=>{
   try{
     const r=await fetch("/v3/run",{method:"POST",body:fd});const j=await r.json();
     if(!r.ok){$("msg").textContent=j.erreur||"Erreur";return}
+    $("origineInfo").textContent=(j.outil?"Fichier "+j.outil+" reconnu : ":"")+(j.origine==="outils"?"liste outils":"demande de négo")+", LinkedIn de "+j.creneau+".";
     suivre(j.job);setTimeout(histo,3000);
   }catch(err){$("msg").textContent="Le service ne répond pas. Patientez une minute et relancez."}
 };
@@ -337,21 +345,21 @@ function suivre(id){
   $("suivi").hidden=false;$("dl").hidden=true;$("dlc").hidden=true;clearInterval(timer);timer=setInterval(poll,2500);poll();
 }
 const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["programmé",""],INTERROMPU:["interrompu à 9 h","ko"]};
+const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["programmé",""],INTERROMPU:["interrompu (fin de créneau)","ko"]};
 const hParis=d=>d?new Date(d).toLocaleTimeString("fr-FR",{timeZone:"Europe/Paris",hour:"2-digit",minute:"2-digit"}):"";
 const jParis=d=>new Date(d).toLocaleString("fr-FR",{timeZone:"Europe/Paris",weekday:"long",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
 async function journee(){
   try{
     const j=await (await fetch("/v3/journee")).json();
-    const f=j.fenetre||{};$("jCreneau").textContent=f.message||"";$("jCreneau").className="creneau"+(f.robots_autorises?"":" ferme");
+    const f=j.fenetre||{};$("jCreneau").textContent=f.message||"";$("jCreneau").className="creneau"+(f.creneau_ouvert?"":" ferme");
     const runs=j.runs||[];let h="";
     if(j.en_cours&&j.en_cours.length)h+=`<p>En cours : ${j.en_cours.map(x=>`<b>${esc(x.nom)}</b> depuis ${esc(hParis(x.debut))}${x.phase?" · "+esc(x.phase):""}`).join(" ; ")}</p>`;
     if(runs.length){const d=runs[runs.length-1];
       h+=`<p>Dernier run : <b>${esc(d.nom)}</b>, démarré à ${esc(hParis(d.debut))}${d.fin?", fini à "+esc(hParis(d.fin)):""}. Motif d'arrêt : <b>${esc(d.motif||(d.statut==="EN_COURS"?"en cours":"non renseigné"))}</b>${d.reliquat?` · <b>${d.reliquat}</b> sociétés reportées`:""}.</p>`;
       if(runs.length>1)h+=`<table><thead><tr><th>Démarré</th><th>Liste</th><th>Motif d'arrêt</th><th>Reporté</th></tr></thead><tbody>${runs.map(r=>`<tr><td>${esc(hParis(r.debut))}</td><td>${esc(r.nom)}</td><td>${esc(r.motif||(STATUTS[r.statut]||[r.statut])[0])}</td><td>${r.reliquat||""}</td></tr>`).join("")}</tbody></table>`;
     }else if(!(j.en_cours&&j.en_cours.length))h+=`<p class="vide">Aucun run aujourd'hui.</p>`;
-    const p=j.prochain;
-    h+=p?`<p>Prochain démarrage : <b>${esc(jParis(p.depart))}</b>${p.en_retard?" (en retard)":""}, ${p.societes} sociétés en ${p.lots} liste(s), au signal de fin de la veille LinkedIn.</p>`:`<p class="vide">Aucune liste programmée.</p>`;
+    const P=j.prochains||[];
+    h+=P.length?P.map(p=>`<p>Prochain départ ${p.origine==="Outils"?"des listes outils":"des demandes des négos"} : <b>${esc(jParis(p.depart))}</b>${p.en_retard?" (en retard)":""}, ${p.societes} sociétés en ${p.lots} liste(s), démarrage automatique.</p>`).join(""):`<p class="vide">Aucune liste programmée.</p>`;
     $("jCorps").innerHTML=h;$("jCorps").className="";
   }catch(_){$("jCorps").textContent="Journal indisponible pour le moment."}
 }
@@ -388,7 +396,7 @@ async function poll(){
     $("k8").textContent=s.phase?"LinkedIn":"—";}
   $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");
   const fin={"arrêté":"Arrêté. L'Excel contient les sociétés déjà traitées.","erreur":"Interrompu sur une erreur. L'Excel contient les sociétés déjà traitées.",
-             "interrompu":"Interrompu à 9 h : le compte LinkedIn passe aux négociateurs."}[s.etat]||"Terminé.";
+             "interrompu":"Interrompu en fin de créneau LinkedIn : la suite repart au prochain créneau."}[s.etat]||"Terminé.";
   const mail=s.mails&&s.mails.length?(s.envoi==="fait"?" Excel envoyé à "+s.mails.join(", ")+".":" Envoi du mail…"):"";
   const mem=s.memoire?" "+s.memoire+" sociétés reprises de la mémoire.":"";
   $("msg").textContent=(s.etat==="en cours"?(s.phase||"Traitement en cours…"):fin+mem+mail)+(s.report?" "+s.report:"");
