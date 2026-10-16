@@ -402,7 +402,7 @@ function ecranContacts() {
         <td><span class="pill ${x.etat === "prêt pour HubSpot" ? "ok" : x.etat === "écarté" ? "ko" : ""}">${esc(x.etat === "prêt pour HubSpot" ? "à ajouter" : x.etat)}</span></td></tr>`).join("")}
       </tbody></table></div>` : ""}
     <div class="actions">
-      <button class="btn primary" id="okCont" ${crm.length || ailleurs.length ? "" : "disabled"}>Valider les contacts CRM</button>
+      <button class="btn primary" id="okCont">${crm.length || ailleurs.length ? "Valider les contacts CRM" : "Rien à décider : marquer comme traitée"}</button>
       <span class="msg" id="msg">${info.validation === "Contacts validés" ? "Déjà validés le " + esc(info.validee) + " : vous pouvez modifier et revalider." : ""}</span>
     </div>
     <h3>Nouveaux contacts <span class="pill">${fiches.length}</span></h3>
