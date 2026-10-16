@@ -272,10 +272,10 @@ async def valider_contacts_crm(page_id: str, req: Request):
         propres, erreur = verifier_saisie({k: d.get(k) for k in ("email", "telephone", "linkedin", "fonction", "role") if d.get(k)})
         if erreur:
             return JSONResponse({"erreur": f"{d.get('nom_complet', '')} : {erreur}"}, 400)
-        d = {**d, **propres}
+        d = {**d, **propres, "le": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         decisions.append({"type": t, **{k: str(d.get(k) or "")[:300] for k in
                           ("action", "id", "nom_complet", "fonction", "email", "linkedin", "statut", "societe_actuelle",
-                           "telephone", "role")}})
+                           "telephone", "role", "le")}})
     return await _maj(page_id, {"Validation": {"select": {"name": "Contacts validés"}},
                                 "Décisions contacts": MEM._txts(json.dumps(decisions, ensure_ascii=False))})
 

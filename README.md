@@ -147,3 +147,9 @@ Relancer un passage plus tard reprend les contacts « à vérifier » dont le pr
 L'Excel de l'outil (onglets Résultats et Dirigeants) est retraduit en fiches mémoire, sans relancer de recherche ;
 les sociétés déjà en mémoire (même SIREN, domaine ou nom) sont laissées telles quelles. Aperçu obligatoire avant l'import.
 Lancer ensuite le rattrapage pour le contrôle des contacts CRM.
+
+**Export HubSpot** (écran admin, en haut) : en attendant la migration, « Envoyer l'export par mail » (à `COPIE_FICHIER_COMPLET`)
+ou « Télécharger l'Excel ». Fichier cumulatif de tout ce qui est validé : Sociétés (adresse retenue découpée, effectif, date
+de validation société), Contacts à créer (validés par les négos, saisies manuelles comprises, date de validation contact),
+Contacts existants (fichés ailleurs, décision admin), Contacts CRM (décisions admin), Sociétés écartées.
+Clés d'import HubSpot : domaine pour les sociétés, e-mail pour les contacts (réimporter = mise à jour, pas de doublon).

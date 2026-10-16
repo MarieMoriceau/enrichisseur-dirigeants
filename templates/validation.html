@@ -107,6 +107,7 @@ tr.ecarte td{opacity:.55}
 .boutons .btn{padding:6px 10px;font-size:13px}
 .legende{font-size:12.5px;color:var(--muted);margin:4px 0 8px}
 .legende i{display:inline-block;width:10px;height:10px;border:1px solid var(--warn);background:var(--warn-soft);border-radius:2px;margin-right:4px;vertical-align:-1px}
+.export{margin:18px clamp(16px,3vw,40px) 0;padding:12px 16px}
 .note{font-size:13px;color:var(--muted);background:var(--tag);border-radius:6px;padding:8px 10px;margin-top:10px}
 input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>
@@ -122,6 +123,14 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
   </div>
 </div></div>
 
+<div class="card export" id="export">
+  <div><b>Export HubSpot</b> <span class="msg">tout ce qui est validé à ce jour, au format d'import HubSpot (sociétés, contacts à créer, contacts existants, contacts CRM)</span></div>
+  <div class="actions" style="margin-top:8px">
+    <button class="btn primary" id="xMail">Envoyer l'export par mail</button>
+    <a class="btn ghost" href="/v3/validation/api/export">Télécharger l'Excel</a>
+    <span class="msg" id="xMsg"></span>
+  </div>
+</div>
 <!-- Encadré « Rattrapage » retiré le 16/10 : le contrôle des contacts CRM tourne dans chaque lancement (étape 4b).
      Le code reste dans v3_rattrapage.py / v3_import.py si besoin de le rebrancher. -->
 
@@ -281,7 +290,7 @@ function ecranSociete() {
 function message(t, err) { const m = $("#msg"); if (m) { m.textContent = t; m.className = "msg" + (err ? " err" : ""); } }
 
 async function envoyerSociete(corps, suite) {
-  document.querySelectorAll(".actions .btn").forEach(b => b.disabled = true);
+  document.querySelectorAll("#ecran .actions .btn").forEach(b => b.disabled = true);
   message("Enregistrement dans Notion…");
   try {
     const maj = await api("/v3/validation/api/societe/" + courant, corps);
@@ -290,7 +299,7 @@ async function envoyerSociete(corps, suite) {
     dessinerFiltres();
     if (corps.statut === "Écartée") return suivante();
     ecran = suite || "societe"; dessinerListe(); dessinerDetail();
-  } catch (e) { message(e.message, true); document.querySelectorAll(".actions .btn").forEach(b => b.disabled = false); }
+  } catch (e) { message(e.message, true); document.querySelectorAll("#ecran .actions .btn").forEach(b => b.disabled = false); }
 }
 
 
@@ -427,6 +436,14 @@ function suivante() {
   if (next) ouvrir(next.page); else { courant = null; $("#detail").innerHTML = `<div class="vide">Plus rien dans « ${esc(filtre)} ». Bien joué.</div>`; }
 }
 
+$("#xMail").onclick = async () => {
+  $("#xMail").disabled = true; $("#xMsg").className = "msg"; $("#xMsg").textContent = "Préparation et envoi…";
+  try {
+    const r = await api("/v3/validation/api/export/mail", {});
+    $("#xMsg").textContent = `Envoyé à ${r.envoye_a.join(", ")} : ${r.societes} sociétés, ${r.contacts} contacts à créer, ${r.existants} contacts existants, ${r.crm} décisions CRM.`;
+  } catch (e) { $("#xMsg").className = "msg err"; $("#xMsg").textContent = e.message; }
+  $("#xMail").disabled = false;
+};
 charger();
 </script>
 </body>
