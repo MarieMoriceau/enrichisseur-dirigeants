@@ -69,17 +69,48 @@ MDP_ADMIN = os.getenv("VALIDATION_MDP_ADMIN", "")
 MDP_NEGOS = os.getenv("VALIDATION_MDP_NEGOS", "")
 SECRET = (os.getenv("VALIDATION_SECRET") or hashlib.sha256(f"{MDP_ADMIN}|{MDP_NEGOS}|v3".encode()).hexdigest()).encode()
 COOKIE = "v3_validation"
+# Page privée de Marie : runs manuels sur le compte LinkedIn « automatisations » (ses crédits restants du jour)
+MDP_AUTO = os.getenv("MDP_AUTOMATISATIONS", "")
+COOKIE_AUTO = "v3_auto"
 
 
 # ───────────────────────── accès ─────────────────────────
-def _jeton(role: str) -> str:
-    return role + "." + hmac.new(SECRET, role.encode(), hashlib.sha256).hexdigest()
+def _jeton(role: str, mail: str = "") -> str:
+    v = f"{role}|{mail}"
+    return v + "." + hmac.new(SECRET, v.encode(), hashlib.sha256).hexdigest()
+
+
+def _session(req: Request) -> tuple:
+    """(rôle, e-mail) lus dans le cookie signé ; ('', '') si absent ou falsifié. L'e-mail sert à filtrer l'écran des négos."""
+    v = req.cookies.get(COOKIE, "")
+    corps = v.rsplit(".", 1)[0]
+    r, _, mail = corps.partition("|")
+    if r in ("admin", "negos") and hmac.compare_digest(v, _jeton(r, mail)):
+        return r, mail
+    return "", ""
+
+
+def gestion_auto(req: Request) -> bool:
+    """Connecté à la page privée du compte « automatisations » (cookie signé, mot de passe MDP_AUTOMATISATIONS) ?"""
+    return bool(MDP_AUTO) and hmac.compare_digest(req.cookies.get(COOKIE_AUTO, ""), _jeton("auto"))
 
 
 def role(req: Request) -> str:
-    v = req.cookies.get(COOKIE, "")
-    r = v.split(".", 1)[0]
-    return r if r in ("admin", "negos") and hmac.compare_digest(v, _jeton(r)) else ""
+    return _session(req)[0]
+
+
+def utilisateur(req: Request) -> str:
+    return _session(req)[1]
+
+
+def mails_de(txt: str) -> set:
+    return {m.strip().lower() for m in re.split(r"[;,\s]+", txt or "") if "@" in m}
+
+
+def visible_par(req: Request, s: dict) -> bool:
+    """L'admin voit tout ; un négo ne voit que les sociétés qu'il a lancées."""
+    r, mail = _session(req)
+    return r == "admin" or (r == "negos" and bool(mail) and mail in mails_de(s.get("lance_par", "")))
 
 
 def _refus(req: Request, besoin: str):
@@ -98,6 +129,7 @@ async def connexion(suite: str = "/v3/contacts", refus: str = "", erreur: str = 
     with open("templates/connexion.html", encoding="utf-8") as f:
         html = f.read()
     msg = ("Ce mot de passe ne donne pas accès à cette page." if refus else
+           "Indiquez votre e-mail, celui que vous saisissez quand vous lancez l'enrichisseur." if erreur == "mail" else
            "Mot de passe incorrect." if erreur else
            "Accès non configuré : ajoutez VALIDATION_MDP_ADMIN et VALIDATION_MDP_NEGOS dans Render." if not (MDP_ADMIN and MDP_NEGOS) else "")
     suite = suite if suite in ("/v3/validation", "/v3/contacts") else "/v3/contacts"
@@ -105,16 +137,19 @@ async def connexion(suite: str = "/v3/contacts", refus: str = "", erreur: str = 
 
 
 @router.post("/v3/connexion")
-async def se_connecter(mdp: str = Form(""), suite: str = Form("/v3/contacts")):
+async def se_connecter(mdp: str = Form(""), suite: str = Form("/v3/contacts"), mail: str = Form("")):
     suite = suite if suite in ("/v3/validation", "/v3/contacts") else "/v3/contacts"
+    mail = mail.strip().lower()
     r = ("admin" if MDP_ADMIN and hmac.compare_digest(mdp, MDP_ADMIN) else
          "negos" if MDP_NEGOS and hmac.compare_digest(mdp, MDP_NEGOS) else "")
     if not r:
         return RedirectResponse(f"/v3/connexion?suite={quote(suite)}&erreur=1", 303)
+    if r == "negos" and not re.fullmatch(r"[^@\s|]+@[^@\s|]+\.[a-z]{2,}", mail):
+        return RedirectResponse(f"/v3/connexion?suite={quote(suite)}&erreur=mail", 303)
     if suite == "/v3/validation" and r != "admin":
         suite = "/v3/contacts"
     rep = RedirectResponse(suite, 303)
-    rep.set_cookie(COOKIE, _jeton(r), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    rep.set_cookie(COOKIE, _jeton(r, mail if r == "negos" else ""), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
     return rep
 
 
@@ -142,7 +177,7 @@ def _props(pg: dict) -> dict:
             "validation": MEM._val(p, "Validation") or "À valider", "adresse_retenue": MEM._val(p, "Adresse retenue"),
             "source_retenue": MEM._val(p, "Source adresse retenue"), "validee": MEM._val(p, "Validée le")[:10],
             "decisions": MEM._val(p, "Décisions contacts"), "nouveaux": MEM._val(p, "Nouveaux contacts"),
-            "hubspot": MEM._val(p, "Envoyée à HubSpot le")[:10]}
+            "hubspot": MEM._val(p, "Envoyée à HubSpot le")[:10], "lance_par": MEM._val(p, "Lancé par")}
 
 
 async def _toutes() -> list:
@@ -283,7 +318,9 @@ async def valider_contacts_crm(page_id: str, req: Request):
 # ───────────────────────── écran négos : nouveaux contacts ─────────────────────────
 @router.get("/v3/contacts", response_class=HTMLResponse)
 async def page_negos(req: Request):
-    return _refus(req, "negos") or HTMLResponse(_page_html("contacts.html").replace("{{ROLE}}", role(req)))
+    import html as _h
+    qui = utilisateur(req) or ("admin : toutes les sociétés" if role(req) == "admin" else "")
+    return _refus(req, "negos") or HTMLResponse(_page_html("contacts.html").replace("{{ROLE}}", role(req)).replace("{{QUI}}", _h.escape(qui)))
 
 
 @router.get("/v3/contacts/api/societes")
@@ -296,7 +333,7 @@ async def negos_societes(req: Request):
         return JSONResponse({"erreur": str(e)}, 502)
     out = []
     for s in toutes:
-        if s["validation"] == "Écartée" or s["perimetre"] not in ("dirigeants", "tout"):
+        if s["validation"] == "Écartée" or s["perimetre"] not in ("dirigeants", "tout") or not visible_par(req, s):
             continue
         if s["nb_nouveaux"] == 0:                       # None = société enregistrée avant ce compteur : on l'affiche
             continue
@@ -314,7 +351,7 @@ async def negos_societe(page_id: str, req: Request):
     if not RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     info = await _une(page_id)
-    if not info or info["validation"] == "Écartée":
+    if not info or info["validation"] == "Écartée" or not visible_par(req, info):
         return JSONResponse({"erreur": "société introuvable (retraitée depuis ? rechargez la liste)"}, 404)
     data = await MEM.lire(page_id)
     etats = _json(info["nouveaux"], {})
@@ -357,7 +394,7 @@ async def negos_contact(page_id: str, req: Request):
     if erreur:
         return JSONResponse({"erreur": erreur}, 400)
     info = await _une(page_id)                          # relu juste avant d'écrire : deux négos peuvent travailler en même temps
-    if not info or info["validation"] == "Écartée":
+    if not info or info["validation"] == "Écartée" or not visible_par(req, info):
         return JSONResponse({"erreur": "société introuvable"}, 404)
     data = await MEM.lire(page_id)
     d = next((d for d in nouveaux_dirigeants(data) if cle_contact(d) == cle), None)
@@ -384,7 +421,7 @@ async def negos_contact(page_id: str, req: Request):
               # déjà fiché ailleurs : le négo décide de l'ajouter ; l'admin décide « changer de société » ou « deux sociétés »
               "action": "existant" if d.get("ailleurs_crm") else "créer",
               "fiche_existante": (d.get("ailleurs_crm") or {}).get("id", ""),
-              "modifie_par": role(req), "modifie_le": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+              "modifie_par": utilisateur(req) or role(req), "modifie_le": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     fiche = fiche_nouveau(d, e)
     for k in CHAMPS_MODIFIABLES:                        # valeurs finales gardées telles quelles pour l'envoi HubSpot
         e["final_" + k] = fiche[k]

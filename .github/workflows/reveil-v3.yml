@@ -1,22 +1,19 @@
-# Réveille l'enrichisseur v3 chaque matin pour lancer les listes reportées (quota LinkedIn de 150 sociétés par jour).
-# GitHub compte en heure UTC : 5 h UTC = 7 h à Paris l'été, 6 h UTC = 7 h à Paris l'hiver.
-# Les deux passages sont sans risque : un lancement déjà parti n'est jamais relancé.
-name: Réveil enrichisseur v3
+# Réveil de l'enrichisseur v3 vers 8 h (heure de Paris), pour que les listes reportées (quota du jour atteint)
+# repartent toutes seules, chacune sur son compte LinkedIn (automatisations / négos).
+# GitHub ne connaît que l'heure UTC : 6 h et 7 h UTC couvrent 8 h à Paris, été (UTC+2) comme hiver (UTC+1).
+# Les appels en trop sont sans effet : /cron ne lance que les listes arrivées à échéance, et ne relance pas un compte occupé.
+# Dans Render, une boucle interne fait aussi la vérification toutes les 2 minutes : ce réveil sert surtout si Render dort.
+name: Réveil enrichisseur v3 (8 h)
 on:
   schedule:
-    - cron: "0 5 * * *"
-    - cron: "0 6 * * *"
+    - cron: "3 6,7 * * *"
   workflow_dispatch: {}
 jobs:
   reveil:
     runs-on: ubuntu-latest
     steps:
-      - name: Lancer les listes reportées
+      - name: Lancer les listes reportées arrivées à échéance
         env:
           CLE: ${{ secrets.CRON_SECRET }}
         run: |
-          for essai in 1 2 3; do
-            if curl -fsS --max-time 180 "https://enrichisseur-dirigeants.onrender.com/v3/reprendre?cle=${CLE}"; then exit 0; fi
-            sleep 30
-          done
-          exit 1
+          curl -sS --max-time 180 "https://enrichisseur-dirigeants.onrender.com/cron?cle=${CLE}" || true

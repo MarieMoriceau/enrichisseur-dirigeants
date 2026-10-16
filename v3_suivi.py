@@ -54,6 +54,7 @@ async def notion_creer(job: dict) -> str:
         "Démarré le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")}},
         "Nb sociétés": {"number": job["total"]},
         "Nb LinkedIn": {"number": 0},                   # fixé juste après, une fois la mémoire et le quota passés
+        "Origine": {"select": {"name": ORIGINE_NOTION[job.get("origine", "negos")]}},
     }
     try:
         async with httpx.AsyncClient(timeout=15) as c:
@@ -72,7 +73,7 @@ async def notion_finir(job: dict, excel: bytes | None, nom_fichier: str):
     if not NOTION_KEY or not pid:
         return
     res = job["resultats"]
-    statut = {"terminé": "TERMINE", "arrêté": "ARRETE"}.get(job["etat"], "ERREUR")
+    statut = {"terminé": "TERMINE", "arrêté": "ARRETE", "interrompu": "INTERROMPU"}.get(job["etat"], "ERREUR")
     props = {
         "Statut": {"select": {"name": statut}},
         "Nb sociétés": {"number": len(res)},
@@ -81,6 +82,8 @@ async def notion_finir(job: dict, excel: bytes | None, nom_fichier: str):
         "Durée (min)": {"number": round(((job["fin"] or time.time()) - job["debut"]) / 60, 1)},
         "Nb LinkedIn": {"number": job.get("li_utilise", 0)},   # la réservation du départ est remplacée par l'usage réel
         "Terminé le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")}},
+        "Motif d'arrêt": _txt(job.get("motif_texte", "")),
+        "Reliquat reporté": {"number": job.get("reliquat", 0)},
     }
     if job.get("erreur"):
         props["Erreur"] = _txt(job["erreur"])
@@ -195,8 +198,16 @@ async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, exc
         return
     res = job["resultats"]
     etat = {"terminé": "est terminé", "arrêté": "a été arrêté avant la fin"}.get(job["etat"], "s'est interrompu sur une erreur")
-    def corps(version):
-        l = ["Bonjour,", "", f"L'enrichissement « {job['nom']} » {etat}.", "",
+    base = (os.getenv("RENDER_EXTERNAL_URL", "") or "https://enrichisseur-dirigeants.onrender.com").rstrip("/")
+    a_valider = job["perimetre"] in ("dirigeants", "tout") and bool(res)
+    LIEN = {"negos": f"À valider ici (écran des négos) : {base}/v3/contacts",
+            "admin": f"À valider ici (écran administrateurs) : {base}/v3/validation"}
+
+    def corps(version, ecran="negos"):
+        l = ["Bonjour,", "", f"L'enrichissement « {job['nom']} » {etat}."]
+        if a_valider:                                  # la validation passe avant l'Excel
+            l += ["", LIEN[ecran]]
+        l += ["",
              f"Choix : {LIBELLES.get(job['perimetre'], job['perimetre'])}",
              f"Sociétés : {len(res)}" + (f" (dont {job['nb_memoire']} reprises de la mémoire, sans nouvelle recherche)" if job.get("nb_memoire") else "")]
         if job["perimetre"] in ("dirigeants", "tout"):
@@ -207,7 +218,8 @@ async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, exc
             l += ["", job["report"]]
         if job.get("erreur"):
             l += ["", f"Erreur : {job['erreur']}"]
-        l += ["", version, "Rien n'a été modifié dans Pipedrive ni dans HubSpot.", "", "L'enrichisseur v3"]
+        l += ["", ("Pour mémoire, " + version[0].lower() + version[1:]) if a_valider else version,
+              "Rien n'a été modifié dans Pipedrive ni dans HubSpot.", "", "L'enrichisseur v3"]
         return "\n".join(l)
     envois = []
     if dest and excel_nego:
@@ -216,13 +228,13 @@ async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, exc
         # si la personne qui lance est aussi le destinataire du complet, elle reçoit les deux fichiers
         if any(m.lower() in {d.lower() for d in dest} for m in COPIE_COMPLETE):
             envois.append(([m for m in COPIE_COMPLETE if m.lower() in {d.lower() for d in dest}], "Fichier complet",
-                           corps("En pièce jointe : le fichier complet (sociétés, adresses, effectifs, dirigeants)."), excel, nom_fichier))
+                           corps("En pièce jointe : le fichier complet (sociétés, adresses, effectifs, dirigeants).", "admin"), excel, nom_fichier))
     else:
         envois.append((dest, "Enrichissement terminé", corps("L'Excel est en pièce jointe. Il reste aussi dans l'outil, rubrique « Lancements précédents »."), excel, nom_fichier))
         complets = [m for m in COPIE_COMPLETE if m.lower() not in {d.lower() for d in dest}]
     if complets and excel:
         par = ", ".join(dest) or "un utilisateur"
-        envois.append((complets, "Copie du fichier complet", corps(f"Copie du fichier complet, lancement fait par {par}."), excel, nom_fichier))
+        envois.append((complets, "Copie du fichier complet", corps(f"Copie du fichier complet, lancement fait par {par}.", "admin"), excel, nom_fichier))
     for qui, sujet, texte, fichier, nom in envois:
         if not qui:
             continue
@@ -264,8 +276,8 @@ from zoneinfo import ZoneInfo
 
 PARIS = ZoneInfo("Europe/Paris")
 QUOTA_JOUR = int(os.getenv("QUOTA_LINKEDIN_JOUR", "150"))   # sociétés passées par LinkedIn par jour, tous négos confondus
-HEURE_REPORT = 7                                            # les lancements reportés partent à 7 h (heure de Paris)
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+ORIGINE_NOTION = {"negos": "Négos", "outils": "Outils"}
 
 
 def _jour(d) -> tuple:
@@ -273,8 +285,9 @@ def _jour(d) -> tuple:
     return debut, debut + timedelta(days=1)
 
 
-async def utilise_le(d) -> int:
-    """Sociétés passées (ou programmées) par LinkedIn le jour d, d'après la base Notion des lancements."""
+async def utilise_le(d, origine: str = "") -> int:
+    """Sociétés passées (ou programmées) par LinkedIn le jour d, d'après la base Notion des lancements.
+    origine « outils » ou « negos » : seulement ces lancements-là (sans origine renseignée = négos)."""
     if not NOTION_KEY:
         return 0
     debut, fin = _jour(d)
@@ -286,7 +299,10 @@ async def utilise_le(d) -> int:
                 {"property": "Phases", "rich_text": {"does_not_contain": LIBELLES["siren"]}},
                 {"property": "Démarré le", "date": {"on_or_after": debut.isoformat()}},
                 {"property": "Démarré le", "date": {"before": fin.isoformat()}},
-                {"property": "Statut", "select": {"does_not_equal": "ARRETE"}}]}, "page_size": 100}
+                {"property": "Statut", "select": {"does_not_equal": "ARRETE"}}]
+                + ([{"property": "Origine", "select": {"equals": "Outils"}}] if origine == "outils" else
+                   [{"property": "Origine", "select": {"does_not_equal": "Outils"}}] if origine == "negos" else [])},
+                "page_size": 100}
             if curseur:
                 corps["start_cursor"] = curseur
             r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
@@ -302,28 +318,46 @@ async def utilise_le(d) -> int:
             curseur = j.get("next_cursor")
 
 
+def _filtre_compte(c: str) -> str:
+    """Filtre d'origine pour compter le quota d'un compte : « outils », « negos », ou tout (compte unique)."""
+    return "" if c == "unique" else c
+
+
+async def utilise_compte(d, c: str) -> int:
+    return await utilise_le(d, _filtre_compte(c))
+
+
 async def quota_du_jour() -> dict:
-    u = await utilise_le(datetime.now(PARIS))
-    return {"quota": QUOTA_JOUR, "utilise": u, "reste": max(0, QUOTA_JOUR - u)}
+    """Quota du jour, par compte LinkedIn (150 chacun) ; un seul compte = quota partagé."""
+    import v3_planning as PLAN
+    auj = datetime.now(PARIS)
+    par = {}
+    for c in PLAN.comptes():
+        u = await utilise_compte(auj, c)
+        par[PLAN.NOM_COMPTE[c]] = {"utilise": u, "reste": max(0, QUOTA_JOUR - u)}
+    total = sum(v["utilise"] for v in par.values())
+    return {"quota": QUOTA_JOUR, "utilise": total, "reste": sum(v["reste"] for v in par.values()), "comptes": par}
 
 
-async def planifier_suite(reste: list) -> list:
-    """Répartit ce qui ne passe pas aujourd'hui sur les jours suivants, à 7 h : [(date de départ, lot)]."""
+async def planifier_suite(reste: list, origine: str = "negos") -> list:
+    """Répartit ce qui ne passe pas aujourd'hui sur les prochains jours, à l'heure de reprise (8 h par défaut) :
+    [(date de départ, lot)]. Jamais plus de QUOTA_JOUR par jour sur le compte de l'origine."""
+    import v3_planning as PLAN
+    c = PLAN.compte(origine)
     lots, reste = [], list(reste)
-    jour = datetime.now(PARIS)
+    depart = PLAN.prochaine_reprise(PLAN.maintenant())                  # heure de Paris (simulée pendant un test)
     for _ in range(30):
         if not reste:
             break
-        jour = jour + timedelta(days=1)
-        depart = datetime(jour.year, jour.month, jour.day, HEURE_REPORT, tzinfo=PARIS)
-        dispo = QUOTA_JOUR - await utilise_le(depart)
+        dispo = QUOTA_JOUR - await utilise_compte(depart, c)
         if dispo > 0:
             lots.append((depart, reste[:dispo]))
             reste = reste[dispo:]
+        depart = PLAN.reprise_du(depart + timedelta(days=1))
     return lots
 
 
-async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart) -> str:
+async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart, origine: str = "negos") -> str:
     """Enregistre un lancement reporté dans Notion (statut EN_ATTENTE), avec sa liste de sociétés dans la page."""
     if not NOTION_KEY:
         return ""
@@ -338,6 +372,7 @@ async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart) 
         "Démarré le": {"date": {"start": depart.isoformat(timespec="minutes")}},
         "Nb sociétés": {"number": len(orgs)},
         "Nb LinkedIn": {"number": len(orgs)},           # réservation sur le quota du jour de départ
+        "Origine": {"select": {"name": ORIGINE_NOTION.get(origine, "Négos")}},
     }
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post("https://api.notion.com/v1/pages", headers=_h(),
@@ -351,8 +386,9 @@ async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart) 
         return pid
 
 
-async def a_lancer() -> list:
-    """Lancements reportés dont l'heure est venue : [(page_id, nom, perimetre, mails, orgs)]."""
+async def a_lancer(jusqua=None) -> list:
+    """Lancements reportés prévus au plus tard à `jusqua` (par défaut : maintenant), du plus ancien au plus récent :
+    [(page_id, nom, perimetre, mails, orgs, depart, origine)]."""
     if not NOTION_KEY:
         return []
     out = []
@@ -360,7 +396,8 @@ async def a_lancer() -> list:
         r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
             {"property": "Phases", "rich_text": {"starts_with": "v3"}},
             {"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
-            {"property": "Démarré le", "date": {"on_or_before": datetime.now(PARIS).isoformat()}}]}, "page_size": 20})
+            {"property": "Démarré le", "date": {"on_or_before": (jusqua or datetime.now(PARIS)).isoformat()}}]},
+            "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 20})
         if r.status_code != 200:
             return []
         for pg in r.json().get("results", []):
@@ -383,17 +420,20 @@ async def a_lancer() -> list:
                     "Statut": {"select": {"name": "ERREUR"}}, "Erreur": _txt("liste de sociétés illisible")}})
                 continue
             perim = next((k for k, v in LIBELLES.items() if v == _val(p, "Phases").replace("v3 · ", "")), "tout")
-            out.append((pg["id"], _val(p, "Nom"), perim, mails_valides(_val(p, "Emails destinataires")), orgs))
+            out.append((pg["id"], _val(p, "Nom"), perim, mails_valides(_val(p, "Emails destinataires")), orgs, _val(p, "Démarré le"),
+                        "outils" if _val(p, "Origine") == "Outils" else "negos"))
     return out
 
 
-async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str):
+async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str, motif: str = "quota", origine: str = "negos"):
     """Mail immédiat au négo : sa liste est coupée, la suite part demain (ou plus tard)."""
     if not mails or not SMTP_USER or not SMTP_PASS:
         return
     tout = sum(len(l) for _, l in lots)
-    lignes = ["Bonjour,", "", f"Votre liste « {nom} » compte {tout} sociétés. Pour ne pas dépasser le quota LinkedIn "
-              f"de {QUOTA_JOUR} sociétés par jour (tous négos confondus), elle a été découpée :", ""]
+    import v3_planning as PLAN
+    qui = "" if PLAN.compte(origine) == "unique" else f" (compte LinkedIn « {PLAN.NOM_COMPTE[PLAN.compte(origine)]} »)"
+    pourquoi = (f"Pour ne pas dépasser le quota LinkedIn de {QUOTA_JOUR} sociétés par jour{qui}, elle a été découpée :")
+    lignes = ["Bonjour,", "", f"Votre liste « {nom} » compte {tout} sociétés. {pourquoi}", ""]
     for depart, lot in lots:
         quand = "tout de suite" if depart is None else depart.strftime("le %d/%m à %H h")
         lignes.append(f"  • {len(lot)} sociétés : {quand}")
@@ -403,6 +443,44 @@ async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str):
         await asyncio.to_thread(_envoyer, mails, f"Enrichissement programmé : {nom}", "\n".join(lignes), None, "")
     except Exception as e:
         print(f"[V3 QUOTA] mail : {e}")
+
+
+async def journee() -> dict:
+    """Runs du jour (heure de Paris) + prochain départ programmé, lus dans la base Notion des lancements."""
+    if not NOTION_KEY:
+        return {"runs": [], "prochain": None}
+    debut, fin = _jour(datetime.now(PARIS))
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+            {"property": "Phases", "rich_text": {"starts_with": "v3"}},
+            {"property": "Statut", "select": {"does_not_equal": "EN_ATTENTE"}},
+            {"property": "Démarré le", "date": {"on_or_after": debut.isoformat()}},
+            {"property": "Démarré le", "date": {"before": fin.isoformat()}}]},
+            "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 50})
+        runs = []
+        if r.status_code == 200:
+            for pg in r.json().get("results", []):
+                p = pg["properties"]
+                runs.append({"nom": _val(p, "Nom"), "debut": _val(p, "Démarré le"), "fin": _val(p, "Terminé le"),
+                             "statut": _val(p, "Statut"), "motif": _val(p, "Motif d'arrêt"), "reliquat": _val(p, "Reliquat reporté"),
+                             "societes": _val(p, "Nb sociétés"), "linkedin": _val(p, "Nb LinkedIn"), "par": _val(p, "Emails destinataires"),
+                             "origine": _val(p, "Origine") or "Négos"})
+        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+            {"property": "Phases", "rich_text": {"starts_with": "v3"}},
+            {"property": "Statut", "select": {"equals": "EN_ATTENTE"}}]},
+            "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 50})
+        prochains = []
+        if r.status_code == 200:
+            att = [(pg["properties"], _val(pg["properties"], "Démarré le")) for pg in r.json().get("results", [])]
+            for orig in ("Outils", "Négos"):
+                a = [(p, d) for p, d in att if (_val(p, "Origine") or "Négos") == orig]
+                if a:
+                    d0 = a[0][1]
+                    meme = [p for p, d in a if d[:16] == d0[:16]]
+                    prochains.append({"origine": orig, "depart": d0, "lots": len(meme),
+                                      "societes": sum(int(_val(p, "Nb sociétés") or 0) for p in meme),
+                                      "en_retard": d0[:10] < datetime.now(PARIS).date().isoformat()})
+    return {"runs": runs, "prochains": prochains}
 
 
 async def maj(page_id: str, props: dict):

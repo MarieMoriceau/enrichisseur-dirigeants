@@ -8,12 +8,12 @@ Sortie : Excel prêt pour HubSpot (rien n'est écrit dans un CRM).
 """
 import asyncio, csv, io, os, re, time, unicodedata, uuid
 from difflib import SequenceMatcher
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import unescape
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -21,6 +21,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 import v3_linkedin as LI
 import v3_suivi as SUIVI
 import v3_memoire as MEM
+import v3_planning as PLAN
 
 router = APIRouter()
 JOBS: dict = {}
@@ -570,10 +571,24 @@ def lire_liste(t: str) -> list:
     return [{"id": "", "nom": n.strip(" \t;,"), "site_crm": "", "siren_crm": "", "adresse_crm": "", "cp": "", "ville": ""}
             for n in t.splitlines() if n.strip(" \t;,")]
 
+def origine_fichier(nom: str, data: bytes) -> tuple:
+    """(origine, libellé) détectés d'après la forme du fichier : listes géolocalisation et prospection hebdo = « outils »."""
+    onglets, tetes = [], []
+    if nom.lower().endswith((".xlsx", ".xlsm")):
+        try:
+            wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            onglets = wb.sheetnames
+            tetes = [str(h or "") for h in next(wb.worksheets[0].iter_rows(values_only=True), ())]
+        except Exception:
+            pass
+    return PLAN.detecter_origine(nom, onglets, tetes)
+
+
 def lire_fichier(nom: str, data: bytes) -> list:
     if nom.lower().endswith((".xlsx", ".xlsm")):
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-        ws = wb.worksheets[0]
+        sans = [n for n in wb.sheetnames if n.strip().lower() == "sociétés sans contact"]
+        ws = wb[sans[0]] if sans else wb.worksheets[0]     # export géolocalisation : la liste est dans cet onglet
         it = ws.iter_rows(values_only=True)
         tetes = [str(h or "").strip() for h in next(it)]
         lignes = [dict(zip(tetes, ["" if v is None else str(v) for v in r])) for r in it]
@@ -633,25 +648,54 @@ def jlog(job: dict, msg: str):
     print(f"[V3 {job['id']}] {msg}")
 
 
+async def _programmer_reste(job: dict, reste: list) -> list:
+    """Programme `reste` aux prochains jours (heure de reprise), sur le compte de l'origine du job ; renvoie [(départ, sociétés)]."""
+    origine = job.get("origine", PLAN.NEGOS)
+    lots = await SUIVI.planifier_suite(reste, origine)
+    base = re.sub(r"( \(suite \d+/\d+\))+$", "", job["nom"])
+    for n, (depart, lot) in enumerate(lots, 1):
+        await SUIVI.programmer(f"{base} (suite {n}/{len(lots)})", job["perimetre"], job.get("mails", []), lot, depart, origine)
+    job["reliquat"] = job.get("reliquat", 0) + sum(len(l) for _, l in lots)
+    return lots
+
+
+def _quand(lots: list) -> str:
+    return ", ".join(f"{len(l)} {PLAN.libelle_jour(d)}" for d, l in lots)
+
+
 async def repartir(job: dict, orgs: list) -> list:
-    """Quota LinkedIn du jour (tous négos confondus) : renvoie ce qui part maintenant, programme le reste à 7 h les jours suivants."""
-    utilise = await SUIVI.utilise_le(datetime.now(SUIVI.PARIS)) - job.get("reserve", 0)   # un lancement reporté se compte déjà
+    """Ce qui part maintenant sur LinkedIn ; le reste est programmé aux jours suivants (heure de reprise).
+    Quota : 150 sociétés par jour et par compte LinkedIn (un seul compte branché = 150 partagés). Aucun créneau horaire."""
+    origine = job.get("origine", PLAN.NEGOS)
+    c = PLAN.compte(origine)
+    reserve = job.get("reserve", 0)                    # un lancement reporté s'est déjà compté sur son jour de départ
+    utilise = await SUIVI.utilise_compte(PLAN.maintenant(), c) - reserve
     dispo = max(0, SUIVI.QUOTA_JOUR - utilise)
     maintenant, reste = orgs[:dispo], orgs[dispo:]
     if not reste:
         return maintenant
-    lots = await SUIVI.planifier_suite(reste)
-    base = re.sub(r"( \(suite \d+/\d+\))+$", "", job["nom"])
-    for n, (depart, lot) in enumerate(lots, 1):
-        await SUIVI.programmer(f"{base} (suite {n}/{len(lots)})", job["perimetre"], job.get("mails", []), lot, depart)
+    lots = await _programmer_reste(job, reste)
     places = sum(len(l) for _, l in lots)
-    job["report"] = (f"Quota LinkedIn du jour atteint ({utilise}/{SUIVI.QUOTA_JOUR}) : {len(maintenant)} sociétés traitées maintenant, "
-                     + ", ".join(f"{len(l)} le {d:%d/%m} à {d:%H} h" for d, l in lots) + ".")
+    job["motif_report"] = "quota"
+    nom_c = "" if c == PLAN.UNIQUE else f", compte « {PLAN.NOM_COMPTE[c]} »"
+    job["report"] = (f"Quota LinkedIn du jour atteint ({utilise}/{SUIVI.QUOTA_JOUR}{nom_c}) : {len(maintenant)} sociétés traitées maintenant, "
+                     f"puis {_quand(lots)}.")
     if places < len(reste):
         job["report"] += f" {len(reste) - places} sociétés n'ont pas pu être programmées (plus de 30 jours) : relancez-les plus tard."
     jlog(job, job["report"])
-    await SUIVI.prevenir_report(job.get("mails", []), job["nom"], [(None, maintenant)] + lots if maintenant else lots, job["perimetre"])
+    await SUIVI.prevenir_report(job.get("mails", []), job["nom"], [(None, maintenant)] + lots if maintenant else lots, job["perimetre"],
+                                motif="quota", origine=origine)
     return maintenant
+
+
+def motif_arret(job: dict) -> str:
+    if job.get("erreur"):
+        return f"erreur : {job['erreur']}"
+    if job["stop"]:
+        return "arrêt manuel"
+    if job.get("motif_report") == "quota":
+        return "quota atteint"
+    return "fin de la liste"
 
 
 async def traiter(job_id: str, orgs: list):
@@ -673,7 +717,10 @@ async def traiter(job_id: str, orgs: list):
         if job["linkedin"] and orgs:
             job["phase"] = "Quota LinkedIn du jour…"
             avant = len(orgs)
-            orgs = await repartir(job, orgs)
+            verrou = VERROUS_QUOTA.setdefault(PLAN.compte(job.get("origine", "")), asyncio.Lock())
+            async with verrou:                           # lecture du quota puis réservation, sans croisement entre deux runs
+                orgs = await repartir(job, orgs)
+                await SUIVI.maj(job["notion_id"], {"Nb LinkedIn": len(orgs)})
             job["total"] -= avant - len(orgs)
         await SUIVI.maj(job["notion_id"], {"Nb sociétés": job["total"], "Nb LinkedIn": len(orgs) if job["linkedin"] else 0,
                                            "Nb mémoire": job.get("nb_memoire", 0)})
@@ -693,6 +740,8 @@ async def traiter(job_id: str, orgs: list):
     job["fin"] = job.get("fin") or time.time()
     if job["etat"] == "en cours":
         job["etat"] = "erreur" if job.get("erreur") else ("arrêté" if job["stop"] else "terminé")
+    job["motif_texte"] = motif_arret(job)
+    jlog(job, f"fin du run : {job['motif_texte']}" + (f" · {job['reliquat']} sociétés reportées" if job.get("reliquat") else ""))
     try:
         xl = excel(job) if job["resultats"] else None
         xl_nego = excel_nego(job) if job["resultats"] and job["perimetre"] in ("dirigeants", "tout") else None
@@ -707,6 +756,7 @@ async def traiter(job_id: str, orgs: list):
     job["envoi"] = "fait"
     try:
         await MEM.enregistrer(job, norm_nom, lambda m: jlog(job, m))
+        await MEM.ajouter_lanceurs(job, lambda m: jlog(job, m))
     except Exception as e:
         print(f"[V3 MEMOIRE] {e}")
 
@@ -812,11 +862,56 @@ async def _traiter(job_id: str, orgs: list):
         await asyncio.gather(*(un(o) for o in orgs))
     if job.get("linkedin") and not job["stop"]:
         try:
-            await LI.etapes_linkedin(job, ressemblance, domaine)
+            if await entrer_file(job):                 # un seul run à la fois sur les phantoms d'un même compte
+                await LI.etapes_linkedin(job, ressemblance, domaine)
+                if not job["stop"]:
+                    job["li_fini"] = True
         except Exception as e:
             job.setdefault("journal", []).append(f"étapes LinkedIn interrompues : {e}")
             print(f"[V3 LINKEDIN] {e}")
+        finally:
+            sortir_file(job)
     job["fin"] = time.time()
+
+
+# ───────────────────────── file d'attente par compte LinkedIn ─────────────────────────
+# Un phantom PhantomBuster ne traite qu'une liste à la fois : deux runs sur le même compte se gêneraient.
+# Les étapes « sites web / SIREN » tournent en parallèle ; seules les étapes LinkedIn passent une par une,
+# dans l'ordre d'arrivée, compte par compte (les deux comptes restent indépendants).
+FILES: dict = {}                                       # compte -> [id des runs, le premier travaille]
+VERROUS_QUOTA: dict = {}                               # compte -> asyncio.Lock : deux runs ne lisent pas le quota en même temps
+
+
+def _file(job: dict) -> list:
+    return FILES.setdefault(PLAN.compte(job.get("origine", "")), [])
+
+
+async def entrer_file(job: dict) -> bool:
+    """Attend son tour sur le compte LinkedIn du run. False si le run est arrêté pendant l'attente."""
+    f = _file(job)
+    f.append(job["id"])
+    nom = PLAN.NOM_COMPTE[PLAN.compte(job.get("origine", ""))]
+    annonce = False
+    while f[0] != job["id"]:
+        if job["stop"]:
+            return False
+        pos = f.index(job["id"])
+        devant = JOBS.get(f[0], {}).get("nom", "un autre run")
+        job["phase"] = (f"En file d'attente : compte LinkedIn « {nom} » occupé par « {devant} »"
+                        + (f" ({pos} run(s) avant vous)" if pos > 1 else "") + ". Démarrage automatique dès qu'il se libère.")
+        if not annonce:
+            jlog(job, job["phase"])
+            annonce = True
+        await asyncio.sleep(3)
+    if annonce:
+        jlog(job, f"compte LinkedIn « {nom} » libre : c'est parti")
+    return not job["stop"]
+
+
+def sortir_file(job: dict):
+    f = _file(job)
+    if job["id"] in f:
+        f.remove(job["id"])
 
 
 # ───────────────────────── Excel ─────────────────────────
@@ -1063,18 +1158,25 @@ def excel_nego(job: dict) -> bytes:
 
 # ───────────────────────── routes ─────────────────────────
 @router.post("/v3/run")
-async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
-              linkedin: str = Form(""), perimetre: str = Form(""), mail: str = Form(""), forcer: str = Form("")):
+async def run(req: Request, fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
+              linkedin: str = Form(""), perimetre: str = Form(""), mail: str = Form(""), forcer: str = Form(""),
+              origine: str = Form("auto")):
     mails = SUIVI.mails_valides(mail)
     if mail.strip() and not mails:
         return JSONResponse({"erreur": "Adresse mail invalide."}, 400)
     # perimetre : siren | societes | dirigeants | tout (l'ancienne case « linkedin » vaut « tout »)
     if perimetre not in ("siren", "societes", "dirigeants", "tout"):
         perimetre = "tout" if linkedin in ("on", "1", "true") else "siren"
+    detectee, outil = PLAN.NEGOS, ""
     if fichier is not None and fichier.filename:
-        orgs = lire_fichier(fichier.filename, await fichier.read())
+        data = await fichier.read()
+        orgs = lire_fichier(fichier.filename, data)
+        detectee, outil = origine_fichier(fichier.filename, data)
     else:
         orgs = lire_liste(liste)
+    if origine == PLAN.OUTILS and not VALID.gestion_auto(req):
+        origine = "auto"                              # compte « automatisations » à la main : page privée de Marie seulement
+    origine = detectee if origine not in (PLAN.OUTILS, PLAN.NEGOS) else origine     # « auto » : selon le fichier
     if not orgs:
         return JSONResponse({"erreur": "Aucune société lue : déposez un fichier avec une colonne de noms, ou collez une liste."}, 400)
     if limite and limite > 0:
@@ -1085,40 +1187,143 @@ async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), li
         nom = re.sub(r"\.(xlsx|csv)$", "", fichier.filename, flags=re.I)
     else:
         nom = ", ".join(o["nom"] for o in orgs[:3]) + (f" (+{len(orgs) - 3})" if len(orgs) > 3 else "")
-    jid = nouveau_job(nom, mails, perimetre, orgs, forcer=forcer in ("on", "1", "true"))
-    return {"job": jid, "total": len(orgs)}
+    jid = nouveau_job(nom, mails, perimetre, orgs, forcer=forcer in ("on", "1", "true"), origine=origine)
+    jlog(JOBS[jid], f"origine : {PLAN.LIBELLE[origine]}" + (f" (fichier {outil} reconnu)" if outil and origine == detectee else
+                                                             " (choisie à la main)" if origine != detectee else ""))
+    return {"job": jid, "total": len(orgs), "origine": origine, "outil": outil, "compte": PLAN.compte_txt(origine)}
 
 
-def nouveau_job(nom, mails, perimetre, orgs, forcer=False, notion_id="", reserve=0) -> str:
+def nouveau_job(nom, mails, perimetre, orgs, forcer=False, notion_id="", reserve=0, origine=PLAN.NEGOS) -> str:
     jid = uuid.uuid4().hex[:8]
     JOBS[jid] = {"id": jid, "nom": nom, "mails": mails, "linkedin": perimetre != "siren", "perimetre": perimetre,
-                 "forcer": forcer, "notion_id": notion_id, "reserve": reserve,
+                 "forcer": forcer, "notion_id": notion_id, "reserve": reserve, "origine": PLAN.origine_valide(origine),
                  "phase": "Démarrage…", "journal": [], "total": len(orgs), "fait": 0, "resultats": [], "etat": "en cours",
                  "stop": False, "debut": time.time(), "fin": None}
     asyncio.create_task(traiter(jid, orgs))
     return jid
 
 
-_VERROU_REPRISE = asyncio.Lock()
+# ───────────────────────── démarrage automatique des listes reportées ─────────────────────────
+# Les listes reportées (quota du jour atteint) repartent à l'heure de reprise (8 h par défaut), chacune sur son compte
+# LinkedIn. C'est l'outil qui s'en charge : une boucle interne vérifie toutes les 2 minutes, et GitHub Actions appelle
+# /cron vers 8 h pour réveiller Render s'il dort. Un seul enchaînement de listes par compte à la fois ; les deux
+# comptes tournent en parallèle. Un appel qui arrive pendant qu'un compte travaille ne le relance pas.
+_SESSIONS: dict = {}                                   # compte -> {"active", "debut", "source"}
+VERIF_AUTO_S = int(os.getenv("VERIF_REPORTS_S", "120"))
 
 
-async def lancer_dus() -> int:
-    """Démarre les lancements reportés dont l'heure est venue (appelé par le réveil de 7 h et à chaque ouverture de la page)."""
-    if _VERROU_REPRISE.locked():
-        return 0
-    async with _VERROU_REPRISE:
-        n = 0
-        for pid, nom, perim, mails, orgs in await SUIVI.a_lancer():
-            nouveau_job(nom, mails, perim, orgs, notion_id=pid, reserve=len(orgs))
-            n += 1
-        return n
+def _session(c: str) -> dict:
+    return _SESSIONS.setdefault(c, {"active": False, "debut": None, "source": ""})
+
+
+def run_linkedin_en_cours(c: str = "") -> bool:
+    """Un run LinkedIn tourne-t-il sur le compte c (sur n'importe quel compte si c est vide) ?"""
+    if c:
+        return _session(c)["active"] or any(j["etat"] == "en cours" and j.get("linkedin") and PLAN.compte(j.get("origine", "")) == c
+                                             for j in JOBS.values())
+    return any(run_linkedin_en_cours(x) for x in PLAN.comptes())
+
+
+async def _demarrer_compte(c: str, lots_dus: list, source: str) -> dict:
+    nom = PLAN.NOM_COMPTE[c]
+    if run_linkedin_en_cours(c):                      # vérifié et posé sans « await » entre les deux : pas de double départ
+        return {"compte": nom, "lance": False, "motif": "un run tourne déjà sur ce compte (l'appel n'est pas mis en attente)"}
+    lots = [l for l in lots_dus if PLAN.compte(l[6]) == c]
+    if not lots:
+        return {"compte": nom, "lance": False, "motif": "rien à lancer : aucune liste reportée à échéance"}
+    _session(c).update(active=True, debut=datetime.now(SUIVI.PARIS).isoformat(timespec="minutes"), source=source)
+    asyncio.create_task(_enchainer(c, lots, source))
+    return {"compte": nom, "lance": True, "listes": len(lots), "societes": sum(len(l[4]) for l in lots),
+            "motif": f"{len(lots)} liste(s) lancée(s) l'une après l'autre"}
+
+
+async def demarrer_cron(source: str) -> dict:
+    """Lance, compte par compte, les listes reportées arrivées à échéance. Un compte occupé n'est pas relancé."""
+    try:
+        dus = await SUIVI.a_lancer(jusqua=PLAN.maintenant())
+    except Exception as e:
+        return {"lance": False, "motif": f"erreur de lecture des listes reportées : {e}"}
+    res = [await _demarrer_compte(c, dus, source) for c in PLAN.comptes()]
+    return {"lance": any(r["lance"] for r in res), "comptes": res,
+            "motif": " · ".join(f"{r['compte']} : {r['motif']}" for r in res)}
+
+
+async def _enchainer(c: str, lots: list, source: str):
+    try:
+        auj = PLAN.maintenant().date().isoformat()
+        for i, (pid, nom, perim, mails, orgs, depart, origine) in enumerate(lots, 1):
+            # réservation sur le quota : seulement si la liste était prévue aujourd'hui (une liste en retard
+            # a été réservée sur son jour d'origine, elle se compte normalement aujourd'hui)
+            reserve = len(orgs) if (depart or "")[:10] == auj else 0
+            jid = nouveau_job(nom, mails, perim, orgs, notion_id=pid, reserve=reserve, origine=origine)
+            jlog(JOBS[jid], f"démarré par {source} (liste {i}/{len(lots)}, compte {PLAN.NOM_COMPTE[c]})")
+            attente = 0
+            while JOBS[jid]["etat"] == "en cours" or JOBS[jid].get("envoi") != "fait":
+                await asyncio.sleep(5)
+                attente = attente + 5 if JOBS[jid]["etat"] != "en cours" else 0
+                if attente > 900:                     # filet : mail ou Notion bloqués depuis 15 min après la fin
+                    break
+    finally:
+        _session(c)["active"] = False
+
+
+async def boucle_reports():
+    """Toutes les 2 minutes : pour chaque compte libre, démarre ses listes reportées à échéance."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            if any(not run_linkedin_en_cours(c) for c in PLAN.comptes()):
+                r = await demarrer_cron("le démarrage automatique")
+                if r.get("lance"):
+                    print(f"[V3 AUTO] {r['motif']}")
+        except Exception as e:
+            print(f"[V3 AUTO] {e}")
+        await asyncio.sleep(VERIF_AUTO_S)
+
+
+@router.on_event("startup")
+async def _demarrer_boucle():
+    if SUIVI.NOTION_KEY:
+        asyncio.create_task(boucle_reports())
+
+
+@router.get("/cron")
+async def cron(cle: str = ""):
+    """Réveil vers 8 h (GitHub Actions) : démarre les listes reportées à échéance, compte par compte."""
+    if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
+        return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
+    return await demarrer_cron("/cron (réveil GitHub)")
 
 
 @router.get("/v3/reprendre")
 async def reprendre(cle: str = ""):
+    """Ancienne adresse du réveil : mêmes règles que /cron."""
     if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
         return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
-    return {"lances": await lancer_dus()}
+    return await demarrer_cron("/v3/reprendre")
+
+
+@router.get("/v3/fenetre")
+async def fenetre(cle: str = "", simuler: str = "", demarrer: str = ""):
+    """Comptes LinkedIn et heure de reprise. Test : &simuler=07:58 (heure de Paris aujourd'hui) ou 2026-10-19T07:58,
+    &simuler=off. &demarrer=1 lance aussitôt les listes reportées à échéance (sans attendre la boucle de 2 minutes)."""
+    if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
+        return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
+    info = PLAN.simuler(simuler) if simuler else ""
+    dem = {"demarrage": await demarrer_cron("/v3/fenetre (test)")} if demarrer else {}
+    return PLAN.etat() | ({"simulation": info} if info else {}) | dem | {"run_en_cours": run_linkedin_en_cours()}
+
+
+@router.get("/v3/journee")
+async def journee():
+    """Aujourd'hui en un coup d'œil : runs du jour, motif d'arrêt, reliquat, prochain départ, comptes LinkedIn."""
+    try:
+        j = await SUIVI.journee()
+    except Exception as e:
+        j = {"runs": [], "prochains": [], "erreur": str(e)}
+    en_cours = [{"nom": x["nom"], "debut": datetime.fromtimestamp(x["debut"], SUIVI.PARIS).isoformat(timespec="minutes"),
+                 "phase": x.get("phase", "")} for x in JOBS.values() if x["etat"] == "en cours"]
+    return j | {"fenetre": PLAN.etat(), "en_cours": en_cours, "session": any(x["active"] for x in _SESSIONS.values())}
 
 
 @router.get("/v3/quota")
@@ -1137,7 +1342,7 @@ async def status(jid: str):
     res = j["resultats"]
     return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
             "nom": j.get("nom", ""), "mails": j.get("mails", []), "envoi": j.get("envoi", ""),
-            "memoire": j.get("nb_memoire", 0), "report": j.get("report", ""),
+            "memoire": j.get("nb_memoire", 0), "report": j.get("report", ""), "motif": j.get("motif_texte", ""),
             "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False), "perimetre": j.get("perimetre", ""),
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
@@ -1150,7 +1355,9 @@ async def status(jid: str):
 @router.get("/v3/config")
 async def config():
     return {"linkedin": LI.pb_configure(), "url_finder": bool(LI.PB_URL_FINDER), "salesnav": bool(LI.PB_SALESNAV),
-            "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "gmaps": bool(LI.PB_GMAPS), "max": LI.MAX_LINKEDIN}
+            "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "gmaps": bool(LI.PB_GMAPS), "max": LI.MAX_LINKEDIN,
+            "deux_comptes": PLAN.deux_comptes(), "compte_negos": {"scraper": bool(LI.PB_SCRAPER_NEGOS),
+            "salesnav": bool(LI.PB_SALESNAV_NEGOS), "profils": bool(LI.PB_PROFILS_NEGOS)}}
 
 
 @router.post("/v3/stop/{jid}")
@@ -1184,7 +1391,6 @@ async def csv_phantom(jeton: str):
 
 @router.get("/v3/historique")
 async def historique():
-    asyncio.create_task(lancer_dus())               # filet de sécurité si le réveil de 7 h n'est pas passé
     try:
         return {"notion": bool(SUIVI.NOTION_KEY), "mail": bool(SUIVI.SMTP_USER and SUIVI.SMTP_PASS),
                 "lancements": await SUIVI.historique(JOBS)}
@@ -1200,6 +1406,62 @@ async def excel_historique(page_id: str):
     if not url:
         return JSONResponse({"erreur": "pas de fichier pour ce lancement"}, 404)
     return RedirectResponse(url)
+
+
+_PAGE_CONNEXION_AUTO = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Compte automatisations</title>
+<style>body{font:15px system-ui,sans-serif;background:#f4f2f7;color:#2b2140;display:grid;place-items:center;min-height:100vh;margin:0}
+form{background:#fff;padding:28px;border-radius:10px;box-shadow:0 2px 12px #0001;width:min(340px,90vw)}
+h1{font-size:19px;margin:0 0 6px}p{color:#6b6478;font-size:13.5px;margin:0 0 16px}
+input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #d9d4e2;border-radius:6px;font-size:15px}
+button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:6px;background:#3a2a5c;color:#fff;font-size:15px;cursor:pointer}
+.err{color:#a01c22}</style></head><body><form method="post" action="/v3/automatisations">
+<h1>Compte automatisations</h1><p>Runs manuels sur les crédits LinkedIn restants du compte automatisations.</p>
+{{MSG}}<input type="password" name="mdp" placeholder="Mot de passe" autofocus required>
+<button type="submit">Entrer</button></form></body></html>"""
+
+
+@router.get("/v3/automatisations", response_class=HTMLResponse)
+async def page_automatisations(req: Request, erreur: str = ""):
+    """Page privée de Marie : même formulaire, mais tout part sur le compte « automatisations » (quota 150/jour de ce compte)."""
+    if not VALID.gestion_auto(req):
+        msg = ("<p class='err'>Mot de passe incorrect.</p>" if erreur else
+               "<p class='err'>Accès non configuré : ajoutez MDP_AUTOMATISATIONS dans Render.</p>" if not VALID.MDP_AUTO else "")
+        return _PAGE_CONNEXION_AUTO.replace("{{MSG}}", msg)
+    with open("templates/v3.html", encoding="utf-8") as f:
+        html = f.read()
+    a, b = html.index("<!--ORIGINE-->"), html.index("<!--/ORIGINE-->") + len("<!--/ORIGINE-->")
+    html = (html[:a] + '<input type="hidden" id="origine" name="origine" value="outils">'
+            '<small id="origineInfo" style="display:block;margin-top:14px;color:var(--muted)">Tout part sur le compte LinkedIn '
+            '« automatisations ».</small>' + html[b:])
+    try:
+        q = await SUIVI.quota_du_jour()
+        c = q.get("comptes", {}).get(PLAN.NOM_COMPTE[PLAN.compte(PLAN.OUTILS)], {})
+        reste = f"{c.get('reste', '?')} sociétés restantes aujourd'hui sur {SUIVI.QUOTA_JOUR}"
+    except Exception:
+        reste = "crédits du jour indisponibles"
+    avert = "" if PLAN.deux_comptes() else " (compte négos pas encore branché : quota partagé avec les négos)"
+    bandeau = ('<p style="background:#3a2a5c;color:#fff;padding:10px 14px;border-radius:8px;margin:0 0 14px">'
+               f'<b>Compte automatisations</b> · {reste}{avert}. Au-delà, la suite part le lendemain à {PLAN.etat()["reprise"]}. '
+               '<a href="/v3/automatisations/sortir" style="color:#fff;float:right">Se déconnecter</a></p>')
+    return html.replace("<!--BANDEAU-->", bandeau, 1)
+
+
+@router.post("/v3/automatisations")
+async def connexion_automatisations(mdp: str = Form("")):
+    import hmac
+    if not (VALID.MDP_AUTO and hmac.compare_digest(mdp, VALID.MDP_AUTO)):
+        return RedirectResponse("/v3/automatisations?erreur=1", 303)
+    rep = RedirectResponse("/v3/automatisations", 303)
+    rep.set_cookie(VALID.COOKIE_AUTO, VALID._jeton("auto"), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    return rep
+
+
+@router.get("/v3/automatisations/sortir")
+async def sortir_automatisations():
+    rep = RedirectResponse("/", 303)
+    rep.delete_cookie(VALID.COOKIE_AUTO)
+    return rep
 
 
 @router.get("/", response_class=HTMLResponse)

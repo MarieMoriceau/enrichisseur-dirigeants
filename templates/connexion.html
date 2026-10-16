@@ -114,8 +114,11 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
 <div class="login"><div class="card">
   <form method="post" action="/v3/connexion">
     <input type="hidden" name="suite" value="{{SUITE}}">
+    <label for="mail" style="font-weight:500">Votre e-mail <span class="msg">(négos : celui que vous saisissez au lancement)</span></label>
+    <input type="email" id="mail" autofocus name="mail" autocomplete="email" placeholder="prenom.nom@equation-sie.com"
+      style="font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%">
     <label for="mdp" style="font-weight:500">Mot de passe</label>
-    <input type="password" id="mdp" name="mdp" autocomplete="current-password" autofocus required>
+    <input type="password" id="mdp" name="mdp" autocomplete="current-password" required>
     <button class="btn primary" type="submit">Entrer</button>
     <p class="msg err" style="margin:0">{{MSG}}</p>
   </form>
