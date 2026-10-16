@@ -19,6 +19,12 @@ PB_SCRAPER = os.getenv("PB_COMPANY_SCRAPER_ID", "")
 PB_SALESNAV = os.getenv("PB_SALESNAV_ID", "")
 PB_GMAPS = os.getenv("PB_GMAPS_ID", "")
 PB_PROFILS = os.getenv("PB_PROFILE_SCRAPER_ID", "")      # LinkedIn Profile Scraper : où travaillent les contacts du CRM
+# 2e compte Sales Navigator (« négos ») : mêmes phantoms dupliqués chez PhantomBuster avec le cookie du 2e compte.
+# Les phantoms ci-dessus restent ceux du compte « automatisations » (listes outils, veille, adresse pivot).
+# URL Finder et Google Maps n'utilisent pas de cookie LinkedIn : partagés.
+PB_SCRAPER_NEGOS = os.getenv("PB_COMPANY_SCRAPER_ID_NEGOS", "")
+PB_SALESNAV_NEGOS = os.getenv("PB_SALESNAV_ID_NEGOS", "")
+PB_PROFILS_NEGOS = os.getenv("PB_PROFILE_SCRAPER_ID_NEGOS", "")
 PROFILS_MAX = int(os.getenv("PROFILS_MAX", "80"))      # profils lus au plus par lancement (quota LinkedIn)
 URL_PUBLIQUE = os.getenv("RENDER_EXTERNAL_URL", "")   # adresse publique du service, fournie par Render
 CSV_HEBERGES: dict = {}                              # jeton -> (contenu CSV, heure) servis aux phantoms
@@ -54,6 +60,15 @@ def en_france(lieu: str) -> bool:
 
 def pb_configure() -> bool:
     return bool(PB_KEY and PB_SCRAPER)
+
+
+def phantoms_du_job(job: dict) -> tuple:
+    """(Company Scraper, Sales Navigator, Profile Scraper) du compte LinkedIn du job : compte « négos » pour les demandes
+    des négos quand ses phantoms sont dans Render, sinon les phantoms actuels (compte « automatisations » ou compte unique)."""
+    import v3_planning as PLAN
+    if PLAN.compte(job.get("origine", "")) == PLAN.NEGOS:
+        return PB_SCRAPER_NEGOS, PB_SALESNAV_NEGOS, PB_PROFILS_NEGOS
+    return PB_SCRAPER, PB_SALESNAV, PB_PROFILS
 
 
 # ───────────────────────── petits utilitaires ─────────────────────────
@@ -590,6 +605,7 @@ async def personne_ailleurs(c: httpx.AsyncClient, d: dict, r: dict, ressemblance
 
 
 async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, journal, stop):
+    PB_PROFILS = phantoms_du_job(job)[2]                     # Profile Scraper du compte LinkedIn de ce run
     """Pour chaque société : les contacts Pipedrive sont-ils toujours là ?
        présent parmi les dirigeants Sales Navigator → ✅ toujours là
        absent → 🔍 à vérifier ; puis lecture du profil LinkedIn (si connu) → 🚪 probablement parti / ✅ toujours là"""
@@ -620,7 +636,7 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
         a_lire = a_lire[:PROFILS_MAX]
     if not (a_lire and PB_PROFILS) or stop():
         if a_lire and not PB_PROFILS:
-            journal("profils LinkedIn : PB_PROFILE_SCRAPER_ID absent, les contacts restent « à vérifier »")
+            journal("profils LinkedIn : Profile Scraper de ce compte absent de Render (PB_PROFILE_SCRAPER_ID ou _NEGOS), les contacts restent « à vérifier »")
         return
     job["phase"] = f"LinkedIn : lecture de {len(a_lire)} profils de contacts du CRM…"
     try:
@@ -712,6 +728,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
            and not r.get("controle_nom", "").startswith("⚠️ le site appartient")][:MAX_LINKEDIN]
     stop = lambda: job["stop"]
     jid = job["id"]
+    PB_SCRAPER, PB_SALESNAV, _ = phantoms_du_job(job)       # phantoms du compte LinkedIn de ce run
 
     def journal(msg):
         job.setdefault("journal", []).append(f"{time.strftime('%H:%M:%S')} {msg}")

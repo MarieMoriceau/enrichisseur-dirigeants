@@ -198,8 +198,16 @@ async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, exc
         return
     res = job["resultats"]
     etat = {"terminé": "est terminé", "arrêté": "a été arrêté avant la fin"}.get(job["etat"], "s'est interrompu sur une erreur")
-    def corps(version):
-        l = ["Bonjour,", "", f"L'enrichissement « {job['nom']} » {etat}.", "",
+    base = (os.getenv("RENDER_EXTERNAL_URL", "") or "https://enrichisseur-dirigeants.onrender.com").rstrip("/")
+    a_valider = job["perimetre"] in ("dirigeants", "tout") and bool(res)
+    LIEN = {"negos": f"À valider ici (écran des négos) : {base}/v3/contacts",
+            "admin": f"À valider ici (écran administrateurs) : {base}/v3/validation"}
+
+    def corps(version, ecran="negos"):
+        l = ["Bonjour,", "", f"L'enrichissement « {job['nom']} » {etat}."]
+        if a_valider:                                  # la validation passe avant l'Excel
+            l += ["", LIEN[ecran]]
+        l += ["",
              f"Choix : {LIBELLES.get(job['perimetre'], job['perimetre'])}",
              f"Sociétés : {len(res)}" + (f" (dont {job['nb_memoire']} reprises de la mémoire, sans nouvelle recherche)" if job.get("nb_memoire") else "")]
         if job["perimetre"] in ("dirigeants", "tout"):
@@ -210,7 +218,8 @@ async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, exc
             l += ["", job["report"]]
         if job.get("erreur"):
             l += ["", f"Erreur : {job['erreur']}"]
-        l += ["", version, "Rien n'a été modifié dans Pipedrive ni dans HubSpot.", "", "L'enrichisseur v3"]
+        l += ["", ("Pour mémoire, " + version[0].lower() + version[1:]) if a_valider else version,
+              "Rien n'a été modifié dans Pipedrive ni dans HubSpot.", "", "L'enrichisseur v3"]
         return "\n".join(l)
     envois = []
     if dest and excel_nego:
@@ -219,13 +228,13 @@ async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, exc
         # si la personne qui lance est aussi le destinataire du complet, elle reçoit les deux fichiers
         if any(m.lower() in {d.lower() for d in dest} for m in COPIE_COMPLETE):
             envois.append(([m for m in COPIE_COMPLETE if m.lower() in {d.lower() for d in dest}], "Fichier complet",
-                           corps("En pièce jointe : le fichier complet (sociétés, adresses, effectifs, dirigeants)."), excel, nom_fichier))
+                           corps("En pièce jointe : le fichier complet (sociétés, adresses, effectifs, dirigeants).", "admin"), excel, nom_fichier))
     else:
         envois.append((dest, "Enrichissement terminé", corps("L'Excel est en pièce jointe. Il reste aussi dans l'outil, rubrique « Lancements précédents »."), excel, nom_fichier))
         complets = [m for m in COPIE_COMPLETE if m.lower() not in {d.lower() for d in dest}]
     if complets and excel:
         par = ", ".join(dest) or "un utilisateur"
-        envois.append((complets, "Copie du fichier complet", corps(f"Copie du fichier complet, lancement fait par {par}."), excel, nom_fichier))
+        envois.append((complets, "Copie du fichier complet", corps(f"Copie du fichier complet, lancement fait par {par}.", "admin"), excel, nom_fichier))
     for qui, sujet, texte, fichier, nom in envois:
         if not qui:
             continue
@@ -309,29 +318,42 @@ async def utilise_le(d, origine: str = "") -> int:
             curseur = j.get("next_cursor")
 
 
+def _filtre_compte(c: str) -> str:
+    """Filtre d'origine pour compter le quota d'un compte : « outils », « negos », ou tout (compte unique)."""
+    return "" if c == "unique" else c
+
+
+async def utilise_compte(d, c: str) -> int:
+    return await utilise_le(d, _filtre_compte(c))
+
+
 async def quota_du_jour() -> dict:
-    u = await utilise_le(datetime.now(PARIS))
-    return {"quota": QUOTA_JOUR, "utilise": u, "reste": max(0, QUOTA_JOUR - u)}
+    """Quota du jour, par compte LinkedIn (150 chacun) ; un seul compte = quota partagé."""
+    import v3_planning as PLAN
+    auj = datetime.now(PARIS)
+    par = {}
+    for c in PLAN.comptes():
+        u = await utilise_compte(auj, c)
+        par[PLAN.NOM_COMPTE[c]] = {"utilise": u, "reste": max(0, QUOTA_JOUR - u)}
+    total = sum(v["utilise"] for v in par.values())
+    return {"quota": QUOTA_JOUR, "utilise": total, "reste": sum(v["reste"] for v in par.values()), "comptes": par}
 
 
 async def planifier_suite(reste: list, origine: str = "negos") -> list:
-    """Répartit ce qui ne passe pas maintenant sur les prochains débuts de créneau de l'origine (outils 7 h, négos 9 h) :
-    [(date de départ, lot)]. Part de chaque jour : outils 50 au plus, négos le reste des 150 ; jamais plus de 150 au total."""
+    """Répartit ce qui ne passe pas aujourd'hui sur les prochains jours, à l'heure de reprise (8 h par défaut) :
+    [(date de départ, lot)]. Jamais plus de QUOTA_JOUR par jour sur le compte de l'origine."""
     import v3_planning as PLAN
+    c = PLAN.compte(origine)
     lots, reste = [], list(reste)
-    depart = PLAN.prochain_debut(origine, PLAN.maintenant())            # heure de Paris (simulée pendant un test)
+    depart = PLAN.prochaine_reprise(PLAN.maintenant())                  # heure de Paris (simulée pendant un test)
     for _ in range(30):
         if not reste:
             break
-        total = QUOTA_JOUR - await utilise_le(depart)
-        if origine == "outils":
-            dispo = min(PLAN.QUOTA_OUTILS - await utilise_le(depart, "outils"), total)
-        else:
-            dispo = min(QUOTA_JOUR - PLAN.QUOTA_OUTILS - await utilise_le(depart, "negos"), total)
+        dispo = QUOTA_JOUR - await utilise_compte(depart, c)
         if dispo > 0:
             lots.append((depart, reste[:dispo]))
             reste = reste[dispo:]
-        depart = PLAN.debut_creneau(origine, depart + timedelta(days=1))
+        depart = PLAN.reprise_du(depart + timedelta(days=1))
     return lots
 
 
@@ -403,18 +425,14 @@ async def a_lancer(jusqua=None) -> list:
     return out
 
 
-async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str, motif: str = "quota"):
+async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str, motif: str = "quota", origine: str = "negos"):
     """Mail immédiat au négo : sa liste est coupée, la suite part demain (ou plus tard)."""
     if not mails or not SMTP_USER or not SMTP_PASS:
         return
     tout = sum(len(l) for _, l in lots)
     import v3_planning as PLAN
-    pourquoi = {
-        "quota": f"Pour ne pas dépasser le quota LinkedIn de {QUOTA_JOUR} sociétés par jour (tous lancements confondus), elle a été découpée :",
-        "creneau": "Elle a été lancée en dehors de son créneau d'utilisation de LinkedIn "
-                   f"(listes outils {PLAN.creneau_txt('outils')}, demandes des négos {PLAN.creneau_txt('negos')}). Elle partira :",
-        "fin_creneau": "Le traitement a été interrompu à la fin de son créneau d'utilisation de LinkedIn. La suite est reportée :",
-    }[motif]
+    qui = "" if PLAN.compte(origine) == "unique" else f" (compte LinkedIn « {PLAN.NOM_COMPTE[PLAN.compte(origine)]} »)"
+    pourquoi = (f"Pour ne pas dépasser le quota LinkedIn de {QUOTA_JOUR} sociétés par jour{qui}, elle a été découpée :")
     lignes = ["Bonjour,", "", f"Votre liste « {nom} » compte {tout} sociétés. {pourquoi}", ""]
     for depart, lot in lots:
         quand = "tout de suite" if depart is None else depart.strftime("le %d/%m à %H h")

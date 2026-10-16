@@ -1,18 +1,25 @@
 """
-Enrichisseur v3 — qui utilise le compte LinkedIn, et quand (heure de Paris)
+Enrichisseur v3 — quel compte LinkedIn (Sales Navigator) sert à quoi
 
-  · Listes « outils » (géolocalisation, prospection hebdo) : de 7 h à 9 h, 50 sociétés au plus par jour.
-  · Demandes des négociateurs : de 9 h à 19 h, avec ce qui reste du quota du jour (150 au total, inchangé).
-  · Lancé hors de son créneau : attend le prochain début de créneau (7 h ou 9 h).
-  · Quota dépassé : le reliquat repart le lendemain, au début de son créneau (outils 7 h, puis négos 9 h).
-  · Encore en cours à la fin du créneau (9 h pour les outils, 19 h pour les négos) : arrêt propre, reliquat reporté.
+  · Deux comptes Sales Navigator, chacun avec ses propres phantoms PhantomBuster (le cookie LinkedIn est
+    enregistré dans le phantom, pas dans le code) :
+      - compte « automatisations » = les phantoms actuels (PB_COMPANY_SCRAPER_ID, PB_SALESNAV_ID, PB_PROFILE_SCRAPER_ID).
+        Il sert aux listes outils (géolocalisation, prospection hebdo), et en dehors de l'enrichisseur à la veille
+        LinkedIn et à la prospection par adresse pivot ;
+      - compte « négos » = les phantoms dupliqués avec le cookie du 2e compte (mêmes variables suffixées _NEGOS).
+        Il ne sert qu'aux demandes des négociateurs.
+  · Plus aucun créneau horaire : chaque compte tourne quand il veut, seul son quota compte (150 sociétés par jour
+    et par compte, QUOTA_LINKEDIN_JOUR).
+  · Quota du jour atteint : le reliquat repart le lendemain à l'heure de reprise (REPRISE_HEURE, 8 h par défaut,
+    heure de Paris), sur le même compte.
+  · Tant que les phantoms _NEGOS ne sont pas dans Render, tout tourne sur le compte unique, avec un quota de 150
+    partagé entre outils et négos (comme avant).
 
-Heures : Render tourne en UTC. Tout est calculé en Europe/Paris avec zoneinfo (paquet tzdata dans requirements.txt) :
-7 h, 9 h et 19 h restent 7 h, 9 h et 19 h à Paris, été comme hiver.
+Heures : Render tourne en UTC. Tout est calculé en Europe/Paris avec zoneinfo (paquet tzdata dans requirements.txt).
 
-Test sans attendre : GET /v3/fenetre?cle=<CRON_SECRET>&simuler=08:58 fait croire à l'outil qu'il est 8 h 58 à Paris
+Test sans attendre : GET /v3/fenetre?cle=<CRON_SECRET>&simuler=07:58 fait croire à l'outil qu'il est 7 h 58 à Paris
 (l'horloge simulée avance ensuite normalement) ; &simuler=off revient à l'heure réelle. La simulation ne concerne que
-les créneaux, jamais le quota ni les dates enregistrées.
+l'heure de reprise des listes reportées, jamais le quota ni les dates enregistrées.
 """
 import os, re
 from datetime import datetime, time as dtime, timedelta
@@ -20,7 +27,9 @@ from zoneinfo import ZoneInfo
 
 PARIS = ZoneInfo("Europe/Paris")
 OUTILS, NEGOS = "outils", "negos"
+UNIQUE = "unique"
 LIBELLE = {OUTILS: "liste outils (géolocalisation / prospection hebdo)", NEGOS: "demande de négo"}
+NOM_COMPTE = {OUTILS: "automatisations", NEGOS: "négos", UNIQUE: "unique"}
 
 
 def _heure(txt: str, defaut: str) -> dtime:
@@ -28,19 +37,31 @@ def _heure(txt: str, defaut: str) -> dtime:
     return dtime(int(m.group(1)), int(m.group(2)))
 
 
-# Créneaux (modifiables dans Render, sans toucher au code)
-CRENEAUX = {
-    OUTILS: (_heure(os.getenv("CRENEAU_OUTILS_DEBUT", ""), "07:00"), _heure(os.getenv("CRENEAU_OUTILS_FIN", ""), "09:00")),
-    NEGOS: (_heure(os.getenv("CRENEAU_NEGOS_DEBUT", ""), "09:00"), _heure(os.getenv("CRENEAU_NEGOS_FIN", ""), "19:00")),
-}
-QUOTA_OUTILS = int(os.getenv("QUOTA_OUTILS_JOUR", "50"))     # part du quota du jour réservée aux listes outils, le matin
-INTERVALLE = int(os.getenv("FENETRE_VERIF_S", "15"))          # le garde de fin de créneau vérifie l'heure toutes les 15 s
+REPRISE = _heure(os.getenv("REPRISE_HEURE", ""), "08:00")   # heure de départ des listes reportées (modifiable dans Render)
 
 _decalage = timedelta(0)                                      # simulation d'heure (tests), remise à zéro au redémarrage
 
 
 def origine_valide(o: str) -> str:
     return OUTILS if o == OUTILS else NEGOS
+
+
+def deux_comptes() -> bool:
+    """Le compte négos est branché quand ses deux phantoms indispensables sont dans Render."""
+    return bool(os.getenv("PB_COMPANY_SCRAPER_ID_NEGOS", "") and os.getenv("PB_SALESNAV_ID_NEGOS", ""))
+
+
+def compte(origine: str) -> str:
+    """Compte LinkedIn utilisé par une origine : « outils », « negos », ou « unique » tant qu'il n'y a qu'un compte."""
+    return origine_valide(origine) if deux_comptes() else UNIQUE
+
+
+def comptes() -> list:
+    return [OUTILS, NEGOS] if deux_comptes() else [UNIQUE]
+
+
+def origines_du_compte(c: str) -> list:
+    return [OUTILS, NEGOS] if c == UNIQUE else [c]
 
 
 def maintenant() -> datetime:
@@ -52,30 +73,19 @@ def _a(jour: datetime, h: dtime) -> datetime:
     return datetime(jour.year, jour.month, jour.day, h.hour, h.minute, tzinfo=PARIS)
 
 
-def dans_creneau(origine: str, t: datetime | None = None) -> bool:
+def reprise_du(jour: datetime) -> datetime:
+    return _a(jour.astimezone(PARIS), REPRISE)
+
+
+def prochaine_reprise(t: datetime | None = None) -> datetime:
+    """Prochaine heure de reprise strictement après t (aujourd'hui si elle n'est pas encore passée, sinon demain)."""
     t = (t or maintenant()).astimezone(PARIS)
-    debut, fin = CRENEAUX[origine_valide(origine)]
-    return debut <= t.time() < fin
-
-
-def debut_creneau(origine: str, jour: datetime) -> datetime:
-    return _a(jour.astimezone(PARIS), CRENEAUX[origine_valide(origine)][0])
-
-
-def fin_creneau(origine: str, t: datetime | None = None) -> datetime:
-    t = (t or maintenant()).astimezone(PARIS)
-    return _a(t, CRENEAUX[origine_valide(origine)][1])
-
-
-def prochain_debut(origine: str, t: datetime | None = None) -> datetime:
-    """Prochain début de créneau strictement après t (aujourd'hui s'il n'est pas encore passé, sinon demain)."""
-    t = (t or maintenant()).astimezone(PARIS)
-    d = debut_creneau(origine, t)
-    return d if d > t else debut_creneau(origine, t + timedelta(days=1))
+    d = reprise_du(t)
+    return d if d > t else reprise_du(t + timedelta(days=1))
 
 
 def simuler(valeur: str) -> str:
-    """« 08:58 » (aujourd'hui à Paris), « 2026-10-19T08:58 » (date précise, heure de Paris) ou « off »."""
+    """« 07:58 » (aujourd'hui à Paris), « 2026-10-19T07:58 » (date précise, heure de Paris) ou « off »."""
     global _decalage
     v = (valeur or "").strip()
     if v.lower() in ("", "off", "non", "0"):
@@ -96,7 +106,7 @@ JOURS_FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanc
 
 
 def libelle_jour(d: datetime) -> str:
-    """« aujourd'hui à 9 h », « demain à 7 h », « lundi 19/10 à 9 h »…"""
+    """« aujourd'hui à 8 h », « demain à 8 h », « lundi 19/10 à 8 h »…"""
     d = d.astimezone(PARIS)
     auj = maintenant().date()
     h = f"{d.hour} h" + (f" {d.minute:02d}" if d.minute else "")
@@ -111,23 +121,22 @@ def _h(x: dtime) -> str:
     return f"{x.hour} h" + (f" {x.minute:02d}" if x.minute else "")
 
 
-def creneau_txt(origine: str) -> str:
-    d, f = CRENEAUX[origine_valide(origine)]
-    return f"{_h(d)} – {_h(f)}"
+def compte_txt(origine: str) -> str:
+    """Phrase courte pour l'écran : sur quel compte part une origine."""
+    c = compte(origine)
+    return "compte LinkedIn unique (quota partagé)" if c == UNIQUE else f"compte LinkedIn « {NOM_COMPTE[c]} »"
 
 
 def etat() -> dict:
     t = maintenant()
-    if dans_creneau(OUTILS, t):
-        msg = f"Créneau des listes outils ({creneau_txt(OUTILS)}) : les demandes des négos partent à {_h(CRENEAUX[NEGOS][0])}."
-    elif dans_creneau(NEGOS, t):
-        msg = f"Créneau des négos ({creneau_txt(NEGOS)}) : les listes outils partent {libelle_jour(prochain_debut(OUTILS, t))}."
+    if deux_comptes():
+        msg = "Deux comptes LinkedIn : automatisations (listes outils) et négos. Aucun créneau, 150 sociétés par jour et par compte."
     else:
-        msg = (f"Hors créneau : listes outils {libelle_jour(prochain_debut(OUTILS, t))}, "
-               f"demandes des négos {libelle_jour(prochain_debut(NEGOS, t))}.")
+        msg = "Un seul compte LinkedIn branché : listes outils et négos partagent le quota du jour."
+    msg += f" Listes reportées : {libelle_jour(prochaine_reprise(t))}."
     return {"heure_paris": t.isoformat(timespec="seconds"), "simulee": _decalage != timedelta(0),
-            "creneau_ouvert": OUTILS if dans_creneau(OUTILS, t) else NEGOS if dans_creneau(NEGOS, t) else "",
-            "message": msg, "creneaux": {o: creneau_txt(o) for o in (OUTILS, NEGOS)}, "quota_outils": QUOTA_OUTILS}
+            "deux_comptes": deux_comptes(), "comptes": [NOM_COMPTE[c] for c in comptes()],
+            "reprise": _h(REPRISE), "message": msg}
 
 
 # ───────────────────────── origine d'un fichier ─────────────────────────

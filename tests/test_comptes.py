@@ -1,0 +1,105 @@
+"""Tests des 2 comptes LinkedIn (automatisations / négos), du quota par compte et de l'heure de reprise.
+Lancer : python3 -m pytest tests/"""
+import asyncio, os, sys
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import v3_planning as PLAN
+
+PARIS, UTC = ZoneInfo("Europe/Paris"), timezone.utc
+
+
+def p(*a):
+    return datetime(*a, tzinfo=PARIS)
+
+
+def _deux(monkeypatch, oui=True):
+    for k in ("PB_COMPANY_SCRAPER_ID_NEGOS", "PB_SALESNAV_ID_NEGOS"):
+        if oui:
+            monkeypatch.setenv(k, "123")
+        else:
+            monkeypatch.delenv(k, raising=False)
+
+
+def test_comptes(monkeypatch):
+    _deux(monkeypatch, False)
+    assert not PLAN.deux_comptes() and PLAN.comptes() == ["unique"]
+    assert PLAN.compte("outils") == PLAN.compte("negos") == "unique"
+    _deux(monkeypatch)
+    assert PLAN.deux_comptes() and PLAN.comptes() == ["outils", "negos"]
+    assert PLAN.compte("outils") == "outils" and PLAN.compte("negos") == "negos" and PLAN.compte("") == "negos"
+    monkeypatch.delenv("PB_SALESNAV_ID_NEGOS")                   # un seul des deux phantoms : pas encore 2 comptes
+    assert not PLAN.deux_comptes()
+
+
+def test_phantoms(monkeypatch):
+    import v3_linkedin as LI
+    monkeypatch.setattr(LI, "PB_SCRAPER", "auto_s"); monkeypatch.setattr(LI, "PB_SALESNAV", "auto_sn")
+    monkeypatch.setattr(LI, "PB_PROFILS", "auto_p")
+    monkeypatch.setattr(LI, "PB_SCRAPER_NEGOS", "negos_s"); monkeypatch.setattr(LI, "PB_SALESNAV_NEGOS", "negos_sn")
+    monkeypatch.setattr(LI, "PB_PROFILS_NEGOS", "")
+    _deux(monkeypatch)
+    assert LI.phantoms_du_job({"origine": "negos"}) == ("negos_s", "negos_sn", "")   # jamais le Profile Scraper de l'autre compte
+    assert LI.phantoms_du_job({"origine": "outils"}) == ("auto_s", "auto_sn", "auto_p")
+    _deux(monkeypatch, False)
+    assert LI.phantoms_du_job({"origine": "negos"}) == ("auto_s", "auto_sn", "auto_p")   # compte unique
+
+
+def test_reprise():
+    assert PLAN.prochaine_reprise(p(2026, 10, 19, 6, 0)) == p(2026, 10, 19, 8, 0)
+    assert PLAN.prochaine_reprise(p(2026, 10, 19, 8, 0)) == p(2026, 10, 20, 8, 0)
+    d = PLAN.prochaine_reprise(p(2026, 10, 24, 20, 0))            # passage à l'heure d'hiver : 8 h reste 8 h à Paris
+    assert (d.day, d.hour) == (25, 8) and d.astimezone(UTC).hour == 7
+
+
+def test_simulation():
+    try:
+        PLAN.simuler("07:58")
+        assert PLAN.etat()["simulee"] and PLAN.maintenant().hour == 7
+    finally:
+        PLAN.simuler("off")
+    assert not PLAN.etat()["simulee"]
+
+
+def _faux_quota(monkeypatch, deja: dict):
+    """deja : {(date iso, filtre) : sociétés déjà comptées}."""
+    import v3_suivi as SUIVI
+    async def utilise_le(d, origine=""):
+        return deja.get((d.date().isoformat(), origine), 0)
+    monkeypatch.setattr(SUIVI, "utilise_le", utilise_le)
+    monkeypatch.setattr(SUIVI, "QUOTA_JOUR", 150)
+    return SUIVI
+
+
+def test_quota_par_compte(monkeypatch):
+    _deux(monkeypatch)
+    SUIVI = _faux_quota(monkeypatch, {("2026-10-20", "outils"): 150, ("2026-10-20", "negos"): 40})
+    try:
+        PLAN.simuler("2026-10-19T20:00")
+        lots = asyncio.run(SUIVI.planifier_suite(list(range(200)), "negos"))
+        assert [(d.day, d.hour, len(l)) for d, l in lots] == [(20, 8, 110), (21, 8, 90)]   # 150 - 40, puis le reste
+        lots = asyncio.run(SUIVI.planifier_suite(list(range(10)), "outils"))
+        assert [(d.day, len(l)) for d, l in lots] == [(21, 10)]                              # compte automatisations plein le 20
+    finally:
+        PLAN.simuler("off")
+
+
+def test_quota_compte_unique(monkeypatch):
+    _deux(monkeypatch, False)
+    SUIVI = _faux_quota(monkeypatch, {("2026-10-20", ""): 100})
+    try:
+        PLAN.simuler("2026-10-19T20:00")
+        lots = asyncio.run(SUIVI.planifier_suite(list(range(80)), "negos"))
+        assert [(d.day, len(l)) for d, l in lots] == [(20, 50), (21, 30)]                     # 150 partagés
+    finally:
+        PLAN.simuler("off")
+
+
+def test_detection():
+    assert PLAN.detecter_origine("prospection_20261015_1012_500m.xlsx",
+                                 ["Synthèse", "Contacts (détail)", "Récap sociétés AVEC contacts", "Sociétés SANS contact"],
+                                 ["Indicateur", "Valeur"]) == ("outils", "géolocalisation")
+    assert PLAN.detecter_origine("2_effectifs_a_chercher_lundi.xlsx", ["À envoyer"],
+                                 ["Société", "Requête envoyée", "CP"]) == ("outils", "prospection hebdo")
+    assert PLAN.detecter_origine("export_pipedrive.xlsx", ["Feuille1"], ["Organisation - Nom"]) == ("negos", "")

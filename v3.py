@@ -649,7 +649,7 @@ def jlog(job: dict, msg: str):
 
 
 async def _programmer_reste(job: dict, reste: list) -> list:
-    """Programme `reste` aux prochains débuts de créneau de l'origine du job ; renvoie les lots [(départ, sociétés)]."""
+    """Programme `reste` aux prochains jours (heure de reprise), sur le compte de l'origine du job ; renvoie [(départ, sociétés)]."""
     origine = job.get("origine", PLAN.NEGOS)
     lots = await SUIVI.planifier_suite(reste, origine)
     base = re.sub(r"( \(suite \d+/\d+\))+$", "", job["nom"])
@@ -664,79 +664,35 @@ def _quand(lots: list) -> str:
 
 
 async def repartir(job: dict, orgs: list) -> list:
-    """Ce qui part maintenant sur LinkedIn ; le reste est programmé au prochain début de créneau de l'origine.
-    Listes outils : 7 h – 9 h, 50 au plus par jour. Négos : 9 h – 19 h, le reste des 150. Quota du jour inchangé."""
+    """Ce qui part maintenant sur LinkedIn ; le reste est programmé aux jours suivants (heure de reprise).
+    Quota : 150 sociétés par jour et par compte LinkedIn (un seul compte branché = 150 partagés). Aucun créneau horaire."""
     origine = job.get("origine", PLAN.NEGOS)
-    ouvert = PLAN.dans_creneau(origine)
-    auj = PLAN.maintenant()
+    c = PLAN.compte(origine)
     reserve = job.get("reserve", 0)                    # un lancement reporté s'est déjà compté sur son jour de départ
-    utilise = await SUIVI.utilise_le(auj) - reserve
+    utilise = await SUIVI.utilise_compte(PLAN.maintenant(), c) - reserve
     dispo = max(0, SUIVI.QUOTA_JOUR - utilise)
-    if origine == PLAN.OUTILS:
-        utilise_outils = await SUIVI.utilise_le(auj, PLAN.OUTILS) - reserve
-        dispo = min(dispo, max(0, PLAN.QUOTA_OUTILS - utilise_outils))
-    if not ouvert:
-        dispo = 0
     maintenant, reste = orgs[:dispo], orgs[dispo:]
     if not reste:
         return maintenant
     lots = await _programmer_reste(job, reste)
     places = sum(len(l) for _, l in lots)
-    job["motif_report"] = "quota" if ouvert else "creneau"
-    if not ouvert:
-        job["report"] = (f"{PLAN.LIBELLE[origine].capitalize()} : LinkedIn lui est réservé de {PLAN.creneau_txt(origine)}. "
-                         f"Rien ne part maintenant. Sociétés programmées : {_quand(lots)}.")
-    elif origine == PLAN.OUTILS:
-        job["report"] = (f"Part LinkedIn des listes outils atteinte ({PLAN.QUOTA_OUTILS} par matin, quota du jour {SUIVI.QUOTA_JOUR}) : "
-                         f"{len(maintenant)} sociétés traitées maintenant, puis {_quand(lots)}.")
-    else:
-        job["report"] = (f"Quota LinkedIn du jour atteint ({utilise}/{SUIVI.QUOTA_JOUR}) : {len(maintenant)} sociétés traitées maintenant, "
-                         f"puis {_quand(lots)}.")
+    job["motif_report"] = "quota"
+    nom_c = "" if c == PLAN.UNIQUE else f", compte « {PLAN.NOM_COMPTE[c]} »"
+    job["report"] = (f"Quota LinkedIn du jour atteint ({utilise}/{SUIVI.QUOTA_JOUR}{nom_c}) : {len(maintenant)} sociétés traitées maintenant, "
+                     f"puis {_quand(lots)}.")
     if places < len(reste):
         job["report"] += f" {len(reste) - places} sociétés n'ont pas pu être programmées (plus de 30 jours) : relancez-les plus tard."
     jlog(job, job["report"])
     await SUIVI.prevenir_report(job.get("mails", []), job["nom"], [(None, maintenant)] + lots if maintenant else lots, job["perimetre"],
-                                motif=job["motif_report"])
+                                motif="quota", origine=origine)
     return maintenant
-
-
-async def reporter_fin_creneau(job: dict, reste: list):
-    """Run interrompu à la fin de son créneau (9 h outils, 19 h négos) : le reliquat repart au prochain début de créneau."""
-    if not reste:
-        return
-    lots = await _programmer_reste(job, reste)
-    places = sum(len(l) for _, l in lots)
-    fin = PLAN.creneau_txt(job.get("origine", PLAN.NEGOS)).split("– ")[-1]
-    texte = f"Interrompu à {fin} (fin du créneau LinkedIn) : {places} sociétés reportées, {_quand(lots)}."
-    if places < len(reste):
-        texte += f" {len(reste) - places} sociétés n'ont pas pu être programmées (plus de 30 jours) : relancez-les plus tard."
-    job["report"] = (job.get("report", "") + " " + texte).strip()
-    jlog(job, texte)
-    await SUIVI.prevenir_report(job.get("mails", []), job["nom"], lots, job["perimetre"], motif="fin_creneau")
-
-
-async def garde_creneau(job: dict):
-    """Pendant un run LinkedIn : à la fin du créneau de son origine (heure de Paris), arrêt propre. Le phantom en cours
-    est stoppé chez PhantomBuster (voir PhantomBuster.attendre) et le reliquat est reporté par traiter()."""
-    origine = job.get("origine", PLAN.NEGOS)
-    while job["etat"] == "en cours":
-        if not job["stop"] and not job.get("li_fini") and not PLAN.dans_creneau(origine):
-            job["motif"] = "fin_creneau"
-            job["stop"] = True
-            jlog(job, f"{PLAN.maintenant():%H:%M} : fin du créneau LinkedIn ({PLAN.LIBELLE[origine]}), arrêt propre du run")
-            return
-        await asyncio.sleep(PLAN.INTERVALLE)
 
 
 def motif_arret(job: dict) -> str:
     if job.get("erreur"):
         return f"erreur : {job['erreur']}"
-    if job.get("motif") == "fin_creneau":
-        return "fin du créneau LinkedIn : reliquat reporté au prochain créneau"
     if job["stop"]:
         return "arrêt manuel"
-    if job.get("motif_report") == "creneau":
-        return "hors créneau : recherche LinkedIn programmée au prochain créneau"
     if job.get("motif_report") == "quota":
         return "quota atteint"
     return "fin de la liste"
@@ -763,19 +719,11 @@ async def traiter(job_id: str, orgs: list):
             avant = len(orgs)
             orgs = await repartir(job, orgs)
             job["total"] -= avant - len(orgs)
-            job["_orgs_lancees"] = list(orgs)            # ce qui passe par LinkedIn dans ce run (reliquat possible en fin de créneau)
-            if orgs:
-                asyncio.create_task(garde_creneau(job))
         await SUIVI.maj(job["notion_id"], {"Nb sociétés": job["total"], "Nb LinkedIn": len(orgs) if job["linkedin"] else 0,
                                            "Nb mémoire": job.get("nb_memoire", 0)})
         if orgs:
             job["phase"] = "Sites web et SIREN…"
             await _traiter(job_id, orgs)
-        if job.get("motif") == "fin_creneau":            # sociétés pas terminées : retirées du résultat, reportées entières
-            reprises_memoire = [r for r in job["resultats"] if r.get("memoire")]
-            job["resultats"], job["fait"] = reprises_memoire, len(reprises_memoire)
-            job["phase"] = "Report du reliquat au prochain créneau…"
-            await reporter_fin_creneau(job, job.get("_orgs_lancees", []))
         if job["linkedin"] and any(r.get("effectif_linkedin") not in (None, "") for r in job["resultats"]):
             job["phase"] = "Croissance des effectifs…"
             job["_idx_tout"] = await MEM.index(lambda m: jlog(job, m), tout=True)
@@ -788,8 +736,7 @@ async def traiter(job_id: str, orgs: list):
     job["phase"] = ""
     job["fin"] = job.get("fin") or time.time()
     if job["etat"] == "en cours":
-        job["etat"] = "erreur" if job.get("erreur") else ("interrompu" if job.get("motif") == "fin_creneau" else
-                                                           "arrêté" if job["stop"] else "terminé")
+        job["etat"] = "erreur" if job.get("erreur") else ("arrêté" if job["stop"] else "terminé")
     job["motif_texte"] = motif_arret(job)
     jlog(job, f"fin du run : {job['motif_texte']}" + (f" · {job['reliquat']} sociétés reportées" if job.get("reliquat") else ""))
     try:
@@ -1195,7 +1142,7 @@ async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), li
     jid = nouveau_job(nom, mails, perimetre, orgs, forcer=forcer in ("on", "1", "true"), origine=origine)
     jlog(JOBS[jid], f"origine : {PLAN.LIBELLE[origine]}" + (f" (fichier {outil} reconnu)" if outil and origine == detectee else
                                                              " (choisie à la main)" if origine != detectee else ""))
-    return {"job": jid, "total": len(orgs), "origine": origine, "outil": outil, "creneau": PLAN.creneau_txt(origine)}
+    return {"job": jid, "total": len(orgs), "origine": origine, "outil": outil, "compte": PLAN.compte_txt(origine)}
 
 
 def nouveau_job(nom, mails, perimetre, orgs, forcer=False, notion_id="", reserve=0, origine=PLAN.NEGOS) -> str:
@@ -1209,69 +1156,75 @@ def nouveau_job(nom, mails, perimetre, orgs, forcer=False, notion_id="", reserve
 
 
 # ───────────────────────── démarrage automatique des listes reportées ─────────────────────────
-# À 7 h, les listes outils reportées repartent ; à 9 h, le reliquat des négos. C'est l'outil qui s'en charge :
-# une boucle interne vérifie toutes les 2 minutes, et GitHub Actions appelle /cron vers 7 h et 9 h pour réveiller
-# Render s'il dort. Un seul run de listes reportées à la fois ; un appel qui arrive pendant un run est refusé.
-_SESSION = {"active": False, "debut": None, "source": ""}
+# Les listes reportées (quota du jour atteint) repartent à l'heure de reprise (8 h par défaut), chacune sur son compte
+# LinkedIn. C'est l'outil qui s'en charge : une boucle interne vérifie toutes les 2 minutes, et GitHub Actions appelle
+# /cron vers 8 h pour réveiller Render s'il dort. Un seul enchaînement de listes par compte à la fois ; les deux
+# comptes tournent en parallèle. Un appel qui arrive pendant qu'un compte travaille ne le relance pas.
+_SESSIONS: dict = {}                                   # compte -> {"active", "debut", "source"}
 VERIF_AUTO_S = int(os.getenv("VERIF_REPORTS_S", "120"))
 
 
-def run_linkedin_en_cours() -> bool:
-    return _SESSION["active"] or any(j["etat"] == "en cours" and j.get("linkedin") for j in JOBS.values())
+def _session(c: str) -> dict:
+    return _SESSIONS.setdefault(c, {"active": False, "debut": None, "source": ""})
+
+
+def run_linkedin_en_cours(c: str = "") -> bool:
+    """Un run LinkedIn tourne-t-il sur le compte c (sur n'importe quel compte si c est vide) ?"""
+    if c:
+        return _session(c)["active"] or any(j["etat"] == "en cours" and j.get("linkedin") and PLAN.compte(j.get("origine", "")) == c
+                                             for j in JOBS.values())
+    return any(run_linkedin_en_cours(x) for x in PLAN.comptes())
+
+
+async def _demarrer_compte(c: str, lots_dus: list, source: str) -> dict:
+    nom = PLAN.NOM_COMPTE[c]
+    if run_linkedin_en_cours(c):                      # vérifié et posé sans « await » entre les deux : pas de double départ
+        return {"compte": nom, "lance": False, "motif": "un run tourne déjà sur ce compte (l'appel n'est pas mis en attente)"}
+    lots = [l for l in lots_dus if PLAN.compte(l[6]) == c]
+    if not lots:
+        return {"compte": nom, "lance": False, "motif": "rien à lancer : aucune liste reportée à échéance"}
+    _session(c).update(active=True, debut=datetime.now(SUIVI.PARIS).isoformat(timespec="minutes"), source=source)
+    asyncio.create_task(_enchainer(c, lots, source))
+    return {"compte": nom, "lance": True, "listes": len(lots), "societes": sum(len(l[4]) for l in lots),
+            "motif": f"{len(lots)} liste(s) lancée(s) l'une après l'autre"}
 
 
 async def demarrer_cron(source: str) -> dict:
-    """Lance, l'une après l'autre, les listes reportées arrivées à échéance dont le créneau est ouvert maintenant
-    (7 h – 9 h : listes outils ; 9 h – 19 h : demandes des négos). Refuse hors créneau ou si un run tourne déjà."""
-    ouvert = PLAN.etat()["creneau_ouvert"]
-    if not ouvert:
-        return {"lance": False, "motif": "hors créneau : " + PLAN.etat()["message"]}
-    if run_linkedin_en_cours():                       # vérifié et posé sans « await » entre les deux : pas de double départ
-        return {"lance": False, "motif": "refusé : un run tourne déjà (l'appel n'est pas mis en attente)"}
-    _SESSION.update(active=True, debut=datetime.now(SUIVI.PARIS).isoformat(timespec="minutes"), source=source)
+    """Lance, compte par compte, les listes reportées arrivées à échéance. Un compte occupé n'est pas relancé."""
     try:
-        lots = [l for l in await SUIVI.a_lancer(jusqua=PLAN.maintenant()) if l[6] == ouvert]
+        dus = await SUIVI.a_lancer(jusqua=PLAN.maintenant())
     except Exception as e:
-        _SESSION["active"] = False
         return {"lance": False, "motif": f"erreur de lecture des listes reportées : {e}"}
-    if not lots:
-        _SESSION["active"] = False
-        return {"lance": False, "motif": f"rien à lancer : aucune {PLAN.LIBELLE[ouvert]} reportée à échéance"}
-    asyncio.create_task(_enchainer(lots, source))
-    return {"lance": True, "origine": ouvert, "listes": len(lots), "societes": sum(len(l[4]) for l in lots),
-            "motif": f"{len(lots)} liste(s) lancée(s) l'une après l'autre ({PLAN.LIBELLE[ouvert]})"}
+    res = [await _demarrer_compte(c, dus, source) for c in PLAN.comptes()]
+    return {"lance": any(r["lance"] for r in res), "comptes": res,
+            "motif": " · ".join(f"{r['compte']} : {r['motif']}" for r in res)}
 
 
-async def _enchainer(lots: list, source: str):
+async def _enchainer(c: str, lots: list, source: str):
     try:
         auj = PLAN.maintenant().date().isoformat()
         for i, (pid, nom, perim, mails, orgs, depart, origine) in enumerate(lots, 1):
-            if not PLAN.dans_creneau(origine):
-                print(f"[V3 AUTO] fin du créneau : {len(lots) - i + 1} liste(s) restent programmées")
-                break
             # réservation sur le quota : seulement si la liste était prévue aujourd'hui (une liste en retard
             # a été réservée sur son jour d'origine, elle se compte normalement aujourd'hui)
             reserve = len(orgs) if (depart or "")[:10] == auj else 0
             jid = nouveau_job(nom, mails, perim, orgs, notion_id=pid, reserve=reserve, origine=origine)
-            jlog(JOBS[jid], f"démarré par {source} (liste {i}/{len(lots)})")
+            jlog(JOBS[jid], f"démarré par {source} (liste {i}/{len(lots)}, compte {PLAN.NOM_COMPTE[c]})")
             attente = 0
             while JOBS[jid]["etat"] == "en cours" or JOBS[jid].get("envoi") != "fait":
                 await asyncio.sleep(5)
                 attente = attente + 5 if JOBS[jid]["etat"] != "en cours" else 0
                 if attente > 900:                     # filet : mail ou Notion bloqués depuis 15 min après la fin
                     break
-            if JOBS[jid].get("motif") == "fin_creneau":
-                break
     finally:
-        _SESSION["active"] = False
+        _session(c)["active"] = False
 
 
 async def boucle_reports():
-    """Toutes les 2 minutes : si un créneau est ouvert et que rien ne tourne, démarre ses listes reportées à échéance."""
+    """Toutes les 2 minutes : pour chaque compte libre, démarre ses listes reportées à échéance."""
     await asyncio.sleep(30)
     while True:
         try:
-            if PLAN.etat()["creneau_ouvert"] and not run_linkedin_en_cours():
+            if any(not run_linkedin_en_cours(c) for c in PLAN.comptes()):
                 r = await demarrer_cron("le démarrage automatique")
                 if r.get("lance"):
                     print(f"[V3 AUTO] {r['motif']}")
@@ -1288,7 +1241,7 @@ async def _demarrer_boucle():
 
 @router.get("/cron")
 async def cron(cle: str = ""):
-    """Réveil vers 7 h et 9 h (GitHub Actions) : démarre les listes reportées du créneau ouvert."""
+    """Réveil vers 8 h (GitHub Actions) : démarre les listes reportées à échéance, compte par compte."""
     if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
         return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
     return await demarrer_cron("/cron (réveil GitHub)")
@@ -1304,8 +1257,8 @@ async def reprendre(cle: str = ""):
 
 @router.get("/v3/fenetre")
 async def fenetre(cle: str = "", simuler: str = "", demarrer: str = ""):
-    """Créneaux LinkedIn. Test : &simuler=08:58 (heure de Paris aujourd'hui) ou 2026-10-19T08:58, &simuler=off.
-    &demarrer=1 lance aussitôt les listes reportées du créneau ouvert (sans attendre la boucle de 2 minutes)."""
+    """Comptes LinkedIn et heure de reprise. Test : &simuler=07:58 (heure de Paris aujourd'hui) ou 2026-10-19T07:58,
+    &simuler=off. &demarrer=1 lance aussitôt les listes reportées à échéance (sans attendre la boucle de 2 minutes)."""
     if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
         return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
     info = PLAN.simuler(simuler) if simuler else ""
@@ -1315,14 +1268,14 @@ async def fenetre(cle: str = "", simuler: str = "", demarrer: str = ""):
 
 @router.get("/v3/journee")
 async def journee():
-    """Aujourd'hui en un coup d'œil : runs du jour, motif d'arrêt, reliquat, prochain départ, créneau en cours."""
+    """Aujourd'hui en un coup d'œil : runs du jour, motif d'arrêt, reliquat, prochain départ, comptes LinkedIn."""
     try:
         j = await SUIVI.journee()
     except Exception as e:
         j = {"runs": [], "prochains": [], "erreur": str(e)}
     en_cours = [{"nom": x["nom"], "debut": datetime.fromtimestamp(x["debut"], SUIVI.PARIS).isoformat(timespec="minutes"),
                  "phase": x.get("phase", "")} for x in JOBS.values() if x["etat"] == "en cours"]
-    return j | {"fenetre": PLAN.etat(), "en_cours": en_cours, "session": _SESSION["active"]}
+    return j | {"fenetre": PLAN.etat(), "en_cours": en_cours, "session": any(x["active"] for x in _SESSIONS.values())}
 
 
 @router.get("/v3/quota")
@@ -1354,7 +1307,9 @@ async def status(jid: str):
 @router.get("/v3/config")
 async def config():
     return {"linkedin": LI.pb_configure(), "url_finder": bool(LI.PB_URL_FINDER), "salesnav": bool(LI.PB_SALESNAV),
-            "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "gmaps": bool(LI.PB_GMAPS), "max": LI.MAX_LINKEDIN}
+            "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "gmaps": bool(LI.PB_GMAPS), "max": LI.MAX_LINKEDIN,
+            "deux_comptes": PLAN.deux_comptes(), "compte_negos": {"scraper": bool(LI.PB_SCRAPER_NEGOS),
+            "salesnav": bool(LI.PB_SALESNAV_NEGOS), "profils": bool(LI.PB_PROFILS_NEGOS)}}
 
 
 @router.post("/v3/stop/{jid}")
