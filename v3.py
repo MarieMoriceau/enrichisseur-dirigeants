@@ -1466,5 +1466,13 @@ async def sortir_automatisations():
 
 @router.get("/", response_class=HTMLResponse)
 async def accueil():
+    """Page d'accueil : aiguillage vers le lancement, la validation des négos, l'admin et l'espace automatisations."""
+    with open("templates/accueil.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@router.get("/v3/lancer", response_class=HTMLResponse)
+async def lancer():
+    """Lancement d'un enrichissement par les négos."""
     with open("templates/v3.html", encoding="utf-8") as f:
         return f.read()
