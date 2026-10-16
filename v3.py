@@ -717,7 +717,10 @@ async def traiter(job_id: str, orgs: list):
         if job["linkedin"] and orgs:
             job["phase"] = "Quota LinkedIn du jour…"
             avant = len(orgs)
-            orgs = await repartir(job, orgs)
+            verrou = VERROUS_QUOTA.setdefault(PLAN.compte(job.get("origine", "")), asyncio.Lock())
+            async with verrou:                           # lecture du quota puis réservation, sans croisement entre deux runs
+                orgs = await repartir(job, orgs)
+                await SUIVI.maj(job["notion_id"], {"Nb LinkedIn": len(orgs)})
             job["total"] -= avant - len(orgs)
         await SUIVI.maj(job["notion_id"], {"Nb sociétés": job["total"], "Nb LinkedIn": len(orgs) if job["linkedin"] else 0,
                                            "Nb mémoire": job.get("nb_memoire", 0)})
@@ -859,13 +862,56 @@ async def _traiter(job_id: str, orgs: list):
         await asyncio.gather(*(un(o) for o in orgs))
     if job.get("linkedin") and not job["stop"]:
         try:
-            await LI.etapes_linkedin(job, ressemblance, domaine)
-            if not job["stop"]:
-                job["li_fini"] = True
+            if await entrer_file(job):                 # un seul run à la fois sur les phantoms d'un même compte
+                await LI.etapes_linkedin(job, ressemblance, domaine)
+                if not job["stop"]:
+                    job["li_fini"] = True
         except Exception as e:
             job.setdefault("journal", []).append(f"étapes LinkedIn interrompues : {e}")
             print(f"[V3 LINKEDIN] {e}")
+        finally:
+            sortir_file(job)
     job["fin"] = time.time()
+
+
+# ───────────────────────── file d'attente par compte LinkedIn ─────────────────────────
+# Un phantom PhantomBuster ne traite qu'une liste à la fois : deux runs sur le même compte se gêneraient.
+# Les étapes « sites web / SIREN » tournent en parallèle ; seules les étapes LinkedIn passent une par une,
+# dans l'ordre d'arrivée, compte par compte (les deux comptes restent indépendants).
+FILES: dict = {}                                       # compte -> [id des runs, le premier travaille]
+VERROUS_QUOTA: dict = {}                               # compte -> asyncio.Lock : deux runs ne lisent pas le quota en même temps
+
+
+def _file(job: dict) -> list:
+    return FILES.setdefault(PLAN.compte(job.get("origine", "")), [])
+
+
+async def entrer_file(job: dict) -> bool:
+    """Attend son tour sur le compte LinkedIn du run. False si le run est arrêté pendant l'attente."""
+    f = _file(job)
+    f.append(job["id"])
+    nom = PLAN.NOM_COMPTE[PLAN.compte(job.get("origine", ""))]
+    annonce = False
+    while f[0] != job["id"]:
+        if job["stop"]:
+            return False
+        pos = f.index(job["id"])
+        devant = JOBS.get(f[0], {}).get("nom", "un autre run")
+        job["phase"] = (f"En file d'attente : compte LinkedIn « {nom} » occupé par « {devant} »"
+                        + (f" ({pos} run(s) avant vous)" if pos > 1 else "") + ". Démarrage automatique dès qu'il se libère.")
+        if not annonce:
+            jlog(job, job["phase"])
+            annonce = True
+        await asyncio.sleep(3)
+    if annonce:
+        jlog(job, f"compte LinkedIn « {nom} » libre : c'est parti")
+    return not job["stop"]
+
+
+def sortir_file(job: dict):
+    f = _file(job)
+    if job["id"] in f:
+        f.remove(job["id"])
 
 
 # ───────────────────────── Excel ─────────────────────────

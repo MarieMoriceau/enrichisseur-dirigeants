@@ -171,6 +171,10 @@ pas dans le code) :
 `PB_URL_FINDER_ID` et `PB_GMAPS_ID` n'utilisent pas de cookie LinkedIn : partagés.
 
 1. **Aucun créneau horaire** : chaque compte tourne quand il veut. Les deux comptes peuvent travailler en même temps.
+   **File d'attente par compte** : un phantom ne traite qu'une liste à la fois. Deux runs sur le même compte font leurs
+   étapes sites web / SIREN en parallèle, puis passent sur LinkedIn l'un après l'autre, dans l'ordre d'arrivée
+   (écran : « En file d'attente : compte occupé par … »). Un run arrêté pendant l'attente ne touche pas LinkedIn.
+   La lecture du quota et la réservation se font aussi une par une par compte (pas de double comptage).
 2. **Quota : 150 sociétés par jour et par compte** (`QUOTA_LINKEDIN_JOUR`), compté dans la base Notion des lancements
    (« Nb LinkedIn », filtré par la colonne « Origine »). Au-delà, l'outil traite ce qui rentre et programme la suite
    les jours suivants à l'heure de reprise (`REPRISE_HEURE`, 8 h de Paris par défaut), sur le même compte, avec un mail.

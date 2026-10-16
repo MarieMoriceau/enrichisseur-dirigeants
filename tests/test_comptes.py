@@ -103,3 +103,44 @@ def test_detection():
     assert PLAN.detecter_origine("2_effectifs_a_chercher_lundi.xlsx", ["À envoyer"],
                                  ["Société", "Requête envoyée", "CP"]) == ("outils", "prospection hebdo")
     assert PLAN.detecter_origine("export_pipedrive.xlsx", ["Feuille1"], ["Organisation - Nom"]) == ("negos", "")
+
+
+def test_file_d_attente(monkeypatch):
+    """Deux runs sur le même compte : le 2e attend la fin des étapes LinkedIn du 1er. Comptes différents : en parallèle."""
+    _deux(monkeypatch)
+    import v3 as V
+    async def scenario():
+        V.FILES.clear()
+        jobs = {i: {"id": i, "nom": i, "origine": o, "stop": False, "journal": []}
+                for i, o in (("a", "negos"), ("b", "negos"), ("c", "outils"), ("d", "negos"))}
+        V.JOBS.update(jobs)
+        ordre = []
+        async def run(i, duree):
+            try:
+                if await V.entrer_file(jobs[i]):
+                    ordre.append(f"{i}+")
+                    await asyncio.sleep(duree)
+                    ordre.append(f"{i}-")
+                else:
+                    ordre.append(f"{i} arrêté")
+            finally:
+                V.sortir_file(jobs[i])
+        monkeypatch.setattr(V.asyncio, "sleep", _rapide)
+        t = [asyncio.create_task(run("a", 5)), asyncio.create_task(run("b", 1)), asyncio.create_task(run("c", 1)),
+             asyncio.create_task(run("d", 1))]
+        await _vrai_sleep(0.01)
+        assert "En file d'attente" in jobs["b"]["phase"] and "« a »" in jobs["b"]["phase"]
+        jobs["d"]["stop"] = True                           # arrêté pendant l'attente : ne part jamais sur LinkedIn
+        await asyncio.gather(*t)
+        return ordre
+    ordre = asyncio.run(scenario())
+    assert ordre.index("c+") < ordre.index("a-")           # compte automatisations : n'attend pas les négos
+    assert ordre.index("a-") < ordre.index("b+")           # même compte : l'un après l'autre
+    assert "d arrêté" in ordre and "d+" not in ordre
+
+
+_vrai_sleep = asyncio.sleep
+
+
+async def _rapide(s):
+    await _vrai_sleep(s / 1000)
