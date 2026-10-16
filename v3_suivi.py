@@ -72,7 +72,7 @@ async def notion_finir(job: dict, excel: bytes | None, nom_fichier: str):
     if not NOTION_KEY or not pid:
         return
     res = job["resultats"]
-    statut = {"terminé": "TERMINE", "arrêté": "ARRETE"}.get(job["etat"], "ERREUR")
+    statut = {"terminé": "TERMINE", "arrêté": "ARRETE", "interrompu": "INTERROMPU"}.get(job["etat"], "ERREUR")
     props = {
         "Statut": {"select": {"name": statut}},
         "Nb sociétés": {"number": len(res)},
@@ -81,6 +81,8 @@ async def notion_finir(job: dict, excel: bytes | None, nom_fichier: str):
         "Durée (min)": {"number": round(((job["fin"] or time.time()) - job["debut"]) / 60, 1)},
         "Nb LinkedIn": {"number": job.get("li_utilise", 0)},   # la réservation du départ est remplacée par l'usage réel
         "Terminé le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")}},
+        "Motif d'arrêt": _txt(job.get("motif_texte", "")),
+        "Reliquat reporté": {"number": job.get("reliquat", 0)},
     }
     if job.get("erreur"):
         props["Erreur"] = _txt(job["erreur"])
@@ -351,8 +353,9 @@ async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart) 
         return pid
 
 
-async def a_lancer() -> list:
-    """Lancements reportés dont l'heure est venue : [(page_id, nom, perimetre, mails, orgs)]."""
+async def a_lancer(jusqua=None) -> list:
+    """Lancements reportés prévus au plus tard à `jusqua` (par défaut : maintenant), du plus ancien au plus récent :
+    [(page_id, nom, perimetre, mails, orgs, depart)]."""
     if not NOTION_KEY:
         return []
     out = []
@@ -360,7 +363,8 @@ async def a_lancer() -> list:
         r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
             {"property": "Phases", "rich_text": {"starts_with": "v3"}},
             {"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
-            {"property": "Démarré le", "date": {"on_or_before": datetime.now(PARIS).isoformat()}}]}, "page_size": 20})
+            {"property": "Démarré le", "date": {"on_or_before": (jusqua or datetime.now(PARIS)).isoformat()}}]},
+            "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 20})
         if r.status_code != 200:
             return []
         for pg in r.json().get("results", []):
@@ -383,17 +387,22 @@ async def a_lancer() -> list:
                     "Statut": {"select": {"name": "ERREUR"}}, "Erreur": _txt("liste de sociétés illisible")}})
                 continue
             perim = next((k for k, v in LIBELLES.items() if v == _val(p, "Phases").replace("v3 · ", "")), "tout")
-            out.append((pg["id"], _val(p, "Nom"), perim, mails_valides(_val(p, "Emails destinataires")), orgs))
+            out.append((pg["id"], _val(p, "Nom"), perim, mails_valides(_val(p, "Emails destinataires")), orgs, _val(p, "Démarré le")))
     return out
 
 
-async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str):
+async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str, motif: str = "quota"):
     """Mail immédiat au négo : sa liste est coupée, la suite part demain (ou plus tard)."""
     if not mails or not SMTP_USER or not SMTP_PASS:
         return
     tout = sum(len(l) for _, l in lots)
-    lignes = ["Bonjour,", "", f"Votre liste « {nom} » compte {tout} sociétés. Pour ne pas dépasser le quota LinkedIn "
-              f"de {QUOTA_JOUR} sociétés par jour (tous négos confondus), elle a été découpée :", ""]
+    pourquoi = {
+        "quota": f"Pour ne pas dépasser le quota LinkedIn de {QUOTA_JOUR} sociétés par jour (tous négos confondus), elle a été découpée :",
+        "fenetre": "De 9 h à 19 h en semaine, le compte LinkedIn est réservé aux négociateurs : aucun robot ne l'utilise. "
+                   "La recherche LinkedIn est donc programmée au prochain matin :",
+        "9h": "Le traitement a été interrompu à 9 h, quand le compte LinkedIn passe aux négociateurs. La suite est reportée :",
+    }[motif]
+    lignes = ["Bonjour,", "", f"Votre liste « {nom} » compte {tout} sociétés. {pourquoi}", ""]
     for depart, lot in lots:
         quand = "tout de suite" if depart is None else depart.strftime("le %d/%m à %H h")
         lignes.append(f"  • {len(lot)} sociétés : {quand}")
@@ -403,6 +412,39 @@ async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str):
         await asyncio.to_thread(_envoyer, mails, f"Enrichissement programmé : {nom}", "\n".join(lignes), None, "")
     except Exception as e:
         print(f"[V3 QUOTA] mail : {e}")
+
+
+async def journee() -> dict:
+    """Runs du jour (heure de Paris) + prochain départ programmé, lus dans la base Notion des lancements."""
+    if not NOTION_KEY:
+        return {"runs": [], "prochain": None}
+    debut, fin = _jour(datetime.now(PARIS))
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+            {"property": "Phases", "rich_text": {"starts_with": "v3"}},
+            {"property": "Statut", "select": {"does_not_equal": "EN_ATTENTE"}},
+            {"property": "Démarré le", "date": {"on_or_after": debut.isoformat()}},
+            {"property": "Démarré le", "date": {"before": fin.isoformat()}}]},
+            "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 50})
+        runs = []
+        if r.status_code == 200:
+            for pg in r.json().get("results", []):
+                p = pg["properties"]
+                runs.append({"nom": _val(p, "Nom"), "debut": _val(p, "Démarré le"), "fin": _val(p, "Terminé le"),
+                             "statut": _val(p, "Statut"), "motif": _val(p, "Motif d'arrêt"), "reliquat": _val(p, "Reliquat reporté"),
+                             "societes": _val(p, "Nb sociétés"), "linkedin": _val(p, "Nb LinkedIn"), "par": _val(p, "Emails destinataires")})
+        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+            {"property": "Phases", "rich_text": {"starts_with": "v3"}},
+            {"property": "Statut", "select": {"equals": "EN_ATTENTE"}}]},
+            "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 50})
+        prochain = None
+        if r.status_code == 200 and r.json().get("results"):
+            att = [(pg["properties"], _val(pg["properties"], "Démarré le")) for pg in r.json()["results"]]
+            d0 = att[0][1]
+            meme = [p for p, d in att if d[:10] == d0[:10]]
+            prochain = {"depart": d0, "lots": len(meme), "societes": sum(int(_val(p, "Nb sociétés") or 0) for p in meme),
+                        "en_retard": d0[:10] < datetime.now(PARIS).date().isoformat()}
+    return {"runs": runs, "prochain": prochain}
 
 
 async def maj(page_id: str, props: dict):

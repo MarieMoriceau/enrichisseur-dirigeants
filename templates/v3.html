@@ -106,6 +106,15 @@ input:focus-visible,button:focus-visible,a:focus-visible,.drop:focus-within{outl
 .guide .note{margin-left:22px}
 .aide-lien{color:#D9D0E0;font-size:13px;display:inline-block;margin-top:10px}
 .aide-lien:hover{color:#fff}
+.jour{margin-bottom:24px}
+.jour .ligne{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline}
+.jour h2{font-family:var(--display);font-weight:600;font-size:20px;margin:0 0 8px}
+.jour table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:10px}
+.jour th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);padding:5px 8px}
+.jour td{border-bottom:1px solid var(--line);padding:7px 8px;vertical-align:top}
+.jour .creneau{font-size:13.5px;padding:6px 10px;border-radius:6px;background:var(--tag);color:var(--tag-ink)}
+.jour .creneau.ferme{background:var(--accent-soft);color:var(--accent)}
+.jour .vide{color:var(--muted);font-size:13.5px}
 footer{border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:13px;display:grid;gap:6px}
 footer b{color:var(--ink);font-weight:500}
 footer a{color:var(--tag-ink)}
@@ -124,6 +133,10 @@ footer a{color:var(--tag-ink)}
 </div></div>
 
 <div class="wrap">
+  <section class="card jour" id="jour" aria-live="polite">
+    <div class="ligne"><h2>Aujourd'hui</h2><span class="creneau" id="jCreneau">…</span></div>
+    <div id="jCorps" class="vide">Lecture du journal…</div>
+  </section>
   <section class="floor">
     <div class="floor-head"><span class="floor-num">1</span><h2>Déposer l'export</h2><span class="count">.xlsx ou .csv</span></div>
     <div class="grid">
@@ -324,7 +337,25 @@ function suivre(id){
   $("suivi").hidden=false;$("dl").hidden=true;$("dlc").hidden=true;clearInterval(timer);timer=setInterval(poll,2500);poll();
 }
 const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["programmé",""]};
+const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["programmé",""],INTERROMPU:["interrompu à 9 h","ko"]};
+const hParis=d=>d?new Date(d).toLocaleTimeString("fr-FR",{timeZone:"Europe/Paris",hour:"2-digit",minute:"2-digit"}):"";
+const jParis=d=>new Date(d).toLocaleString("fr-FR",{timeZone:"Europe/Paris",weekday:"long",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+async function journee(){
+  try{
+    const j=await (await fetch("/v3/journee")).json();
+    const f=j.fenetre||{};$("jCreneau").textContent=f.message||"";$("jCreneau").className="creneau"+(f.robots_autorises?"":" ferme");
+    const runs=j.runs||[];let h="";
+    if(j.en_cours&&j.en_cours.length)h+=`<p>En cours : ${j.en_cours.map(x=>`<b>${esc(x.nom)}</b> depuis ${esc(hParis(x.debut))}${x.phase?" · "+esc(x.phase):""}`).join(" ; ")}</p>`;
+    if(runs.length){const d=runs[runs.length-1];
+      h+=`<p>Dernier run : <b>${esc(d.nom)}</b>, démarré à ${esc(hParis(d.debut))}${d.fin?", fini à "+esc(hParis(d.fin)):""}. Motif d'arrêt : <b>${esc(d.motif||(d.statut==="EN_COURS"?"en cours":"non renseigné"))}</b>${d.reliquat?` · <b>${d.reliquat}</b> sociétés reportées`:""}.</p>`;
+      if(runs.length>1)h+=`<table><thead><tr><th>Démarré</th><th>Liste</th><th>Motif d'arrêt</th><th>Reporté</th></tr></thead><tbody>${runs.map(r=>`<tr><td>${esc(hParis(r.debut))}</td><td>${esc(r.nom)}</td><td>${esc(r.motif||(STATUTS[r.statut]||[r.statut])[0])}</td><td>${r.reliquat||""}</td></tr>`).join("")}</tbody></table>`;
+    }else if(!(j.en_cours&&j.en_cours.length))h+=`<p class="vide">Aucun run aujourd'hui.</p>`;
+    const p=j.prochain;
+    h+=p?`<p>Prochain démarrage : <b>${esc(jParis(p.depart))}</b>${p.en_retard?" (en retard)":""}, ${p.societes} sociétés en ${p.lots} liste(s), au signal de fin de la veille LinkedIn.</p>`:`<p class="vide">Aucune liste programmée.</p>`;
+    $("jCorps").innerHTML=h;$("jCorps").className="";
+  }catch(_){$("jCorps").textContent="Journal indisponible pour le moment."}
+}
+journee();setInterval(journee,60000);
 async function histo(){
   try{
     const h=await (await fetch("/v3/historique")).json();
@@ -356,7 +387,8 @@ async function poll(){
   if(s.mode_linkedin){$("kpiLi").hidden=false;$("k5").textContent=s.effectifs;$("k6").textContent=s.dirigeants;$("k7").textContent=s.emails;
     $("k8").textContent=s.phase?"LinkedIn":"—";}
   $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");
-  const fin={"arrêté":"Arrêté. L'Excel contient les sociétés déjà traitées.","erreur":"Interrompu sur une erreur. L'Excel contient les sociétés déjà traitées."}[s.etat]||"Terminé.";
+  const fin={"arrêté":"Arrêté. L'Excel contient les sociétés déjà traitées.","erreur":"Interrompu sur une erreur. L'Excel contient les sociétés déjà traitées.",
+             "interrompu":"Interrompu à 9 h : le compte LinkedIn passe aux négociateurs."}[s.etat]||"Terminé.";
   const mail=s.mails&&s.mails.length?(s.envoi==="fait"?" Excel envoyé à "+s.mails.join(", ")+".":" Envoi du mail…"):"";
   const mem=s.memoire?" "+s.memoire+" sociétés reprises de la mémoire.":"";
   $("msg").textContent=(s.etat==="en cours"?(s.phase||"Traitement en cours…"):fin+mem+mail)+(s.report?" "+s.report:"");
@@ -365,7 +397,7 @@ async function poll(){
     $("dlc").href="/v3/excel/"+jid+"?version=contacts";$("dlc").hidden=!contacts;
     $("dl").href="/v3/excel/"+jid;$("dl").hidden=false;$("dl").textContent=contacts?"Fichier complet":"Télécharger l'Excel";
     $("dl").className=contacts?"btn ghost":"btn dl";
-    if(s.envoi==="fait"){clearInterval(timer);try{localStorage.removeItem("v3job")}catch(_){};histo()}}
+    if(s.envoi==="fait"){clearInterval(timer);try{localStorage.removeItem("v3job")}catch(_){};histo();journee()}}
 }
 $("stop").onclick=async()=>{if(jid){await fetch("/v3/stop/"+jid,{method:"POST"});}};
 </script>

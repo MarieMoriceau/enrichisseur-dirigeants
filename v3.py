@@ -8,7 +8,7 @@ Sortie : Excel prêt pour HubSpot (rien n'est écrit dans un CRM).
 """
 import asyncio, csv, io, os, re, time, unicodedata, uuid
 from difflib import SequenceMatcher
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from html import unescape
 from urllib.parse import urljoin, urlparse
 
@@ -21,6 +21,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 import v3_linkedin as LI
 import v3_suivi as SUIVI
 import v3_memoire as MEM
+import v3_planning as PLAN
 
 router = APIRouter()
 JOBS: dict = {}
@@ -634,9 +635,11 @@ def jlog(job: dict, msg: str):
 
 
 async def repartir(job: dict, orgs: list) -> list:
-    """Quota LinkedIn du jour (tous négos confondus) : renvoie ce qui part maintenant, programme le reste à 7 h les jours suivants."""
+    """Quota LinkedIn du jour (tous négos confondus) : renvoie ce qui part maintenant, programme le reste à 7 h les jours suivants.
+    Dans le créneau des négociateurs (9 h – 19 h en semaine), rien ne part sur LinkedIn : tout est programmé au prochain matin."""
+    fenetre = PLAN.dans_fenetre()
     utilise = await SUIVI.utilise_le(datetime.now(SUIVI.PARIS)) - job.get("reserve", 0)   # un lancement reporté se compte déjà
-    dispo = max(0, SUIVI.QUOTA_JOUR - utilise)
+    dispo = 0 if fenetre else max(0, SUIVI.QUOTA_JOUR - utilise)
     maintenant, reste = orgs[:dispo], orgs[dispo:]
     if not reste:
         return maintenant
@@ -645,13 +648,69 @@ async def repartir(job: dict, orgs: list) -> list:
     for n, (depart, lot) in enumerate(lots, 1):
         await SUIVI.programmer(f"{base} (suite {n}/{len(lots)})", job["perimetre"], job.get("mails", []), lot, depart)
     places = sum(len(l) for _, l in lots)
-    job["report"] = (f"Quota LinkedIn du jour atteint ({utilise}/{SUIVI.QUOTA_JOUR}) : {len(maintenant)} sociétés traitées maintenant, "
-                     + ", ".join(f"{len(l)} le {d:%d/%m} à {d:%H} h" for d, l in lots) + ".")
+    job["reliquat"] = job.get("reliquat", 0) + places
+    job["motif_report"] = "fenetre" if fenetre else "quota"
+    quand = ", ".join(f"{len(l)} {PLAN.libelle_jour(d)}" for d, l in lots)
+    if fenetre and len(lots) == 1:
+        quand = f"{len(lots[0][1])} {PLAN.libelle_jour(lots[0][0])}"
+    if fenetre:
+        job["report"] = (f"Compte LinkedIn réservé aux négociateurs ({PLAN.DEBUT:%H:%M}–{PLAN.FIN:%H:%M} en semaine) : "
+                         f"rien n'est lancé sur LinkedIn maintenant. Sociétés programmées : {quand}.")
+    else:
+        job["report"] = (f"Quota LinkedIn du jour atteint ({utilise}/{SUIVI.QUOTA_JOUR}) : {len(maintenant)} sociétés traitées maintenant, "
+                         + ", ".join(f"{len(l)} le {d:%d/%m} à {d:%H} h" for d, l in lots) + ".")
     if places < len(reste):
         job["report"] += f" {len(reste) - places} sociétés n'ont pas pu être programmées (plus de 30 jours) : relancez-les plus tard."
     jlog(job, job["report"])
-    await SUIVI.prevenir_report(job.get("mails", []), job["nom"], [(None, maintenant)] + lots if maintenant else lots, job["perimetre"])
+    await SUIVI.prevenir_report(job.get("mails", []), job["nom"], [(None, maintenant)] + lots if maintenant else lots, job["perimetre"],
+                                motif=job["motif_report"])
     return maintenant
+
+
+async def reporter_9h(job: dict, reste: list):
+    """Run interrompu à 9 h : les sociétés pas encore terminées repartent au prochain matin 7 h (même mécanisme que le quota)."""
+    if not reste:
+        return
+    lots = await SUIVI.planifier_suite(reste)
+    base = re.sub(r"( \(suite \d+/\d+\))+$", "", job["nom"])
+    for n, (depart, lot) in enumerate(lots, 1):
+        await SUIVI.programmer(f"{base} (suite {n}/{len(lots)})", job["perimetre"], job.get("mails", []), lot, depart)
+    places = sum(len(l) for _, l in lots)
+    job["reliquat"] = job.get("reliquat", 0) + places
+    quand = (PLAN.libelle_jour(lots[0][0]) if len(lots) == 1 else
+             "dont " + ", ".join(f"{len(l)} {PLAN.libelle_jour(d)}" for d, l in lots))
+    texte = f"Interrompu à 9 h (le compte LinkedIn passe aux négociateurs) : {places} sociétés reportées {quand}."
+    if places < len(reste):
+        texte += f" {len(reste) - places} sociétés n'ont pas pu être programmées (plus de 30 jours) : relancez-les plus tard."
+    job["report"] = (job.get("report", "") + " " + texte).strip()
+    jlog(job, texte)
+    await SUIVI.prevenir_report(job.get("mails", []), job["nom"], lots, job["perimetre"], motif="9h")
+
+
+async def garde_9h(job: dict):
+    """Pendant un run LinkedIn : à 9 h (heure de Paris, jours ouvrés), arrêt propre. Le phantom en cours est stoppé
+    chez PhantomBuster (voir PhantomBuster.attendre) et le reliquat est reporté par traiter()."""
+    while job["etat"] == "en cours":
+        if not job["stop"] and not job.get("li_fini") and PLAN.dans_fenetre():
+            job["motif"] = "9h"
+            job["stop"] = True
+            jlog(job, f"{PLAN.maintenant():%H:%M} : le compte LinkedIn passe aux négociateurs, arrêt propre du run")
+            return
+        await asyncio.sleep(PLAN.INTERVALLE)
+
+
+def motif_arret(job: dict) -> str:
+    if job.get("erreur"):
+        return f"erreur : {job['erreur']}"
+    if job.get("motif") == "9h":
+        return "9 h sonnées : compte LinkedIn rendu aux négociateurs"
+    if job["stop"]:
+        return "arrêt manuel"
+    if job.get("motif_report") == "fenetre":
+        return "créneau des négociateurs : recherche LinkedIn programmée au prochain matin"
+    if job.get("motif_report") == "quota":
+        return "quota atteint"
+    return "fin de la liste"
 
 
 async def traiter(job_id: str, orgs: list):
@@ -675,11 +734,19 @@ async def traiter(job_id: str, orgs: list):
             avant = len(orgs)
             orgs = await repartir(job, orgs)
             job["total"] -= avant - len(orgs)
+            job["_orgs_lancees"] = list(orgs)            # ce qui passe par LinkedIn dans ce run (reliquat possible à 9 h)
+            if orgs:
+                asyncio.create_task(garde_9h(job))
         await SUIVI.maj(job["notion_id"], {"Nb sociétés": job["total"], "Nb LinkedIn": len(orgs) if job["linkedin"] else 0,
                                            "Nb mémoire": job.get("nb_memoire", 0)})
         if orgs:
             job["phase"] = "Sites web et SIREN…"
             await _traiter(job_id, orgs)
+        if job.get("motif") == "9h":                     # sociétés pas terminées : retirées du résultat, reportées entières
+            reprises_memoire = [r for r in job["resultats"] if r.get("memoire")]
+            job["resultats"], job["fait"] = reprises_memoire, len(reprises_memoire)
+            job["phase"] = "Report du reliquat au prochain matin…"
+            await reporter_9h(job, job.get("_orgs_lancees", []))
         if job["linkedin"] and any(r.get("effectif_linkedin") not in (None, "") for r in job["resultats"]):
             job["phase"] = "Croissance des effectifs…"
             job["_idx_tout"] = await MEM.index(lambda m: jlog(job, m), tout=True)
@@ -692,7 +759,10 @@ async def traiter(job_id: str, orgs: list):
     job["phase"] = ""
     job["fin"] = job.get("fin") or time.time()
     if job["etat"] == "en cours":
-        job["etat"] = "erreur" if job.get("erreur") else ("arrêté" if job["stop"] else "terminé")
+        job["etat"] = "erreur" if job.get("erreur") else ("interrompu" if job.get("motif") == "9h" else
+                                                           "arrêté" if job["stop"] else "terminé")
+    job["motif_texte"] = motif_arret(job)
+    jlog(job, f"fin du run : {job['motif_texte']}" + (f" · {job['reliquat']} sociétés reportées" if job.get("reliquat") else ""))
     try:
         xl = excel(job) if job["resultats"] else None
         xl_nego = excel_nego(job) if job["resultats"] and job["perimetre"] in ("dirigeants", "tout") else None
@@ -814,6 +884,8 @@ async def _traiter(job_id: str, orgs: list):
     if job.get("linkedin") and not job["stop"]:
         try:
             await LI.etapes_linkedin(job, ressemblance, domaine)
+            if not job["stop"]:
+                job["li_fini"] = True
         except Exception as e:
             job.setdefault("journal", []).append(f"étapes LinkedIn interrompues : {e}")
             print(f"[V3 LINKEDIN] {e}")
@@ -1100,26 +1172,97 @@ def nouveau_job(nom, mails, perimetre, orgs, forcer=False, notion_id="", reserve
     return jid
 
 
-_VERROU_REPRISE = asyncio.Lock()
+# ───────────────────────── démarrage des listes reportées : /cron ─────────────────────────
+# L'enrichisseur passe en dernier : ses listes reportées démarrent quand la veille LinkedIn (scénario Make) appelle
+# /cron en fin de parcours. Un seul run LinkedIn à la fois : un appel qui arrive pendant un run est refusé.
+_SESSION = {"active": False, "debut": None, "source": ""}
 
 
-async def lancer_dus() -> int:
-    """Démarre les lancements reportés dont l'heure est venue (appelé par le réveil de 7 h et à chaque ouverture de la page)."""
-    if _VERROU_REPRISE.locked():
-        return 0
-    async with _VERROU_REPRISE:
-        n = 0
-        for pid, nom, perim, mails, orgs in await SUIVI.a_lancer():
-            nouveau_job(nom, mails, perim, orgs, notion_id=pid, reserve=len(orgs))
-            n += 1
-        return n
+def run_linkedin_en_cours() -> bool:
+    return _SESSION["active"] or any(j["etat"] == "en cours" and j.get("linkedin") for j in JOBS.values())
+
+
+async def demarrer_cron(source: str) -> dict:
+    """Lance, l'une après l'autre, les listes reportées prévues aujourd'hui (ou en retard). Refuse si le créneau
+    des négociateurs est ouvert ou si un run tourne déjà."""
+    if PLAN.dans_fenetre():
+        return {"lance": False, "motif": f"refusé : compte LinkedIn réservé aux négociateurs jusqu'à {PLAN.fin_fenetre():%H:%M}"}
+    if run_linkedin_en_cours():                       # vérifié et posé sans « await » entre les deux : pas de double départ
+        return {"lance": False, "motif": "refusé : un run tourne déjà (l'appel n'est pas mis en attente)"}
+    _SESSION.update(active=True, debut=datetime.now(SUIVI.PARIS).isoformat(timespec="minutes"), source=source)
+    try:
+        _, fin_du_jour = SUIVI._jour(datetime.now(SUIVI.PARIS))
+        lots = await SUIVI.a_lancer(jusqua=fin_du_jour - timedelta(seconds=1))
+    except Exception as e:
+        _SESSION["active"] = False
+        return {"lance": False, "motif": f"erreur de lecture des listes reportées : {e}"}
+    if not lots:
+        _SESSION["active"] = False
+        return {"lance": False, "motif": "rien à lancer : aucune liste reportée pour aujourd'hui"}
+    asyncio.create_task(_enchainer(lots, source))
+    return {"lance": True, "listes": len(lots), "societes": sum(len(l[4]) for l in lots),
+            "motif": f"{len(lots)} liste(s) lancée(s) l'une après l'autre"}
+
+
+async def _enchainer(lots: list, source: str):
+    try:
+        auj = datetime.now(SUIVI.PARIS).date().isoformat()
+        for i, (pid, nom, perim, mails, orgs, depart) in enumerate(lots, 1):
+            if PLAN.dans_fenetre():
+                print(f"[V3 CRON] créneau des négociateurs : {len(lots) - i + 1} liste(s) restent programmées")
+                break
+            # réservation sur le quota : seulement si la liste était prévue aujourd'hui (une liste en retard
+            # a été réservée sur son jour d'origine, elle se compte normalement aujourd'hui)
+            reserve = len(orgs) if (depart or "")[:10] == auj else 0
+            jid = nouveau_job(nom, mails, perim, orgs, notion_id=pid, reserve=reserve)
+            jlog(JOBS[jid], f"démarré par {source} (liste {i}/{len(lots)})")
+            attente = 0
+            while JOBS[jid]["etat"] == "en cours" or JOBS[jid].get("envoi") != "fait":
+                await asyncio.sleep(5)
+                attente = attente + 5 if JOBS[jid]["etat"] != "en cours" else 0
+                if attente > 900:                     # filet : mail ou Notion bloqués depuis 15 min après la fin
+                    break
+            if JOBS[jid].get("motif") == "9h":
+                break
+    finally:
+        _SESSION["active"] = False
+
+
+@router.get("/cron")
+async def cron(cle: str = ""):
+    """Appelé par le scénario Make de la veille LinkedIn, en fin de parcours."""
+    if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
+        return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
+    return await demarrer_cron("/cron (fin de la veille LinkedIn)")
 
 
 @router.get("/v3/reprendre")
 async def reprendre(cle: str = ""):
+    """Ancienne adresse du réveil : mêmes règles que /cron."""
     if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
         return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
-    return {"lances": await lancer_dus()}
+    return await demarrer_cron("/v3/reprendre")
+
+
+@router.get("/v3/fenetre")
+async def fenetre(cle: str = "", simuler: str = ""):
+    """État du créneau des négociateurs. Test : &simuler=08:58 (heure de Paris aujourd'hui) ou 2026-10-19T08:58, &simuler=off."""
+    if not SUIVI.CRON_SECRET or cle != SUIVI.CRON_SECRET:
+        return JSONResponse({"erreur": "clé absente ou invalide"}, 403)
+    info = PLAN.simuler(simuler) if simuler else ""
+    return PLAN.etat() | ({"simulation": info} if info else {}) | {"run_en_cours": run_linkedin_en_cours()}
+
+
+@router.get("/v3/journee")
+async def journee():
+    """Aujourd'hui en un coup d'œil : runs du jour, motif d'arrêt, reliquat, prochain départ, créneau en cours."""
+    try:
+        j = await SUIVI.journee()
+    except Exception as e:
+        j = {"runs": [], "prochain": None, "erreur": str(e)}
+    en_cours = [{"nom": x["nom"], "debut": datetime.fromtimestamp(x["debut"], SUIVI.PARIS).isoformat(timespec="minutes"),
+                 "phase": x.get("phase", "")} for x in JOBS.values() if x["etat"] == "en cours"]
+    return j | {"fenetre": PLAN.etat(), "en_cours": en_cours, "session": _SESSION["active"]}
 
 
 @router.get("/v3/quota")
@@ -1138,7 +1281,7 @@ async def status(jid: str):
     res = j["resultats"]
     return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
             "nom": j.get("nom", ""), "mails": j.get("mails", []), "envoi": j.get("envoi", ""),
-            "memoire": j.get("nb_memoire", 0), "report": j.get("report", ""),
+            "memoire": j.get("nb_memoire", 0), "report": j.get("report", ""), "motif": j.get("motif_texte", ""),
             "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False), "perimetre": j.get("perimetre", ""),
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
@@ -1185,7 +1328,6 @@ async def csv_phantom(jeton: str):
 
 @router.get("/v3/historique")
 async def historique():
-    asyncio.create_task(lancer_dus())               # filet de sécurité si le réveil de 7 h n'est pas passé
     try:
         return {"notion": bool(SUIVI.NOTION_KEY), "mail": bool(SUIVI.SMTP_USER and SUIVI.SMTP_PASS),
                 "lancements": await SUIVI.historique(JOBS)}

@@ -155,3 +155,34 @@ ou « Télécharger l'Excel ». Fichier cumulatif de tout ce qui est validé : S
 de validation société), Contacts à créer (validés par les négos, saisies manuelles comprises, date de validation contact),
 Contacts existants (fichés ailleurs, décision admin), Contacts CRM (décisions admin), Sociétés écartées.
 Clés d'import HubSpot : domaine pour les sociétés, e-mail pour les contacts (réimporter = mise à jour, pas de doublon).
+
+---
+
+## ⏰ Règles d'occupation du compte LinkedIn (v3) — `v3_planning.py`
+
+Le compte LinkedIn est partagé avec la veille LinkedIn, la prospection par adresse pivot et les négociateurs.
+
+1. **Créneau des négociateurs** : du lundi au vendredi, de 9 h à 19 h, **heure de Paris** (calculée avec `zoneinfo`
+   « Europe/Paris », paquet `tzdata` ; Render tourne en UTC, les heures ne dérivent donc pas avec l'heure d'été).
+   - un run qui utilise LinkedIn ne démarre pas dans ce créneau : ses sociétés sont programmées au prochain matin 7 h
+     (même mécanisme et même mail que le report de quota) ; « SIREN et statut » n'utilise pas LinkedIn et n'est pas concerné ;
+   - un run en cours à 9 h s'arrête proprement (le phantom en cours est stoppé chez PhantomBuster) ; les sociétés pas
+     terminées sont retirées du résultat et reportées entières au prochain matin 7 h. Statut Notion : INTERROMPU.
+   - le week-end : aucune restriction.
+2. **L'enrichisseur passe en dernier** : `GET /cron?cle=<CRON_SECRET>`, appelée par le scénario Make de la veille LinkedIn
+   en fin de parcours, lance l'une après l'autre les listes reportées prévues aujourd'hui (ou en retard).
+   Refusée (réponse 200, `"lance": false` + motif) dans le créneau des négociateurs ou si un run tourne déjà : jamais mise
+   en file d'attente. Plus aucun démarrage à heure fixe ni à l'ouverture de la page. `/v3/reprendre` suit les mêmes règles.
+3. **Aujourd'hui** (page d'accueil, et `/v3/journee`) : runs du jour, heure de démarrage, motif d'arrêt (fin de la liste,
+   quota atteint, 9 h sonnées, créneau des négociateurs, arrêt manuel, erreur), reliquat reporté, prochain démarrage.
+   Champs Notion de la base des lancements : « Motif d'arrêt », « Reliquat reporté ».
+
+**Tester la bascule de 9 h sans attendre 9 h** : `GET /v3/fenetre?cle=<CRON_SECRET>&simuler=08:58` (heure de Paris,
+aujourd'hui ; ou une date précise `2026-10-19T08:58`), lancer un run, il s'arrête deux minutes plus tard.
+`&simuler=off` revient à l'heure réelle (un redémarrage aussi). Tests automatiques : `python3 tests/test_fenetre.py`.
+
+| Variable Render | Rôle |
+|---|---|
+| `QUOTA_LINKEDIN_JOUR` | quota journalier (150 par défaut), défini dans `v3_suivi.py` (`QUOTA_JOUR`) ; compté dans `utilise_le()` à partir du champ « Nb LinkedIn » de la base Notion des lancements. Inchangé. |
+| `FENETRE_NEGOS_DEBUT` / `FENETRE_NEGOS_FIN` | bornes du créneau des négociateurs (09:00 / 19:00 par défaut) |
+| `CRON_SECRET` | clé de `/cron`, `/v3/reprendre` et `/v3/fenetre` (déjà utilisée par l'ancien réveil) |

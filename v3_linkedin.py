@@ -323,10 +323,20 @@ class PhantomBuster:
                 continue
             raise RuntimeError(f"lancement refusé ({r.status_code}) : {r.text[:200]}")
 
-    async def attendre(self, c: httpx.AsyncClient, conteneur: str, stop, limite_s: int = 3600):
+    async def arreter(self, c: httpx.AsyncClient, agent: str):
+        """Stoppe le phantom chez PhantomBuster : sans ça, il continuerait d'utiliser le compte LinkedIn après l'arrêt du run."""
+        try:
+            r = await c.post(f"{PB_API}/agents/stop", headers={**self.h, "Content-Type": "application/json"}, json={"id": agent})
+            self.log(f"phantom {agent} stoppé chez PhantomBuster" if r.status_code == 200 else f"arrêt du phantom refusé ({r.status_code})")
+        except Exception as e:
+            self.log(f"arrêt du phantom impossible : {e}")
+
+    async def attendre(self, c: httpx.AsyncClient, conteneur: str, stop, limite_s: int = 3600, agent: str = ""):
         debut = time.time()
         while time.time() - debut < limite_s:
             if stop():
+                if agent:
+                    await self.arreter(c, agent)
                 return "arrêté"
             r = await c.get(f"{PB_API}/containers/fetch", headers=self.h, params={"id": conteneur})
             st = (r.json() or {}).get("status", "") if r.status_code == 200 else ""
@@ -386,9 +396,11 @@ class PhantomBuster:
         return []
 
     async def executer(self, c, agent, nom_csv, stop, **kw) -> list:
+        if stop():                                      # arrêt demandé (bouton, ou 9 h) : on ne lance plus rien
+            return []
         cid = await self.lancer(c, agent, nom_csv, **kw)
         self.log(f"phantom lancé ({nom_csv})")
-        st = await self.attendre(c, cid, stop)
+        st = await self.attendre(c, cid, stop, agent=agent)
         if st != "finished":
             self.log(f"phantom {nom_csv} : {st}")
             if st != "error":

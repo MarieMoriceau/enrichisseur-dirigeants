@@ -1,11 +1,9 @@
-# Réveille l'enrichisseur v3 chaque matin pour lancer les listes reportées (quota LinkedIn de 150 sociétés par jour).
-# GitHub compte en heure UTC : 5 h UTC = 7 h à Paris l'été, 6 h UTC = 7 h à Paris l'hiver.
-# Les deux passages sont sans risque : un lancement déjà parti n'est jamais relancé.
-name: Réveil enrichisseur v3
+# Démarrage manuel des listes reportées de l'enrichisseur v3 (bouton « Run workflow » dans l'onglet Actions de GitHub).
+# Depuis le 16/10/2026, plus de réveil à heure fixe : c'est le scénario Make de la veille LinkedIn qui appelle /cron
+# en fin de parcours, pour que l'enrichisseur ne tourne jamais en même temps qu'elle sur le compte LinkedIn.
+# Mêmes règles que /cron : refusé de 9 h à 19 h en semaine (heure de Paris) et refusé si un run tourne déjà.
+name: Réveil enrichisseur v3 (manuel)
 on:
-  schedule:
-    - cron: "0 5 * * *"
-    - cron: "0 6 * * *"
   workflow_dispatch: {}
 jobs:
   reveil:
@@ -15,8 +13,4 @@ jobs:
         env:
           CLE: ${{ secrets.CRON_SECRET }}
         run: |
-          for essai in 1 2 3; do
-            if curl -fsS --max-time 180 "https://enrichisseur-dirigeants.onrender.com/v3/reprendre?cle=${CLE}"; then exit 0; fi
-            sleep 30
-          done
-          exit 1
+          curl -fsS --max-time 180 "https://enrichisseur-dirigeants.onrender.com/cron?cle=${CLE}"
