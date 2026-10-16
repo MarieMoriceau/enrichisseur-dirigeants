@@ -176,8 +176,10 @@ pas dans le code) :
    les jours suivants à l'heure de reprise (`REPRISE_HEURE`, 8 h de Paris par défaut), sur le même compte, avec un mail.
 3. **Reprises automatiques** : une boucle interne vérifie toutes les 2 minutes ; GitHub Actions appelle `/cron` vers 8 h
    pour réveiller Render. Un seul enchaînement de listes reportées par compte ; un compte occupé n'est pas relancé.
-4. **Origine** détectée d'après le fichier (export géolocalisation ou prospection hebdo = liste outils), ou choisie
-   dans le formulaire.
+4. **Origine** détectée d'après le fichier (export géolocalisation ou prospection hebdo = liste outils). Dans le
+   formulaire public, on ne peut choisir à la main que « négos » : le compte « automatisations » n'est utilisable à la main
+   que depuis la **page privée `/v3/automatisations`** (mot de passe `MDP_AUTOMATISATIONS`, Marie seule). Même formulaire,
+   tout part sur le compte automatisations, avec ses crédits restants du jour affichés en haut.
 5. **Bascule** : tant que `PB_COMPANY_SCRAPER_ID_NEGOS` et `PB_SALESNAV_ID_NEGOS` ne sont pas dans Render, tout tourne
    sur le compte unique, quota de 150 partagé. `/v3/config` indique si le compte négos est branché.
 
@@ -192,4 +194,5 @@ Tests automatiques : `python3 -m pytest tests/`.
 |---|---|
 | `QUOTA_LINKEDIN_JOUR` | quota journalier **par compte** (150 par défaut) |
 | `REPRISE_HEURE` | heure de départ des listes reportées (08:00 par défaut, heure de Paris) |
+| `MDP_AUTOMATISATIONS` | mot de passe de la page privée `/v3/automatisations` (runs manuels sur le compte automatisations) |
 | `CRON_SECRET` | clé de `/cron`, `/v3/reprendre` et `/v3/fenetre` (déjà utilisée par l'ancien réveil) |

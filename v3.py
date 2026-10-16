@@ -13,7 +13,7 @@ from html import unescape
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, UploadFile, File, Form
+from fastapi import APIRouter, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -1112,7 +1112,7 @@ def excel_nego(job: dict) -> bytes:
 
 # ───────────────────────── routes ─────────────────────────
 @router.post("/v3/run")
-async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
+async def run(req: Request, fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
               linkedin: str = Form(""), perimetre: str = Form(""), mail: str = Form(""), forcer: str = Form(""),
               origine: str = Form("auto")):
     mails = SUIVI.mails_valides(mail)
@@ -1128,6 +1128,8 @@ async def run(fichier: UploadFile | None = File(None), liste: str = Form(""), li
         detectee, outil = origine_fichier(fichier.filename, data)
     else:
         orgs = lire_liste(liste)
+    if origine == PLAN.OUTILS and not VALID.gestion_auto(req):
+        origine = "auto"                              # compte « automatisations » à la main : page privée de Marie seulement
     origine = detectee if origine not in (PLAN.OUTILS, PLAN.NEGOS) else origine     # « auto » : selon le fichier
     if not orgs:
         return JSONResponse({"erreur": "Aucune société lue : déposez un fichier avec une colonne de noms, ou collez une liste."}, 400)
@@ -1358,6 +1360,62 @@ async def excel_historique(page_id: str):
     if not url:
         return JSONResponse({"erreur": "pas de fichier pour ce lancement"}, 404)
     return RedirectResponse(url)
+
+
+_PAGE_CONNEXION_AUTO = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Compte automatisations</title>
+<style>body{font:15px system-ui,sans-serif;background:#f4f2f7;color:#2b2140;display:grid;place-items:center;min-height:100vh;margin:0}
+form{background:#fff;padding:28px;border-radius:10px;box-shadow:0 2px 12px #0001;width:min(340px,90vw)}
+h1{font-size:19px;margin:0 0 6px}p{color:#6b6478;font-size:13.5px;margin:0 0 16px}
+input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #d9d4e2;border-radius:6px;font-size:15px}
+button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:6px;background:#3a2a5c;color:#fff;font-size:15px;cursor:pointer}
+.err{color:#a01c22}</style></head><body><form method="post" action="/v3/automatisations">
+<h1>Compte automatisations</h1><p>Runs manuels sur les crédits LinkedIn restants du compte automatisations.</p>
+{{MSG}}<input type="password" name="mdp" placeholder="Mot de passe" autofocus required>
+<button type="submit">Entrer</button></form></body></html>"""
+
+
+@router.get("/v3/automatisations", response_class=HTMLResponse)
+async def page_automatisations(req: Request, erreur: str = ""):
+    """Page privée de Marie : même formulaire, mais tout part sur le compte « automatisations » (quota 150/jour de ce compte)."""
+    if not VALID.gestion_auto(req):
+        msg = ("<p class='err'>Mot de passe incorrect.</p>" if erreur else
+               "<p class='err'>Accès non configuré : ajoutez MDP_AUTOMATISATIONS dans Render.</p>" if not VALID.MDP_AUTO else "")
+        return _PAGE_CONNEXION_AUTO.replace("{{MSG}}", msg)
+    with open("templates/v3.html", encoding="utf-8") as f:
+        html = f.read()
+    a, b = html.index("<!--ORIGINE-->"), html.index("<!--/ORIGINE-->") + len("<!--/ORIGINE-->")
+    html = (html[:a] + '<input type="hidden" id="origine" name="origine" value="outils">'
+            '<small id="origineInfo" style="display:block;margin-top:14px;color:var(--muted)">Tout part sur le compte LinkedIn '
+            '« automatisations ».</small>' + html[b:])
+    try:
+        q = await SUIVI.quota_du_jour()
+        c = q.get("comptes", {}).get(PLAN.NOM_COMPTE[PLAN.compte(PLAN.OUTILS)], {})
+        reste = f"{c.get('reste', '?')} sociétés restantes aujourd'hui sur {SUIVI.QUOTA_JOUR}"
+    except Exception:
+        reste = "crédits du jour indisponibles"
+    avert = "" if PLAN.deux_comptes() else " (compte négos pas encore branché : quota partagé avec les négos)"
+    bandeau = ('<p style="background:#3a2a5c;color:#fff;padding:10px 14px;border-radius:8px;margin:0 0 14px">'
+               f'<b>Compte automatisations</b> · {reste}{avert}. Au-delà, la suite part le lendemain à {PLAN.etat()["reprise"]}. '
+               '<a href="/v3/automatisations/sortir" style="color:#fff;float:right">Se déconnecter</a></p>')
+    return html.replace("<!--BANDEAU-->", bandeau, 1)
+
+
+@router.post("/v3/automatisations")
+async def connexion_automatisations(mdp: str = Form("")):
+    import hmac
+    if not (VALID.MDP_AUTO and hmac.compare_digest(mdp, VALID.MDP_AUTO)):
+        return RedirectResponse("/v3/automatisations?erreur=1", 303)
+    rep = RedirectResponse("/v3/automatisations", 303)
+    rep.set_cookie(VALID.COOKIE_AUTO, VALID._jeton("auto"), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    return rep
+
+
+@router.get("/v3/automatisations/sortir")
+async def sortir_automatisations():
+    rep = RedirectResponse("/", 303)
+    rep.delete_cookie(VALID.COOKIE_AUTO)
+    return rep
 
 
 @router.get("/", response_class=HTMLResponse)

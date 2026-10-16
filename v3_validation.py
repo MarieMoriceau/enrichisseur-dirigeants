@@ -69,6 +69,9 @@ MDP_ADMIN = os.getenv("VALIDATION_MDP_ADMIN", "")
 MDP_NEGOS = os.getenv("VALIDATION_MDP_NEGOS", "")
 SECRET = (os.getenv("VALIDATION_SECRET") or hashlib.sha256(f"{MDP_ADMIN}|{MDP_NEGOS}|v3".encode()).hexdigest()).encode()
 COOKIE = "v3_validation"
+# Page privée de Marie : runs manuels sur le compte LinkedIn « automatisations » (ses crédits restants du jour)
+MDP_AUTO = os.getenv("MDP_AUTOMATISATIONS", "")
+COOKIE_AUTO = "v3_auto"
 
 
 # ───────────────────────── accès ─────────────────────────
@@ -85,6 +88,11 @@ def _session(req: Request) -> tuple:
     if r in ("admin", "negos") and hmac.compare_digest(v, _jeton(r, mail)):
         return r, mail
     return "", ""
+
+
+def gestion_auto(req: Request) -> bool:
+    """Connecté à la page privée du compte « automatisations » (cookie signé, mot de passe MDP_AUTOMATISATIONS) ?"""
+    return bool(MDP_AUTO) and hmac.compare_digest(req.cookies.get(COOKIE_AUTO, ""), _jeton("auto"))
 
 
 def role(req: Request) -> str:

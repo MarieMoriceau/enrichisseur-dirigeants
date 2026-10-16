@@ -138,7 +138,7 @@ footer a{color:var(--tag-ink)}
     <div id="jCorps" class="vide">Lecture du journal…</div>
   </section>
   <section class="floor">
-    <div class="floor-head"><span class="floor-num">1</span><h2>Déposer l'export</h2><span class="count">.xlsx ou .csv</span></div>
+    <!--BANDEAU--><div class="floor-head"><span class="floor-num">1</span><h2>Déposer l'export</h2><span class="count">.xlsx ou .csv</span></div>
     <div class="grid">
       <div class="card">
         <ol class="steps">
@@ -170,13 +170,12 @@ footer a{color:var(--tag-ink)}
           <small id="liInfo">vérification de la configuration…</small>
           <small id="quotaInfo"></small>
         </fieldset>
-        <label for="origine" style="margin-top:14px">Origine de la liste</label>
+        <!--ORIGINE--><label for="origine" style="margin-top:14px">Origine de la liste</label>
         <select id="origine" name="origine">
           <option value="auto" selected>Automatique (d'après le fichier)</option>
           <option value="negos">Demande de négo · compte LinkedIn « négos »</option>
-          <option value="outils">Liste outils (géolocalisation, prospection hebdo) · compte LinkedIn « automatisations »</option>
         </select>
-        <small id="origineInfo" style="display:block;color:var(--muted)">Les exports de la géolocalisation et de la prospection hebdo sont reconnus tout seuls.</small>
+        <small id="origineInfo" style="display:block;color:var(--muted)">Les exports de la géolocalisation et de la prospection hebdo sont reconnus tout seuls.</small><!--/ORIGINE-->
         <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(l'Excel vous y sera envoyé à la fin)</span></label>
         <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
         <div class="row">
