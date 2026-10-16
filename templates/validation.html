@@ -355,9 +355,16 @@ async function sauverContact(liste, i, etat, roles, finDeLigne, apres) {
 
 /* ─────────── écran 2 : contacts CRM (admin) + nouveaux contacts (modifiables, décision des négos) ─────────── */
 function finAdmin(x, i) {
-  const e = x.etat || "à traiter";
-  return `<span class="pill ${e === "prêt pour HubSpot" ? "ok" : e === "écarté" ? "ko" : ""}">négos : ${esc(e)}</span>
-    <div class="boutons"><button class="btn ghost" data-s="${i}">Enregistrer</button></div>`;
+  // L'administratrice peut décider elle-même (runs qu'elle lance) : mêmes boutons que l'écran des négos
+  const e = x.etat || "à traiter", ailleurs = x.ailleurs && x.ailleurs.id;
+  return e === "à traiter"
+    ? `<span class="pill">à traiter</span>
+       <div class="boutons"><button class="btn primary" data-s="${i}" data-etat="prêt pour HubSpot">${ailleurs ? "Ajouter à cette société" : "Valider pour HubSpot"}</button>
+       <button class="btn ghost" data-s="${i}" data-etat="écarté">Écarter</button>
+       <button class="btn ghost" data-s="${i}" data-etat="">Enregistrer</button></div>`
+    : `<span class="pill ${e === "prêt pour HubSpot" ? "ok" : e === "écarté" ? "ko" : ""}">${esc(e === "prêt pour HubSpot" && ailleurs ? "à ajouter" : e)}${x.le ? " le " + esc(x.le.slice(0,10)) : ""}</span>
+       <div class="boutons"><button class="btn ghost" data-s="${i}" data-etat="">Enregistrer</button>
+       <button class="btn ghost" data-s="${i}" data-etat="à traiter">Annuler</button></div>`;
 }
 function ecranContacts() {
   const d = info.data || {};
@@ -406,10 +413,10 @@ function ecranContacts() {
       <span class="msg" id="msg">${info.validation === "Contacts validés" ? "Déjà validés le " + esc(info.validee) + " : vous pouvez modifier et revalider." : ""}</span>
     </div>
     <h3>Nouveaux contacts <span class="pill">${fiches.length}</span></h3>
-    <div id="nouveaux">${fiches.length ? tableSaisie(fiches, info.roles || [], finAdmin, "Négos") : `<p class="msg">Aucun nouveau dirigeant.</p>`}</div>
-    ${fiches.length ? `<p class="note">Vous pouvez compléter ou corriger ces contacts (« Enregistrer ») ; la décision de les envoyer revient aux négos, dans <a href="/v3/contacts">Nouveaux contacts</a>.</p>` : ""}`;
+    <div id="nouveaux">${fiches.length ? tableSaisie(fiches, info.roles || [], finAdmin, "Décision") : `<p class="msg">Aucun nouveau dirigeant.</p>`}</div>
+    ${fiches.length ? `<p class="note">Pour les runs que vous lancez, validez ou écartez ici directement. Pour ceux des négos, la décision leur revient dans <a href="/v3/contacts">Nouveaux contacts</a> (vous y voyez aussi tout).</p>` : ""}`;
   const brancherAdmin = () => document.querySelectorAll("#nouveaux [data-s]").forEach(b => b.onclick = () =>
-    sauverContact(fiches, +b.dataset.s, null, info.roles || [], finAdmin, () => brancherAdmin()));
+    sauverContact(fiches, +b.dataset.s, b.dataset.etat || null, info.roles || [], finAdmin, () => brancherAdmin()));
   brancherAdmin();
   $("#okCont").onclick = async () => {
     const lire = (k, i) => (document.querySelector(`[data-c${k}="${i}"]`) || {}).value || "";
