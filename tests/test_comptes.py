@@ -126,7 +126,7 @@ def test_file_d_attente(monkeypatch):
             finally:
                 V.sortir_file(jobs[i])
         monkeypatch.setattr(V.asyncio, "sleep", _rapide)
-        t = [asyncio.create_task(run("a", 5)), asyncio.create_task(run("b", 1)), asyncio.create_task(run("c", 1)),
+        t = [asyncio.create_task(run("a", 60)), asyncio.create_task(run("b", 1)), asyncio.create_task(run("c", 1)),
              asyncio.create_task(run("d", 1))]
         await _vrai_sleep(0.01)
         assert "En file d'attente" in jobs["b"]["phase"] and "« a »" in jobs["b"]["phase"]
