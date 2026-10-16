@@ -707,6 +707,7 @@ async def traiter(job_id: str, orgs: list):
     job["envoi"] = "fait"
     try:
         await MEM.enregistrer(job, norm_nom, lambda m: jlog(job, m))
+        await MEM.ajouter_lanceurs(job, lambda m: jlog(job, m))
     except Exception as e:
         print(f"[V3 MEMOIRE] {e}")
 

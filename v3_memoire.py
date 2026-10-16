@@ -15,7 +15,7 @@ NOTION_KEY = os.getenv("NOTION_API_KEY", "")
 MEMOIRE_DB = os.getenv("NOTION_MEMOIRE_DB", "0447dcf54a344a3883be1d4170aaa692")
 DUREE_JOURS = int(os.getenv("MEMOIRE_JOURS", "183"))          # 6 mois
 RANG = {"siren": 0, "societes": 1, "dirigeants": 2, "tout": 3}
-A_JETER = {"adresses_site", "pages", "candidats", "memoire"}   # brut du scan du site, inutile à garder
+A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par"}   # brut du scan du site, inutile à garder
 _SEM = asyncio.Semaphore(3)                                    # Notion : environ 3 requêtes par seconde
 
 
@@ -82,7 +82,8 @@ async def index(journal, tout: bool = False) -> list:
                 out.append({"page": pg["id"], "nom": _val(p, "Nom normalisé"), "siren": _val(p, "SIREN"),
                             "domaine": _val(p, "Domaine"), "perim": _val(p, "Périmètre"), "date": _val(p, "Traitée le"),
                             "hist": _val(p, "Historique effectifs"), "validation": _val(p, "Validation"),
-                            "adresse_retenue": _val(p, "Adresse retenue"), "source_retenue": _val(p, "Source adresse retenue")})
+                            "adresse_retenue": _val(p, "Adresse retenue"), "source_retenue": _val(p, "Source adresse retenue"),
+                            "lance_par": _val(p, "Lancé par")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -178,11 +179,35 @@ async def reprendre(job: dict, orgs: list, norm_nom, domaines, journal) -> tuple
             reste.append(o)                          # traitée avant la recherche de dirigeants des SIREN connus : on relance
             continue
         row["memoire"] = f"oui, traitée le {e['date'][:10]}"
+        row["_page_memoire"], row["_lance_par"] = e["page"], e.get("lance_par", "")
         row["id"] = o.get("id") or row.get("id", "")  # l'ID Pipedrive du fichier du jour prime
         reprises.append(row)
     if reprises:
         journal(f"mémoire : {len(reprises)} sociétés déjà traitées depuis moins de 6 mois, reprises sans nouvelle recherche")
     return reprises, reste
+
+
+def fusion_mails(existant: str, nouveaux) -> str:
+    vus = []
+    for m in re.split(r"[;,\s]+", existant or "") + list(nouveaux or []):
+        m = (m or "").strip().lower()
+        if "@" in m and m not in vus:
+            vus.append(m)
+    return "; ".join(vus)
+
+
+async def ajouter_lanceurs(job: dict, journal):
+    """Société reprise de la mémoire : le négo qui l'a relancée est ajouté à « Lancé par » pour qu'il la voie dans son écran."""
+    if not NOTION_KEY or not job.get("mails"):
+        return
+    a_faire = [(r["_page_memoire"], fusion_mails(r.get("_lance_par", ""), job["mails"])) for r in job["resultats"]
+               if r.get("_page_memoire") and fusion_mails(r.get("_lance_par", ""), job["mails"]) != fusion_mails(r.get("_lance_par", ""), [])]
+    if not a_faire:
+        return
+    async with httpx.AsyncClient(timeout=30) as c:
+        await asyncio.gather(*(_req(c, "PATCH", f"https://api.notion.com/v1/pages/{p}", json={"properties": {"Lancé par": _txt(m)}})
+                               for p, m in a_faire))
+    journal(f"mémoire : {len(a_faire)} sociétés déjà connues ajoutées à l'écran de {', '.join(job['mails'])}")
 
 
 async def enregistrer(job: dict, norm_nom, journal):
@@ -203,6 +228,7 @@ async def enregistrer(job: dict, norm_nom, journal):
             nom = norm_nom(r.get("nom") or "")
             meme = [e for e in idx if _meme(e, siren, r.get("domaine", ""), nom)]
             anciennes = [e["page"] for e in meme]
+            ancienne_l = "; ".join(e.get("lance_par", "") for e in meme)
             hist = historique(meme[0]) if meme else []                  # les mesures passées suivent la société
             if r.get("effectif_linkedin") not in (None, ""):
                 hist = [(maintenant[:10], int(r["effectif_linkedin"]))] + [h for h in hist if h[0] != maintenant[:10]]
@@ -218,7 +244,8 @@ async def enregistrer(job: dict, norm_nom, journal):
                      "Nb nouveaux contacts": {"number": sum(1 for d in r.get("dirigeants", []) if not d.get("dans_pipedrive"))},
                      "Effectif LinkedIn": {"number": int(r["effectif_linkedin"]) if r.get("effectif_linkedin") not in (None, "") else None},
                      "Historique effectifs": _txt(hist_txt),
-                     "Validation": {"select": {"name": "À valider"}}}       # nouvelles données : à revoir dans l'onglet Validation
+                     "Validation": {"select": {"name": "À valider"}},       # nouvelles données : à revoir dans l'onglet Validation
+                     "Lancé par": _txt(fusion_mails(ancienne_l, job.get("mails", [])))}
             ancienne = next((e for e in meme if e.get("adresse_retenue")), None)
             if ancienne:                                                     # l'adresse déjà retenue suit la société
                 props["Adresse retenue"] = _txt(ancienne["adresse_retenue"])

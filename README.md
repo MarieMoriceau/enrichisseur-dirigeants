@@ -108,7 +108,9 @@ l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blan
 et téléphone sont modifiables. Les cases corrigées à la main sont surlignées et remplacent la valeur de l'enrichisseur ou de Pipedrive
 (gardées dans Notion : `modifie`, `final_*`, `modifie_par`).
 
-**`/v3/contacts`, pour les négos (mot de passe négos ; le mot de passe admin y donne aussi accès)**
+**`/v3/contacts`, pour les négos (e-mail + mot de passe négos ; le mot de passe admin y donne aussi accès)**
+- Chaque négo ne voit que les sociétés qu'il a lancées : son e-mail de connexion est comparé au champ « Lancé par » de la
+  mémoire (e-mail saisi au lancement). Une société déjà en mémoire relancée par un autre négo lui est ajoutée.
 - Nouveaux dirigeants, visibles dès la fin du lancement : profil LinkedIn affiché, téléphone à compléter,
   « Valider pour HubSpot » ou « Écarter ». Liste commune à tous les négos.
 - Contacts déjà au CRM : lecture seule.
