@@ -656,6 +656,8 @@ async def _programmer_reste(job: dict, reste: list) -> list:
     for n, (depart, lot) in enumerate(lots, 1):
         await SUIVI.programmer(f"{base} (suite {n}/{len(lots)})", job["perimetre"], job.get("mails", []), lot, depart, origine)
     job["reliquat"] = job.get("reliquat", 0) + sum(len(l) for _, l in lots)
+    job.setdefault("lots_reportes", []).extend({"depart": d.isoformat(timespec="minutes"), "societes": len(l)} for d, l in lots)
+    job["non_programmees"] = job.get("non_programmees", 0) + len(reste) - sum(len(l) for _, l in lots)
     return lots
 
 
@@ -717,6 +719,7 @@ async def traiter(job_id: str, orgs: list):
             job["resultats"] += reprises
             job["fait"] += len(reprises)
             job["nb_memoire"] = len(reprises)
+            job["noms_memoire"] = [r.get("nom", "") for r in reprises]
         if job["linkedin"] and orgs:
             job["phase"] = "Quota LinkedIn du jour…"
             avant = len(orgs)
@@ -725,6 +728,7 @@ async def traiter(job_id: str, orgs: list):
                 orgs = await repartir(job, orgs)
                 await SUIVI.maj(job["notion_id"], {"Nb LinkedIn": len(orgs)})
             job["total"] -= avant - len(orgs)
+        job["reparti"] = True                            # mémoire et quota du jour faits : la répartition est connue
         await SUIVI.maj(job["notion_id"], {"Nb sociétés": job["total"], "Nb LinkedIn": len(orgs) if job["linkedin"] else 0,
                                            "Nb mémoire": job.get("nb_memoire", 0)})
         if orgs:
@@ -1335,6 +1339,89 @@ async def quota():
         return await SUIVI.quota_du_jour()
     except Exception as e:
         return {"quota": SUIVI.QUOTA_JOUR, "utilise": None, "reste": None, "erreur": str(e)}
+
+
+# ───────────────────────── API : listes envoyées par les autres outils (prospection-hebdo…) ─────────────────────────
+# Tout ce qui arrive ici part sur le compte LinkedIn « automatisations » (origine « outils »), jamais sur celui des négos.
+API_CLE = os.getenv("ENRICHISSEUR_API_KEY", "")
+API_MAX_SOCIETES = int(os.getenv("API_MAX_SOCIETES", "2000"))
+
+
+def _api_refus(req: Request):
+    import hmac
+    if not API_CLE:
+        return JSONResponse({"ok": False, "erreur": "API non configurée : ENRICHISSEUR_API_KEY absente dans Render"}, 503)
+    if not hmac.compare_digest(req.headers.get("X-Enrichisseur-Cle", ""), API_CLE):
+        return JSONResponse({"ok": False, "erreur": "clé absente ou invalide (en-tête X-Enrichisseur-Cle)"}, 401)
+    return None
+
+
+def _org_api(x: dict) -> dict:
+    """Une société reçue en JSON → le format interne (comme une ligne d'export Pipedrive)."""
+    t = lambda k: str(x.get(k) or "").strip()
+    siren = re.sub(r"\D", "", t("siren"))[:9]
+    infos = {k: t(k) for k in ("statut_pipedrive", "nego", "campagne", "ref_notion") if t(k)}
+    return {"id": re.sub(r"\.0$", "", t("id_pipedrive")), "nom": t("nom"), "site_crm": t("site"),
+            "siren_crm": siren if luhn_ok(siren) else "", "adresse_crm": t("adresse"),
+            "cp": re.sub(r"\D", "", t("code_postal"))[:5], "ville": t("ville"), **({"infos_source": infos} if infos else {})}
+
+
+@router.post("/v3/api/lancer")
+async def api_lancer(req: Request):
+    """Lance un enrichissement sur le compte « automatisations ». Corps JSON : voir README, section API."""
+    if (x := _api_refus(req)):
+        return x
+    try:
+        b = await req.json()
+    except Exception:
+        return JSONResponse({"ok": False, "erreur": "corps JSON illisible"}, 400)
+    if not isinstance(b, dict) or not isinstance(b.get("societes"), list):
+        return JSONResponse({"ok": False, "erreur": "champ « societes » (liste) manquant"}, 400)
+    perimetre = b.get("perimetre") or "tout"
+    if perimetre not in ("siren", "societes", "dirigeants", "tout"):
+        return JSONResponse({"ok": False, "erreur": "perimetre : siren, societes, dirigeants ou tout"}, 400)
+    orgs, ignorees = [], []
+    for i, soc in enumerate(b["societes"]):
+        o = _org_api(soc) if isinstance(soc, dict) else {}
+        (orgs if o.get("nom") else ignorees).append(o if o.get("nom") else i)
+    if not orgs:
+        return JSONResponse({"ok": False, "erreur": "aucune société avec un nom"}, 400)
+    if len(orgs) > API_MAX_SOCIETES:
+        return JSONResponse({"ok": False, "erreur": f"{len(orgs)} sociétés : {API_MAX_SOCIETES} au plus par envoi, découpez la liste"}, 413)
+    if perimetre != "siren" and not LI.pb_configure():
+        return JSONResponse({"ok": False, "erreur": "PhantomBuster n'est pas configuré dans Render"}, 503)
+    mails = SUIVI.mails_valides(",".join(b.get("mails") or []) if isinstance(b.get("mails"), list) else str(b.get("mails") or ""))
+    source = str(b.get("source") or "api")[:40]
+    nom = str(b.get("nom") or f"{source} {datetime.now(SUIVI.PARIS):%d/%m %H:%M}")[:100]
+    jid = nouveau_job(nom, mails, perimetre, orgs, forcer=bool(b.get("forcer")), origine=PLAN.OUTILS)
+    JOBS[jid]["recues"] = len(orgs)
+    jlog(JOBS[jid], f"reçu par l'API ({source}) : {len(orgs)} sociétés, compte LinkedIn « {PLAN.NOM_COMPTE[PLAN.compte(PLAN.OUTILS)]} »"
+                    + (f", {len(ignorees)} lignes sans nom ignorées" if ignorees else ""))
+    base = str(req.base_url).rstrip("/")
+    return JSONResponse({"ok": True, "lancement": jid, "nom": nom, "recues": len(orgs), "ignorees_sans_nom": ignorees,
+                         "perimetre": perimetre, "compte_linkedin": PLAN.NOM_COMPTE[PLAN.compte(PLAN.OUTILS)],
+                         "suivi": f"{base}/v3/api/lancement/{jid}"}, 202)
+
+
+@router.get("/v3/api/lancement/{jid}")
+async def api_suivi(jid: str, req: Request):
+    """État d'un lancement envoyé par l'API : mémoire, part du jour, parts reportées, résultat."""
+    if (x := _api_refus(req)):
+        return x
+    j = JOBS.get(jid)
+    if not j:
+        return JSONResponse({"ok": False, "erreur": "lancement inconnu : l'enrichisseur a peut-être redémarré (voir l'historique)"}, 404)
+    res = j["resultats"]
+    connu = bool(j.get("reparti")) or j["etat"] != "en cours"
+    return {"ok": True, "lancement": jid, "nom": j.get("nom", ""),
+            "etat": {"en cours": "en_cours", "terminé": "termine", "arrêté": "arrete"}.get(j["etat"], "erreur"),
+            "repartition_connue": connu, "etape": j.get("phase", ""), "recues": j.get("recues", j.get("total", 0)),
+            "deja_enrichies": {"nombre": j.get("nb_memoire", 0), "societes": j.get("noms_memoire", [])},
+            "aujourdhui": (j.get("total", 0) - j.get("nb_memoire", 0)) if connu else None,
+            "reportees": j.get("lots_reportes", []), "non_programmees": j.get("non_programmees", 0),
+            "traitees": j["fait"], "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
+            "emails": sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email")),
+            "erreur": j.get("erreur", "")}
 
 
 @router.get("/v3/status/{jid}")
