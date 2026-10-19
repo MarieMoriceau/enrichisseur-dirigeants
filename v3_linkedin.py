@@ -261,11 +261,22 @@ def _plafonds_naf(txt: str) -> dict:
 PLAFONDS_NAF = _plafonds_naf(os.getenv("PLAFONDS_DIRIGEANTS_NAF", "69.10Z:5"))
 
 
+RE_AVOCATS = re.compile(r"\b(avocats?|aarpi|law|lawyers?)\b", re.I)
+
+
+def cabinet_avocats(r: dict) -> bool:
+    """Le nom (fichier, INSEE ou LinkedIn) désigne un cabinet d'avocats : « … Avocats », « AARPI … », « … Law », « … Lawyers »."""
+    return any(RE_AVOCATS.search(_sans_accents(r.get(k) or "")) for k in ("nom", "raison_sociale", "nom_linkedin"))
+
+
 def plafonner_dirigeants(r: dict) -> int:
     """Garde au plus N dirigeants pour les sociétés dont le code NAF est plafonné (avocats : 5).
     Ordre de préférence : rôle (CEO / managing partner, fondateur… puis associés), basé en Île-de-France, puis ordre
     de Sales Navigator. Renvoie le nombre de dirigeants écartés."""
-    n = PLAFONDS_NAF.get(re.sub(r"[^0-9A-Z]", "", (r.get("naf") or "").upper()))
+    naf = re.sub(r"[^0-9A-Z]", "", (r.get("naf") or "").upper())
+    n = PLAFONDS_NAF.get(naf)
+    if not naf and not n and cabinet_avocats(r):           # filet : NAF inconnu (SIREN pas trouvé), mais le nom parle
+        n = PLAFONDS_NAF.get("6910Z")
     ds = r.get("dirigeants") or []
     if not n or len(ds) <= n:
         return 0

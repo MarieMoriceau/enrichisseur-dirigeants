@@ -159,3 +159,15 @@ def test_plafond_avocats():
     assert LI.plafonner_dirigeants(autre) == 0 and len(autre["dirigeants"]) == 9      # autres secteurs : inchangé
     assert LI.plafonner_dirigeants({"naf": "6910Z", "dirigeants": associes[:4]}) == 0  # 4 ≤ 5 : rien à faire
     assert LI._plafonds_naf("69.10Z:5, 70.22Z:8,bidon") == {"6910Z": 5, "7022Z": 8}
+
+
+def test_filet_nom_avocats():
+    import v3_linkedin as LI
+    neuf = lambda: [{"nom_complet": f"A{i}", "role": "5 Associé / Gérant", "idf": True} for i in range(9)]
+    for nom in ("Dupont Avocats", "AARPI Martin & Co", "Gide Loyrette Nouel Law", "Smith Lawyers", "cabinet d'avocat X"):
+        r = {"nom": nom, "naf": "", "dirigeants": neuf()}
+        assert LI.plafonner_dirigeants(r) == 4, nom
+    for nom in ("Lawson Software", "Avocado Tech", "Legal Place"):
+        assert LI.plafonner_dirigeants({"nom": nom, "naf": "", "dirigeants": neuf()}) == 0, nom
+    # NAF connu et différent : le nom ne compte pas
+    assert LI.plafonner_dirigeants({"nom": "Law Consulting", "naf": "70.22Z", "dirigeants": neuf()}) == 0
