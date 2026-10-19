@@ -105,6 +105,16 @@ select.edit{padding:6px 6px;min-width:150px}
 .lien-li{font-size:12px;margin-left:4px}
 tr.pret td{background:var(--ok-soft)}
 tr.ecarte td{opacity:.55}
+.partis .ligne-partis{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.partis table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:12px}
+.partis th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);padding:6px 8px}
+.partis td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
+.partis td small{display:block;color:var(--muted);font-size:12px}
+.partis input.edit{width:100%;min-width:150px}
+.partis .alerte-mini{color:#7A4B00;background:#FFF4E0;border-radius:4px;padding:1px 6px;font-size:12px;display:inline-block;margin-top:3px}
+.partis tr.fait td{opacity:.55}
+.partis .tab-wrap{overflow-x:auto}
+
 .alerte{background:#FFF4E0;color:#7A4B00;border-radius:6px;padding:9px 12px;margin:0 0 12px;font-size:14px}
 .alerte.ko{background:var(--accent-soft, #F7E3E4);color:var(--accent, #B90009)}
 .ecart{border:1px solid var(--line);border-left:4px solid var(--rouge, #B90009);border-radius:8px;padding:14px 16px;margin-top:14px}
@@ -144,6 +154,16 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
     <a class="btn ghost" href="/v3/validation/api/export">Télécharger l'Excel</a>
     <span class="msg" id="xMsg"></span>
   </div>
+</div>
+<div class="card export partis" id="partis">
+  <div class="ligne-partis"><b>Contacts partis</b>
+    <span class="msg" id="pResume">Chargement…</span>
+    <button class="btn primary" id="pLancer" hidden>Rechercher les partis</button>
+    <button class="btn ghost" id="pArreter" hidden>Arrêter</button>
+    <button class="btn ghost" id="pVoir" hidden>Afficher</button>
+  </div>
+  <div class="msg" id="pEtat"></div>
+  <div id="pTable" hidden></div>
 </div>
 <!-- Encadré « Rattrapage » retiré le 16/10 : le contrôle des contacts CRM tourne dans chaque lancement (étape 4b).
      Le code reste dans v3_rattrapage.py / v3_import.py si besoin de le rebrancher. -->
@@ -505,6 +525,62 @@ $("#xMail").onclick = async () => {
   } catch (e) { $("#xMsg").className = "msg err"; $("#xMsg").textContent = e.message; }
   $("#xMail").disabled = false;
 };
+
+/* ─────────── contacts partis : nouvelle société, poste, e-mail ─────────── */
+let PARTIS = [], pTous = false, pTimer = null;
+async function partis() {
+  let j;
+  try { j = await api("/v3/validation/api/partis"); } catch (e) { $("#pResume").textContent = e.message; return; }
+  PARTIS = j.liste || [];
+  const n = e => PARTIS.filter(x => x.etat === e).length;
+  const e = j.etat || {};
+  $("#pResume").textContent = `${j.a_rechercher} à rechercher · ${n("à valider")} retrouvés à valider · ${n("validé")} validés · ${n("introuvable")} introuvables`;
+  $("#pLancer").hidden = e.actif || !j.a_rechercher;
+  $("#pArreter").hidden = !e.actif;
+  $("#pVoir").hidden = !PARTIS.length;
+  $("#pEtat").textContent = e.actif ? `Recherche en cours : ${e.phase || "…"}` : ((e.journal || []).slice(-1)[0] || "");
+  clearTimeout(pTimer); if (e.actif) pTimer = setTimeout(partis, 5000);
+  if (!$("#pTable").hidden) dessinerPartis();
+}
+function dessinerPartis() {
+  const L = PARTIS.filter(x => pTous || x.etat === "à valider");
+  $("#pVoir").textContent = $("#pTable").hidden ? "Afficher" : "Masquer";
+  if (!L.length) { $("#pTable").innerHTML = `<p class="msg">${pTous ? "Aucun parti recherché pour l'instant." : "Rien à valider."} <a href="#" id="pTous">${pTous ? "" : "Voir tout"}</a></p>`; }
+  else $("#pTable").innerHTML = `<p class="msg"><a href="#" id="pTous">${pTous ? "Seulement ceux à valider" : "Voir aussi les validés, écartés et introuvables"}</a></p>
+    <div class="tab-wrap"><table><thead><tr><th>Contact</th><th>Avant</th><th>Maintenant</th><th>Fonction</th><th>E-mail</th><th></th></tr></thead><tbody>
+    ${L.map((x, i) => {
+      const k = PARTIS.indexOf(x), fait = x.etat !== "à valider";
+      return `<tr class="${fait ? "fait" : ""}">
+        <td><b>${esc(x.nom_complet)}</b> <a class="lien-li" href="${esc(x.linkedin)}" target="_blank" rel="noopener">ouvrir ↗</a></td>
+        <td>${esc(x.ancienne_societe)}<small>${esc(x.ancienne_fonction || "")}</small></td>
+        <td>${x.nouvelle_societe ? `${x.linkedin_societe ? `<a href="${esc(x.linkedin_societe)}" target="_blank" rel="noopener">${esc(x.nouvelle_societe)}</a>` : esc(x.nouvelle_societe)}
+            <small>${[x.domaine, x.effectif !== undefined && x.effectif !== "" ? x.effectif + " sal. LinkedIn" : "", x.adresse].filter(Boolean).map(esc).join(" · ")}</small>
+            ${(x.alertes || []).map(a => `<span class="alerte-mini">${esc(a)}</span>`).join(" ")}` : `<small>${esc(x.detail || "introuvable")}</small>`}</td>
+        <td><input class="edit" data-pf="${k}" value="${esc(x.fonction || "")}" placeholder="Fonction" ${fait ? "disabled" : ""}><small>${esc(x.role || "")}</small></td>
+        <td><input class="edit" data-pe="${k}" value="${esc(x.email || "")}" placeholder="prenom.nom@societe.fr" ${fait ? "disabled" : ""}><small>${x.ancien_email ? "avant : " + esc(x.ancien_email) : ""}</small></td>
+        <td>${fait ? `<span class="pill ${x.etat === "validé" ? "ok" : "ko"}">${esc(x.etat)}</span> <button class="btn ghost" data-pa="à valider" data-k="${k}">Annuler</button>`
+              : `<button class="btn primary" data-pa="validé" data-k="${k}">Valider</button> <button class="btn ghost" data-pa="écarté" data-k="${k}">Écarter</button>`}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+  const t = $("#pTous"); t && (t.onclick = ev => { ev.preventDefault(); pTous = !pTous; dessinerPartis(); });
+  document.querySelectorAll("#pTable [data-pa]").forEach(b => b.onclick = async () => {
+    const x = PARTIS[+b.dataset.k], corps = {etat: b.dataset.pa};
+    const f = document.querySelector(`[data-pf="${b.dataset.k}"]`), m = document.querySelector(`[data-pe="${b.dataset.k}"]`);
+    if (f && f.value.trim()) corps.fonction = f.value.trim();
+    if (m && m.value.trim()) corps.email = m.value.trim();
+    b.disabled = true;
+    try { Object.assign(x, await api(`/v3/validation/api/partis/${x.page}/${encodeURIComponent(x.id)}`, corps)); dessinerPartis(); partis(); }
+    catch (e) { alert(e.message); b.disabled = false; }
+  });
+}
+$("#pVoir").onclick = () => { $("#pTable").hidden = !$("#pTable").hidden; dessinerPartis(); };
+$("#pLancer").onclick = async () => {
+  $("#pLancer").disabled = true;
+  try { const r = await api("/v3/validation/api/partis/lancer", {}); $("#pEtat").textContent = r.motif; }
+  catch (e) { $("#pEtat").textContent = e.message; }
+  $("#pLancer").disabled = false; partis();
+};
+$("#pArreter").onclick = async () => { await api("/v3/validation/api/partis/arreter", {}); partis(); };
+partis();
 charger();
 </script>
 </body>

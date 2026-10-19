@@ -122,6 +122,9 @@ def construire(socs: list) -> tuple:
               f"Contacts déjà dans Pipedrive ailleurs (à rattacher ou déplacer) : {len(l_exist)}",
               f"Décisions sur les contacts CRM : {len(l_crm)} (dont {sum(1 for l in l_crm if l[0] == 'marquer parti')} à marquer partis)",
               f"Sociétés écartées : {len(ecartees)}, dont {sum(1 for s in ecartees if s.get('decision_ecart') == 'À supprimer de la base')} à supprimer de Pipedrive (onglet dédié)", "",
+              "Contacts partis : contacts retrouvés dans une nouvelle société et validés. Mise à jour de la fiche existante :",
+              "  importer avec « Email actuel » comme clé ; le nouvel e-mail va dans une propriété (« nouvel_email ») ou se corrige à la main.",
+              "  Les nouvelles sociétés sont dans « Sociétés des partis » (à importer avant, pour l'association par domaine).", "",
               "Ordre d'import conseillé dans HubSpot : 1. Sociétés  2. Contacts à créer (associés par Company Domain Name)",
               "  3. Contacts existants et Contacts CRM : à traiter à la main ou en import de mise à jour (clé = e-mail).",
               "Propriétés HubSpot à créer avant l'import : date_validation_societe, date_validation_contact, effectif_linkedin,",
@@ -142,6 +145,26 @@ def construire(socs: list) -> tuple:
                                        "Décision admin", "Date validation contact", "Société validée ?", "Champs saisis à la main"], l_exist)
     feuille(wb, "Contacts CRM", ["Décision", "First Name", "Last Name", "Email", "Phone Number", "Job Title", "Rôle", "LinkedIn URL",
                                  "Company Domain Name", "Société", "ID personne Pipedrive", "Contrôle", "Détail du contrôle", "Date validation"], l_crm)
+    # ── contacts partis retrouvés et validés : mise à jour de la fiche existante (nouvelle société, poste, e-mail)
+    import v3_partis as PARTIS
+    partis = [x for x in PARTIS.liste(socs) if x.get("etat") == "validé"]
+    l_partis, l_soc_partis, vus = [], [], set()
+    for x in partis:
+        prenom, nom = _prenom_nom(x.get("nom_complet", ""))
+        l_partis.append([x.get("ancien_email", ""), x.get("email", ""), prenom, nom, x.get("fonction", ""), x.get("role", ""),
+                         x.get("linkedin", ""), x.get("domaine", ""), x.get("nouvelle_societe", ""), x.get("ancienne_societe", ""),
+                         x.get("id", ""), " ; ".join(x.get("alertes", [])), _date(x.get("decide_le") or x.get("le"))])
+        cle = x.get("domaine") or x.get("nouvelle_societe")
+        if cle and cle not in vus:
+            vus.add(cle)
+            rue, cp, ville = decouper_adresse(x.get("adresse", ""))
+            l_soc_partis.append([x.get("domaine", ""), x.get("nouvelle_societe", ""), x.get("linkedin_societe", ""),
+                                 rue, cp, ville, x.get("effectif", "")])
+    feuille(wb, "Contacts partis", ["Email actuel (clé HubSpot)", "Nouvel e-mail", "First Name", "Last Name", "Job Title", "Rôle",
+                                    "LinkedIn URL", "Company Domain Name", "Nouvelle société", "Ancienne société",
+                                    "ID personne Pipedrive", "Alertes", "Date validation"], l_partis)
+    feuille(wb, "Sociétés des partis", ["Company Domain Name", "Name", "LinkedIn Company Page", "Street Address", "Postal Code",
+                                        "City", "Effectif LinkedIn"], l_soc_partis)
     a_suppr = [s for s in ecartees if s.get("decision_ecart") == "À supprimer de la base"]
     feuille(wb, "Sociétés écartées", ["Société", "Domaine", "SIREN", "ID Pipedrive", "Décision", "Motif", "Écartée le"],
             [[s["nom"], domaine_de[s["page"]], s["siren"], (s["data"] or {}).get("id", ""), s.get("decision_ecart") or "Hors cible HubSpot",
@@ -152,7 +175,7 @@ def construire(socs: list) -> tuple:
     b = io.BytesIO()
     wb.save(b)
     resume = {"societes": len(l_soc), "contacts": len(l_new), "existants": len(l_exist), "crm": len(l_crm), "ecartees": len(ecartees),
-              "a_supprimer": len(a_suppr)}
+              "a_supprimer": len(a_suppr), "partis": len(l_partis)}
     return b.getvalue(), resume
 
 
@@ -179,7 +202,8 @@ async def envoyer(req: Request):
     corps = "\n".join(["Bonjour,", "", "Voici l'export des validations de l'enrichisseur v3, prêt pour l'import HubSpot.", "",
                        f"Sociétés validées : {r['societes']}", f"Contacts à créer : {r['contacts']}",
                        f"Contacts déjà dans Pipedrive ailleurs : {r['existants']}", f"Décisions sur les contacts CRM : {r['crm']}",
-                       f"Sociétés écartées : {r['ecartees']} (dont {r.get('a_supprimer', 0)} à supprimer de Pipedrive)", "",
+                       f"Sociétés écartées : {r['ecartees']} (dont {r.get('a_supprimer', 0)} à supprimer de Pipedrive)",
+                       f"Contacts partis retrouvés (mise à jour) : {r.get('partis', 0)}", "",
                        "Le fichier est cumulatif : tout ce qui est validé à ce jour. Le mode d'emploi est dans l'onglet Lisez-moi.", "",
                        "Enrichisseur v3"])
     try:

@@ -218,3 +218,12 @@ Tout ce qui arrive par l'API part sur le compte LinkedIn **automatisations**, ja
 |---|---|
 | `ENRICHISSEUR_API_KEY` | clé partagée avec les outils qui envoient des listes (même valeur des deux côtés) |
 | `API_MAX_SOCIETES` | nombre maximum de sociétés par envoi (2000) |
+
+## 🔁 Contacts partis (`v3_partis.py`)
+
+Les contacts du CRM marqués « marquer parti » dans l'écran admin peuvent être retrouvés : bouton **Rechercher les partis**
+(encadré « Contacts partis » en haut de `/v3/validation`). Compte LinkedIn **automatisations**, file d'attente du compte,
+dans la limite du quota du jour (le reste attend le lendemain). Étapes : Profile Scraper (société et poste actuels),
+Company Scraper (site, adresse, effectif), Kaspr (e-mail). Résultat dans la colonne Notion « Partis suivis » (JSON, page
+mémoire de l'ancienne société, créée automatiquement). Alertes effectif < 10 et hors Île-de-France, l'admin tranche.
+Validés → export HubSpot, onglets « Contacts partis » (clé = e-mail actuel, nouvel e-mail à côté) et « Sociétés des partis ».
