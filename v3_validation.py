@@ -5,7 +5,7 @@ Enrichisseur v3 — validation des résultats, en deux écrans
       Écran Société : adresses CRM / site / LinkedIn / Google, recommandation, effectif LinkedIn, domiciliation.
                       On coche l'adresse retenue (ou on la saisit), puis on valide ou on écarte la société.
       Écran Contacts CRM : contacts déjà dans Pipedrive « probablement parti » / « à vérifier » / « toujours là ».
-                      Seuls ces deux-là décident (garder / marquer parti / à revoir).
+                      Seuls ces deux-là décident (garder / marquer parti / à supprimer / à revoir).
 
   /v3/contacts    (mot de passe NÉGOS ; l'admin y a aussi accès)
       Nouveaux dirigeants trouvés, dès la fin du lancement : profil LinkedIn visible, téléphone à compléter,
@@ -27,7 +27,7 @@ import v3_linkedin as LI
 
 router = APIRouter()
 SOURCES = ("CRM", "Site", "LinkedIn", "Google", "Saisie")
-ACTIONS_CRM = ("garder", "marquer parti", "à revoir")
+ACTIONS_CRM = ("garder", "marquer parti", "à supprimer", "à revoir")
 ACTIONS_AILLEURS = ("à décider", "changer de société", "deux sociétés")   # contact déjà fiché chez une autre société
 ETATS_NOUVEAU = ("à traiter", "prêt pour HubSpot", "écarté")
 ROLES = ["1 CEO / Président / DG", "2 Fondateur", "3 COO / Opérations", "4 CFO / DAF", "5 Associé / Gérant",
