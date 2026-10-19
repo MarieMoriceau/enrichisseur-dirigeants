@@ -105,6 +105,18 @@ select.edit{padding:6px 6px;min-width:150px}
 .lien-li{font-size:12px;margin-left:4px}
 tr.pret td{background:var(--ok-soft)}
 tr.ecarte td{opacity:.55}
+.alerte{background:#FFF4E0;color:#7A4B00;border-radius:6px;padding:9px 12px;margin:0 0 12px;font-size:14px}
+.alerte.ko{background:var(--accent-soft, #F7E3E4);color:var(--accent, #B90009)}
+.ecart{border:1px solid var(--line);border-left:4px solid var(--rouge, #B90009);border-radius:8px;padding:14px 16px;margin-top:14px}
+.ecart h3{margin-top:0}
+.choix-ecart{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.choix-ecart label{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:6px;padding:8px 10px;cursor:pointer}
+.choix-ecart label:has(input:checked){border-color:var(--violet, #3C214B);background:var(--tag, #E8EFF4)}
+.choix-ecart small{display:block;color:var(--muted);font-size:12.5px}
+.motifs{display:flex;flex-wrap:wrap;gap:6px 16px;margin:12px 0 8px;font-size:14px}
+.motifs label{display:flex;gap:6px;align-items:center;cursor:pointer}
+#motifLibre{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+@media (max-width:720px){.choix-ecart{grid-template-columns:1fr}}
 .boutons{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .boutons .btn{padding:6px 10px;font-size:13px}
 .legende{font-size:12.5px;color:var(--muted);margin:4px 0 8px}
@@ -153,6 +165,8 @@ const ETAPES = ["À valider","Société validée","Contacts validés","Écartée
 // Libellés affichés : deux files de travail distinctes (sociétés, puis contacts), les valeurs Notion ne changent pas
 const LIB = {"À valider":"Sociétés à valider","Société validée":"Contacts à valider","Contacts validés":"Terminées","Écartée":"Écartées","Toutes":"Toutes"};
 const lib = e => LIB[e] || e;
+const SEUIL_EFFECTIF = 10;                       // en dessous : signalé « effectif trop faible » (suggestion)
+const MOTIFS = ["Effectif trop faible", "Hors Paris", "Société fermée", "Doublon"];
 const PILL = {"À valider":"", "Société validée":"warn", "Contacts validés":"ok", "Écartée":"ko"};
 let SOC = [], filtre = "À valider", courant = null, info = null, ecran = "societe";
 const $ = s => document.querySelector(s);
@@ -193,6 +207,7 @@ function dessinerListe() {
       <b>${esc(s.nom)}</b>
       <small>${esc(s.domaine || s.siren || "—")} · ${s.effectif ?? "?"} sal. LinkedIn · ${esc(s.traitee)}</small>
       ${filtre === "Toutes" ? `<span class="pill ${PILL[s.validation]}">${esc(lib(s.validation))}</span>` : ""}
+      ${s.validation === "Écartée" ? `<span class="pill ko">${s.decision_ecart === "À supprimer de la base" ? "à supprimer" : "hors HubSpot"}</span>` : ""}
     </button>`).join("") : `<div class="vide">Rien ici.</div>`;
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
@@ -250,7 +265,17 @@ function ecranSociete() {
     </label>` : `
     <div class="adr absente"><span></span><span class="src">${src}</span><span class="txt"><small>rien trouvé</small></span><span></span></div>`;
   const eff = d.effectif_linkedin;
+  // Signaux « hors cible » : effectif trop faible, bureaux hors de Paris (suggestion seulement, c'est vous qui décidez)
+  const effN = eff === "" || eff == null ? null : Number(eff);
+  const cpDe = a => ((a || "").match(/\b(\d{5})\b/) || [])[1] || "";
+  const cp = cpDe(info.adresse_retenue) || cpDe(d.adresse_proposee) || cpDe(site) || cpDe(d.adresse_linkedin) || cpDe(d.adresse_google) || cpDe(d.adresse_crm);
+  const alertes = [];
+  if (effN != null && !isNaN(effN) && effN < SEUIL_EFFECTIF) alertes.push(["Effectif trop faible", `Effectif LinkedIn ${effN} (moins de ${SEUIL_EFFECTIF})`]);
+  if (cp && !cp.startsWith("75")) alertes.push(["Hors Paris", `Bureaux hors de Paris (${cp})`]);
+  if (/radi|ferm/i.test(d.statut || "")) alertes.push(["Société fermée", "Société fermée à l'INSEE"]);
   $("#ecran").innerHTML = `
+    ${alertes.length ? `<div class="alerte"><b>À regarder :</b> ${alertes.map(a => esc(a[1])).join(" · ")}. Elle n'entre peut-être pas dans HubSpot.</div>` : ""}
+    ${info.validation === "Écartée" ? `<div class="alerte ko"><b>${esc(info.decision_ecart || "Hors cible HubSpot")}</b>${info.motif_ecart ? " · " + esc(info.motif_ecart) : ""}${info.validee ? ` · le ${esc(info.validee)}` : ""}</div>` : ""}
     <div class="reco"><b>Recommandation de l'outil :</b> ${esc(d.action_adresse || "aucune")}
       ${d.adresse_proposee ? `<br><b>Adresse proposée :</b> ${esc(d.adresse_proposee)}` : ""}
       ${d.confiance_adresse ? `<br><small>Confiance ${esc(d.confiance_adresse)}${d.sources_adresse ? " · sources : " + esc(d.sources_adresse) : ""}</small>` : ""}
@@ -277,9 +302,21 @@ function ecranSociete() {
     ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}
     <div class="actions">
       <button class="btn primary" id="okSoc">Valider la société</button>
-      <button class="btn ghost" id="koSoc">Écarter</button>
+      <button class="btn ghost" id="koSoc">Écarter…</button>
       ${info.validation !== "À valider" ? `<button class="btn ghost" id="raz">Remettre à valider</button>` : ""}
       <span class="msg" id="msg"></span>
+    </div>
+    <div class="ecart" id="panEcart" hidden>
+      <h3>Écarter cette société</h3>
+      <div class="choix-ecart">
+        <label><input type="radio" name="dec" value="Hors cible HubSpot" ${info.decision_ecart !== "À supprimer de la base" ? "checked" : ""}>
+          <span><b>N'entre pas dans HubSpot</b><small>Elle reste dans Pipedrive, on ne l'importe pas.</small></span></label>
+        <label><input type="radio" name="dec" value="À supprimer de la base" ${info.decision_ecart === "À supprimer de la base" ? "checked" : ""}>
+          <span><b>À supprimer de la base</b><small>Listée dans l'onglet « À supprimer de Pipedrive » de l'export.</small></span></label>
+      </div>
+      <div class="motifs">${MOTIFS.map(m => `<label><input type="checkbox" value="${esc(m)}" ${alertes.some(a => a[0] === m) || (info.motif_ecart || "").includes(m) ? "checked" : ""}> ${esc(m)}</label>`).join("")}</div>
+      <input type="text" id="motifLibre" placeholder="Autre précision (facultatif)" aria-label="Autre précision">
+      <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
     </div>`;
   $("#saisie").onfocus = () => { document.querySelector("input[name=adr][value=Saisie]").checked = true; };
   $("#okSoc").onclick = () => {
@@ -288,7 +325,12 @@ function ecranSociete() {
     if (!adresse) return message("Cochez ou saisissez l'adresse retenue.", true);
     envoyerSociete({statut: "Société validée", adresse, source: r.value}, "contacts");
   };
-  $("#koSoc").onclick = () => envoyerSociete({statut: "Écartée"});
+  $("#koSoc").onclick = () => { $("#panEcart").hidden = false; $("#panEcart").scrollIntoView({behavior: "smooth", block: "nearest"}); };
+  $("#annEcart").onclick = () => { $("#panEcart").hidden = true; };
+  $("#okEcart").onclick = () => envoyerSociete({statut: "Écartée",
+    decision: (document.querySelector("input[name=dec]:checked") || {}).value,
+    motifs: [...document.querySelectorAll("#panEcart .motifs input:checked")].map(x => x.value),
+    motif_libre: $("#motifLibre").value.trim()});
   $("#raz") && ($("#raz").onclick = () => envoyerSociete({statut: "À valider"}, "societe"));
 }
 
@@ -299,7 +341,7 @@ async function envoyerSociete(corps, suite) {
   message("Enregistrement dans Notion…");
   try {
     const maj = await api("/v3/validation/api/societe/" + courant, corps);
-    Object.assign(info, {validation: maj.validation, adresse_retenue: maj.adresse_retenue});
+    Object.assign(info, {validation: maj.validation, adresse_retenue: maj.adresse_retenue, decision_ecart: maj.decision_ecart, motif_ecart: maj.motif_ecart});
     const s = SOC.find(s => s.page === courant); if (s) Object.assign(s, maj, {decisions: undefined});
     dessinerFiltres();
     if (corps.statut === "Écartée") return suivante();
