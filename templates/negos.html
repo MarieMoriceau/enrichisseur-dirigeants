@@ -127,6 +127,10 @@ footer a{color:var(--tag-ink)}
 .discret{color:var(--muted);font-size:13px;margin-left:10px;white-space:nowrap;display:inline-block;padding:6px 0}
 .discret:hover{color:var(--ink)}
 .kpi3{grid-template-columns:repeat(3,1fr)}
+.detail{margin-top:12px}
+.detail summary{cursor:pointer;color:var(--muted);font-size:13px}
+.detail summary:hover{color:var(--ink)}
+.detail .journal{max-height:260px;overflow-y:auto}
 .suite{margin-top:12px;font-size:14px;background:var(--tag);color:var(--tag-ink);border-radius:6px;padding:9px 12px}
 @media (max-width:720px){.kpi3{grid-template-columns:1fr 1fr 1fr}.kpi b{font-size:22px}}
 </style>
@@ -208,6 +212,10 @@ footer a{color:var(--tag-ink)}
         <a class="btn dl grand" id="valider" href="/v3/contacts">Valider mes contacts</a>
         <a class="discret" id="dl" href="#">télécharger l'Excel</a>
       </div>
+      <details class="detail" id="detail">
+        <summary>Voir le détail</summary>
+        <div class="journal" id="journal"></div>
+      </details>
       <div class="actions" id="actions">
         <span class="hint" style="margin:auto 0">Vous pouvez fermer cette page, un mail vous prévient à la fin.</span>
         <button class="btn ghost" id="stop" type="button">Arrêter</button>
@@ -310,6 +318,7 @@ async function poll(){
   $("k1").textContent=s.fait+" / "+s.total;$("k2").textContent=s.dirigeants;$("k3").textContent=s.emails;
   $("chrono").textContent=Math.floor(s.secondes/60)+" min";
   if(s.report_simple){$("suite").hidden=false;$("suite").textContent=s.report_simple}
+  $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");
   if(s.etat==="en cours"){$("msg").textContent=etape(s);return}
   $("enCours").hidden=true;$("actions").hidden=true;$("fini").hidden=false;
   const contacts=s.perimetre==="dirigeants"||s.perimetre==="tout";
