@@ -201,3 +201,20 @@ Tests automatiques : `python3 -m pytest tests/`.
 | `PLAFONDS_DIRIGEANTS_NAF` | nombre maximum de dirigeants gardés par code NAF (`69.10Z:5` par défaut : avocats, notaires, huissiers, 5 au plus, choisis par rôle puis Île-de-France). Filet : sans code NAF (SIREN non trouvé), un nom en « avocat(s) », « AARPI », « law » ou « lawyers » reçoit le plafond du 69.10Z. Plusieurs codes : `69.10Z:5,70.22Z:8` |
 | `MDP_AUTOMATISATIONS` | mot de passe de la page privée `/v3/automatisations` (runs manuels sur le compte automatisations) |
 | `CRON_SECRET` | clé de `/cron`, `/v3/reprendre` et `/v3/fenetre` (déjà utilisée par l'ancien réveil) |
+
+## 🔌 API : listes envoyées par les autres outils (prospection-hebdo…)
+
+Tout ce qui arrive par l'API part sur le compte LinkedIn **automatisations**, jamais sur celui des négos.
+
+- `POST /v3/api/lancer` — en-tête `X-Enrichisseur-Cle: <ENRICHISSEUR_API_KEY>`, corps JSON :
+  `{"nom": "...", "source": "prospection-hebdo", "perimetre": "tout", "mails": ["..."], "forcer": false,
+    "societes": [{"nom", "siren", "code_postal", "ville", "adresse", "site", "id_pipedrive", "statut_pipedrive", "nego", "campagne", "ref_notion"}]}`
+  Seul `nom` est obligatoire par société. Réponse 202 : `{"ok": true, "lancement": "<id>", "recues", "ignorees_sans_nom", "suivi": "<url>"}`.
+  Erreurs : 400 (JSON / champs), 401 (clé), 413 (plus de `API_MAX_SOCIETES`, 2000 par défaut), 503 (clé ou PhantomBuster non configurés).
+- `GET /v3/api/lancement/<id>` (même en-tête) : état, sociétés déjà enrichies (mémoire 6 mois), part du jour, parts reportées.
+- Au-delà du quota du jour du compte automatisations : rien n'est refusé, la suite est programmée les jours suivants à `REPRISE_HEURE`.
+
+| Variable Render | Rôle |
+|---|---|
+| `ENRICHISSEUR_API_KEY` | clé partagée avec les outils qui envoient des listes (même valeur des deux côtés) |
+| `API_MAX_SOCIETES` | nombre maximum de sociétés par envoi (2000) |
