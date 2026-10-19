@@ -478,7 +478,7 @@ function ecranContacts() {
       <div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Contact</th><th>Fiché chez</th><th>Négos</th></tr></thead><tbody>
       ${ailleurs.map((x, i) => `<tr>
         <td><select class="edit" data-a="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["à décider","changer de société","deux sociétés"], avantA[String(x.ailleurs.id)] || "à décider")}</select></td>
-        <td>${esc(x.nom_complet)}<small>${esc(x.fonction)} chez ${esc(info.nom)}</small></td>
+        <td>${esc(x.nom_complet)} ${lienLi(x.linkedin, x.nom_complet, info.nom)}<small>${esc(x.fonction)} chez ${esc(info.nom)}</small></td>
         <td>${esc(x.ailleurs.org_nom)}<small>fiche ${esc(x.ailleurs.id)}</small></td>
         <td><span class="pill ${x.etat === "prêt pour HubSpot" ? "ok" : x.etat === "écarté" ? "ko" : ""}">${esc(x.etat === "prêt pour HubSpot" ? "à ajouter" : x.etat)}</span></td></tr>`).join("")}
       </tbody></table></div>` : ""}
