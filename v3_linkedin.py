@@ -247,6 +247,46 @@ def role(titre: str) -> str:
 # Filtre « Géographie : France » de Sales Navigator (identifiant LinkedIn de la France). Vide = pas de filtre à la source ;
 # le tri par lieu (en_france) reste de toute façon appliqué ensuite, en filet de sécurité.
 SN_REGION_FRANCE = os.getenv("SN_REGION_FRANCE", "105015875")
+# Nombre maximum de dirigeants gardés selon le code NAF de la société (cabinets d'avocats : des dizaines d'associés,
+# on ne garde que les plus utiles). Format Render : « 69.10Z:5,70.22Z:8 ». Par défaut : avocats (69.10Z) → 5.
+def _plafonds_naf(txt: str) -> dict:
+    out = {}
+    for morceau in (txt or "").split(","):
+        naf, _, n = morceau.partition(":")
+        if naf.strip() and n.strip().isdigit():
+            out[re.sub(r"[^0-9A-Z]", "", naf.upper())] = int(n)
+    return out
+
+
+PLAFONDS_NAF = _plafonds_naf(os.getenv("PLAFONDS_DIRIGEANTS_NAF", "69.10Z:5"))
+
+
+RE_AVOCATS = re.compile(r"\b(avocats?|aarpi|law|lawyers?)\b", re.I)
+
+
+def cabinet_avocats(r: dict) -> bool:
+    """Le nom (fichier, INSEE ou LinkedIn) désigne un cabinet d'avocats : « … Avocats », « AARPI … », « … Law », « … Lawyers »."""
+    return any(RE_AVOCATS.search(_sans_accents(r.get(k) or "")) for k in ("nom", "raison_sociale", "nom_linkedin"))
+
+
+def plafonner_dirigeants(r: dict) -> int:
+    """Garde au plus N dirigeants pour les sociétés dont le code NAF est plafonné (avocats : 5).
+    Ordre de préférence : rôle (CEO / managing partner, fondateur… puis associés), basé en Île-de-France, puis ordre
+    de Sales Navigator. Renvoie le nombre de dirigeants écartés."""
+    naf = re.sub(r"[^0-9A-Z]", "", (r.get("naf") or "").upper())
+    n = PLAFONDS_NAF.get(naf)
+    if not naf and not n and cabinet_avocats(r):           # filet : NAF inconnu (SIREN pas trouvé), mais le nom parle
+        n = PLAFONDS_NAF.get("6910Z")
+    ds = r.get("dirigeants") or []
+    if not n or len(ds) <= n:
+        return 0
+    rang = {id(d): i for i, d in enumerate(ds)}
+    gardes = sorted(ds, key=lambda d: (d.get("role") or "9", not d.get("idf"), rang[id(d)]))[:n]
+    r["dirigeants"] = [d for d in ds if any(d is g for g in gardes)]        # garde l'ordre d'origine
+    r["dirigeants_ecartes_naf"] = len(ds) - n
+    return len(ds) - n
+
+
 PLAFOND_SN = 150          # profils lus par recherche Sales Navigator (au-delà, le lot est coupé en deux)
 # Au-delà de ce nombre de salariés LinkedIn, on ne cherche plus les « directeurs » (trop nombreux, rarement décideurs
 # d'un déménagement) : seulement C-level, propriétaires / associés et VP.
@@ -905,6 +945,12 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),
                         "email": "", "source_email": "", "dans_pipedrive": ""})
 
+        # 4a. plafond par code NAF (avocats : 5 dirigeants au plus), avant les contrôles CRM et la recherche d'e-mails
+        ecartes = [(r["nom"], plafonner_dirigeants(r)) for r in cibles]
+        ecartes = [(nom, n) for nom, n in ecartes if n]
+        if ecartes:
+            journal(f"Plafond par code NAF : {sum(n for _, n in ecartes)} dirigeants écartés sur {len(ecartes)} société(s) "
+                    f"({', '.join(f'{nom} −{n}' for nom, n in ecartes[:5])}{'…' if len(ecartes) > 5 else ''})")
         if cibles and PB_SALESNAV and SN_REGION_FRANCE and len(cibles) >= 5 and not job.get("sn_lignes"):
             journal("⚠️ Sales Navigator n'a renvoyé aucun dirigeant : le filtre France (SN_REGION_FRANCE) est peut-être mal réglé")
         if job.get("hors_france"):
