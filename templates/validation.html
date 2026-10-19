@@ -44,6 +44,8 @@ h1{font-family:var(--display);font-weight:700;font-size:clamp(24px,3.6vw,32px);l
 .filtres{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .filtres button{font:500 12.5px var(--body);border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:4px 10px;cursor:pointer}
 .filtres button[aria-pressed=true]{background:var(--violet);border-color:var(--violet);color:#fff}
+.filtres button.file{font-size:13.5px;padding:6px 14px;font-weight:700;color:var(--ink);border-color:var(--violet)}
+.filtres button.file[aria-pressed=true]{color:#fff}
 input[type=search],input[type=text],select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%}
 .items{overflow:auto;margin-top:10px;border-top:1px solid var(--line)}
 .item{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);font:inherit;padding:9px 6px;cursor:pointer}
@@ -148,6 +150,9 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
 
 <script>
 const ETAPES = ["À valider","Société validée","Contacts validés","Écartée"];
+// Libellés affichés : deux files de travail distinctes (sociétés, puis contacts), les valeurs Notion ne changent pas
+const LIB = {"À valider":"Sociétés à valider","Société validée":"Contacts à valider","Contacts validés":"Terminées","Écartée":"Écartées","Toutes":"Toutes"};
+const lib = e => LIB[e] || e;
 const PILL = {"À valider":"", "Société validée":"warn", "Contacts validés":"ok", "Écartée":"ko"};
 let SOC = [], filtre = "À valider", courant = null, info = null, ecran = "societe";
 const $ = s => document.querySelector(s);
@@ -171,7 +176,7 @@ async function charger() {
 function dessinerFiltres() {
   const n = e => SOC.filter(s => e === "Toutes" || s.validation === e).length;
   $("#filtres").innerHTML = [...ETAPES, "Toutes"].map(e =>
-    `<button aria-pressed="${e === filtre}" data-f="${esc(e)}">${esc(e)} · ${n(e)}</button>`).join("");
+    `<button aria-pressed="${e === filtre}" data-f="${esc(e)}"${e === "À valider" || e === "Société validée" ? ' class="file"' : ""}>${esc(lib(e))} · ${n(e)}</button>`).join("");
   $("#filtres").querySelectorAll("button").forEach(b => b.onclick = () => { filtre = b.dataset.f; dessinerFiltres(); dessinerListe(); });
 }
 
@@ -187,7 +192,7 @@ function dessinerListe() {
     <button class="item" data-p="${s.page}" aria-current="${s.page === courant}">
       <b>${esc(s.nom)}</b>
       <small>${esc(s.domaine || s.siren || "—")} · ${s.effectif ?? "?"} sal. LinkedIn · ${esc(s.traitee)}</small>
-      ${filtre === "Toutes" ? `<span class="pill ${PILL[s.validation]}">${esc(s.validation)}</span>` : ""}
+      ${filtre === "Toutes" ? `<span class="pill ${PILL[s.validation]}">${esc(lib(s.validation))}</span>` : ""}
     </button>`).join("") : `<div class="vide">Rien ici.</div>`;
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
@@ -207,7 +212,7 @@ function dessinerDetail() {
   $("#detail").innerHTML = `
     <div class="tete">
       <h2>${esc(info.nom)}</h2>
-      <span class="pill ${PILL[info.validation]}">${esc(info.validation)}</span>
+      <span class="pill ${PILL[info.validation]}">${esc(lib(info.validation))}</span>
       <span class="meta">${[d.domaine ? `<a href="https://${esc(d.domaine)}" target="_blank" rel="noopener">${esc(d.domaine)}</a>` : "",
         "SIREN " + esc(info.siren || "—"), esc(d.statut || ""), `lancement « ${esc(info.lancement)} » du ${esc(info.traitee)}`].filter(Boolean).join(" · ")}</span>
     </div>
@@ -446,7 +451,7 @@ function suivante() {
   const v = visibles(), i = v.findIndex(s => s.page === courant);
   const next = v.find((s, j) => j > i && s.page !== courant) || v.find(s => s.page !== courant);
   dessinerListe();
-  if (next) ouvrir(next.page); else { courant = null; $("#detail").innerHTML = `<div class="vide">Plus rien dans « ${esc(filtre)} ». Bien joué.</div>`; }
+  if (next) ouvrir(next.page); else { courant = null; $("#detail").innerHTML = `<div class="vide">Plus rien dans « ${esc(lib(filtre))} ». Bien joué.</div>`; }
 }
 
 $("#xMail").onclick = async () => {
