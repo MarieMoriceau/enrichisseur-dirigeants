@@ -166,7 +166,8 @@ const ETAPES = ["À valider","Société validée","Contacts validés","Écartée
 const LIB = {"À valider":"Sociétés à valider","Société validée":"Contacts à valider","Contacts validés":"Terminées","Écartée":"Écartées","Toutes":"Toutes"};
 const lib = e => LIB[e] || e;
 const SEUIL_EFFECTIF = 10;                       // en dessous : signalé « effectif trop faible » (suggestion)
-const MOTIFS = ["Effectif trop faible", "Hors Paris", "Société fermée", "Doublon"];
+const MOTIFS = ["Effectif trop faible", "Hors Île-de-France", "Société fermée", "Doublon"];
+const IDF = ["75", "77", "78", "91", "92", "93", "94", "95"];   // départements d'Île-de-France
 const PILL = {"À valider":"", "Société validée":"warn", "Contacts validés":"ok", "Écartée":"ko"};
 let SOC = [], filtre = "À valider", courant = null, info = null, ecran = "societe";
 const $ = s => document.querySelector(s);
@@ -271,7 +272,7 @@ function ecranSociete() {
   const cp = cpDe(info.adresse_retenue) || cpDe(d.adresse_proposee) || cpDe(site) || cpDe(d.adresse_linkedin) || cpDe(d.adresse_google) || cpDe(d.adresse_crm);
   const alertes = [];
   if (effN != null && !isNaN(effN) && effN < SEUIL_EFFECTIF) alertes.push(["Effectif trop faible", `Effectif LinkedIn ${effN} (moins de ${SEUIL_EFFECTIF})`]);
-  if (cp && !cp.startsWith("75")) alertes.push(["Hors Paris", `Bureaux hors de Paris (${cp})`]);
+  if (cp && !IDF.includes(cp.slice(0, 2))) alertes.push(["Hors Île-de-France", `Bureaux hors d'Île-de-France (${cp})`]);
   if (/radi|ferm/i.test(d.statut || "")) alertes.push(["Société fermée", "Société fermée à l'INSEE"]);
   $("#ecran").innerHTML = `
     ${alertes.length ? `<div class="alerte"><b>À regarder :</b> ${alertes.map(a => esc(a[1])).join(" · ")}. Elle n'entre peut-être pas dans HubSpot.</div>` : ""}

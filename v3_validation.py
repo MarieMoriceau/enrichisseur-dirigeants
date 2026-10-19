@@ -265,7 +265,7 @@ async def admin_societe(page_id: str, req: Request):
 
 
 DECISIONS_ECART = ["Hors cible HubSpot", "À supprimer de la base"]
-MOTIFS_ECART = ["Effectif trop faible", "Hors Paris", "Société fermée", "Doublon"]
+MOTIFS_ECART = ["Effectif trop faible", "Hors Île-de-France", "Société fermée", "Doublon"]
 _COLONNES_ECART = {"ok": False}
 
 

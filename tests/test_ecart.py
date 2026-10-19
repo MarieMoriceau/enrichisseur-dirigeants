@@ -33,12 +33,12 @@ def _client(monkeypatch):
 def test_ecarter_a_supprimer(monkeypatch):
     c, envois = _client(monkeypatch)
     r = c.post(f"/v3/validation/api/societe/{PAGE}", json={"statut": "Écartée", "decision": "À supprimer de la base",
-                                                         "motifs": ["Hors Paris", "bidon"], "motif_libre": "  siège à Lyon "})
+                                                         "motifs": ["Hors Île-de-France", "bidon"], "motif_libre": "  siège à Lyon "})
     assert r.status_code == 200, r.text
     assert envois[0][0] == "PATCH" and "/databases/" in envois[0][1]          # colonnes créées une fois
     props = envois[1][2]["properties"]
     assert props["Écartée pour"] == {"select": {"name": "À supprimer de la base"}}
-    assert props["Motif écart"]["rich_text"][0]["text"]["content"] == "Hors Paris · siège à Lyon"
+    assert props["Motif écart"]["rich_text"][0]["text"]["content"] == "Hors Île-de-France · siège à Lyon"
     assert r.json()["decision_ecart"] == "À supprimer de la base"
 
 
