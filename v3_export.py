@@ -6,7 +6,7 @@ et les contacts par leur e-mail, donc réimporter le même fichier met à jour a
   · Sociétés          : sociétés validées (adresse retenue, effectif LinkedIn, date de validation société)
   · Contacts à créer   : nouveaux dirigeants validés par les négos (saisies manuelles comprises, date de validation contact)
   · Contacts existants : dirigeants déjà dans Pipedrive chez une autre société (décision admin : changer de société / deux sociétés)
-  · Contacts CRM       : décisions de l'admin sur les contacts déjà au CRM (garder / marquer parti / à revoir, corrections)
+  · Contacts CRM       : décisions de l'admin sur les contacts déjà au CRM (garder / marquer parti / à supprimer / à revoir, corrections)
   · Sociétés écartées
 Envoyé par mail à COPIE_FICHIER_COMPLET (Marie) ou téléchargé depuis l'écran admin.
 """
@@ -108,7 +108,7 @@ def construire(socs: list) -> tuple:
                           x.get("fonction") or p.get("fonction", ""), x.get("role") or p.get("role", ""), x.get("linkedin") or p.get("linkedin", ""),
                           domaine_de[s["page"]], s["nom"], x.get("id", ""), x.get("statut") or p.get("statut", ""), p.get("detail", ""),
                           _date(x.get("le") or s["validee"])])
-    ordre = {"marquer parti": 0, "à revoir": 1, "garder": 2}
+    ordre = {"à supprimer": 0, "marquer parti": 1, "à revoir": 2, "garder": 3}
     l_crm.sort(key=lambda l: (ordre.get(l[0], 3), l[9]))
 
     wb = Workbook()
@@ -120,7 +120,7 @@ def construire(socs: list) -> tuple:
               f"Sociétés validées : {len(l_soc)}",
               f"Contacts à créer (validés par les négos) : {len(l_new)}",
               f"Contacts déjà dans Pipedrive ailleurs (à rattacher ou déplacer) : {len(l_exist)}",
-              f"Décisions sur les contacts CRM : {len(l_crm)} (dont {sum(1 for l in l_crm if l[0] == 'marquer parti')} à marquer partis)",
+              f"Décisions sur les contacts CRM : {len(l_crm)} (dont {sum(1 for l in l_crm if l[0] == 'marquer parti')} à marquer partis, {sum(1 for l in l_crm if l[0] == 'à supprimer')} à supprimer)",
               f"Sociétés écartées : {len(ecartees)}, dont {sum(1 for s in ecartees if s.get('decision_ecart') == 'À supprimer de la base')} à supprimer de Pipedrive (onglet dédié)", "",
               "Contacts partis : contacts retrouvés dans une nouvelle société et validés. Mise à jour de la fiche existante :",
               "  importer avec « Email actuel » comme clé ; le nouvel e-mail va dans une propriété (« nouvel_email ») ou se corrige à la main.",
