@@ -194,10 +194,16 @@ function selectRole(x, roles) {
   const m = (x.modifie || []).includes("role") ? " modif" : "";
   return `<select class="edit${m}" data-k="role" aria-label="Rôle de ${esc(x.nom_complet)}"><option value="">—</option>${opts.map(o => `<option ${o === x.role ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
 }
+// Lien LinkedIn : le profil s'il est connu, sinon une recherche LinkedIn « nom + société » pour le retrouver
+function lienLi(url, nom, societe) {
+  if (url) return `<a class="lien-li" href="${esc(url)}" target="_blank" rel="noopener">ouvrir ↗</a>`;
+  const q = encodeURIComponent([nom, societe].filter(Boolean).join(" "));
+  return `<a class="lien-li" href="https://www.linkedin.com/search/results/people/?keywords=${q}" target="_blank" rel="noopener" title="Profil absent de Pipedrive : recherche sur LinkedIn">chercher ↗</a>`;
+}
 function ligneSaisie(x, i, roles, finDeLigne, societe) {
   const cls = x.etat === "prêt pour HubSpot" ? "pret" : x.etat === "écarté" ? "ecarte" : "";
   return `<tr id="l${i}" class="${cls}">
-    <td><b>${esc(x.nom_complet)}</b>${x.linkedin ? `<a class="lien-li" href="${esc(x.linkedin)}" target="_blank" rel="noopener">ouvrir ↗</a>` : ""}
+    <td><b>${esc(x.nom_complet)}</b>${lienLi(x.linkedin, x.nom_complet, (INFO && INFO.nom) || "")}
       <div style="margin-top:4px">${champ(x, "linkedin")}</div>
       ${x.ailleurs && x.ailleurs.id ? `<small>Déjà dans Pipedrive chez <b>${esc(x.ailleurs.org_nom)}</b> (fiche ${esc(x.ailleurs.id)})</small>` : ""}
       ${x.autres_societes && x.autres_societes.length ? `<small>Aussi dirigeant de : ${esc(x.autres_societes.join(", "))}</small>` : ""}
