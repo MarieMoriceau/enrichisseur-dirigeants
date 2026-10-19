@@ -177,7 +177,8 @@ def _props(pg: dict) -> dict:
             "validation": MEM._val(p, "Validation") or "À valider", "adresse_retenue": MEM._val(p, "Adresse retenue"),
             "source_retenue": MEM._val(p, "Source adresse retenue"), "validee": MEM._val(p, "Validée le")[:10],
             "decisions": MEM._val(p, "Décisions contacts"), "nouveaux": MEM._val(p, "Nouveaux contacts"),
-            "hubspot": MEM._val(p, "Envoyée à HubSpot le")[:10], "lance_par": MEM._val(p, "Lancé par")}
+            "hubspot": MEM._val(p, "Envoyée à HubSpot le")[:10], "lance_par": MEM._val(p, "Lancé par"),
+            "decision_ecart": MEM._val(p, "Écartée pour"), "motif_ecart": MEM._val(p, "Motif écart")}
 
 
 async def _toutes() -> list:
@@ -263,6 +264,24 @@ async def admin_societe(page_id: str, req: Request):
     return info
 
 
+DECISIONS_ECART = ["Hors cible HubSpot", "À supprimer de la base"]
+MOTIFS_ECART = ["Effectif trop faible", "Hors Île-de-France", "Société fermée", "Doublon"]
+_COLONNES_ECART = {"ok": False}
+
+
+async def _assurer_colonnes_ecart():
+    """Crée une fois les colonnes « Écartée pour » et « Motif écart » dans la base mémoire Notion si elles manquent."""
+    if _COLONNES_ECART["ok"]:
+        return
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await MEM._req(c, "PATCH", f"https://api.notion.com/v1/databases/{MEM.MEMOIRE_DB}", json={"properties": {
+            "Écartée pour": {"select": {"options": [{"name": n} for n in DECISIONS_ECART]}},
+            "Motif écart": {"rich_text": {}}}})
+    _COLONNES_ECART["ok"] = r.status_code == 200
+    if r.status_code != 200:
+        print(f"[V3 VALIDATION] colonnes d'écart : Notion {r.status_code} {r.text[:200]}")
+
+
 @router.post("/v3/validation/api/societe/{page_id}")
 async def valider_societe(page_id: str, req: Request):
     if (x := _refus(req, "admin")):
@@ -279,8 +298,20 @@ async def valider_societe(page_id: str, req: Request):
         return JSONResponse({"erreur": "cochez ou saisissez l'adresse retenue"}, 400)
     if source and source not in SOURCES:
         return JSONResponse({"erreur": "source inconnue"}, 400)
+    decision, motif = "", ""
+    if statut == "Écartée":
+        decision = b.get("decision") or "Hors cible HubSpot"
+        if decision not in DECISIONS_ECART:
+            return JSONResponse({"erreur": "décision inconnue"}, 400)
+        motifs = [m for m in (b.get("motifs") or []) if m in MOTIFS_ECART]
+        libre = re.sub(r"\s+", " ", str(b.get("motif_libre") or "")).strip()[:300]
+        motif = " · ".join(motifs + ([libre] if libre else []))
+    await _assurer_colonnes_ecart()
     props = {"Validation": {"select": {"name": statut}},
              "Validée le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")} if statut != "À valider" else None}}
+    if _COLONNES_ECART["ok"]:                     # écartée : la décision ; sinon on efface une ancienne décision
+        props["Écartée pour"] = {"select": {"name": decision}} if decision else {"select": None}
+        props["Motif écart"] = MEM._txt(motif)
     if statut == "Société validée":
         props["Adresse retenue"] = MEM._txt(adresse)
         props["Source adresse retenue"] = {"select": {"name": source}} if source else {"select": None}
