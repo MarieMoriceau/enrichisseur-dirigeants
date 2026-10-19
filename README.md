@@ -198,5 +198,6 @@ Tests automatiques : `python3 -m pytest tests/`.
 |---|---|
 | `QUOTA_LINKEDIN_JOUR` | quota journalier **par compte** (150 par défaut) |
 | `REPRISE_HEURE` | heure de départ des listes reportées (08:00 par défaut, heure de Paris) |
+| `PLAFONDS_DIRIGEANTS_NAF` | nombre maximum de dirigeants gardés par code NAF (`69.10Z:5` par défaut : cabinets d'avocats, 5 au plus, choisis par rôle puis Île-de-France). Plusieurs codes : `69.10Z:5,70.22Z:8` |
 | `MDP_AUTOMATISATIONS` | mot de passe de la page privée `/v3/automatisations` (runs manuels sur le compte automatisations) |
 | `CRON_SECRET` | clé de `/cron`, `/v3/reprendre` et `/v3/fenetre` (déjà utilisée par l'ancien réveil) |

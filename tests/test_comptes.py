@@ -144,3 +144,18 @@ _vrai_sleep = asyncio.sleep
 
 async def _rapide(s):
     await _vrai_sleep(s / 1000)
+
+
+def test_plafond_avocats():
+    import v3_linkedin as LI
+    d = lambda nom, role, idf=True: {"nom_complet": nom, "role": role, "idf": idf}
+    associes = [d(f"Associé {i}", "5 Associé / Gérant", i % 2 == 0) for i in range(9)]
+    r = {"naf": "69.10Z", "dirigeants": associes[:3] + [d("Managing", "1 CEO / Président / DG")] + associes[3:]}
+    assert LI.plafonner_dirigeants(r) == 5 and len(r["dirigeants"]) == 5
+    noms = [x["nom_complet"] for x in r["dirigeants"]]
+    assert "Managing" in noms                                         # le rôle passe avant
+    assert all(x["idf"] for x in r["dirigeants"] if x["nom_complet"] != "Managing")   # puis l'Île-de-France
+    autre = {"naf": "62.01Z", "dirigeants": associes[:]}
+    assert LI.plafonner_dirigeants(autre) == 0 and len(autre["dirigeants"]) == 9      # autres secteurs : inchangé
+    assert LI.plafonner_dirigeants({"naf": "6910Z", "dirigeants": associes[:4]}) == 0  # 4 ≤ 5 : rien à faire
+    assert LI._plafonds_naf("69.10Z:5, 70.22Z:8,bidon") == {"6910Z": 5, "7022Z": 8}
