@@ -27,6 +27,7 @@ router = APIRouter()
 JOBS: dict = {}
 
 import v3_validation as VALID
+import v3_partis as PARTIS
 router.include_router(VALID.router)              # écrans de validation (admin / négos)
 import v3_rattrapage as RATTRAPAGE
 router.include_router(RATTRAPAGE.router)         # rattrapage du contrôle des contacts CRM
@@ -1339,6 +1340,56 @@ async def quota():
         return await SUIVI.quota_du_jour()
     except Exception as e:
         return {"quota": SUIVI.QUOTA_JOUR, "utilise": None, "reste": None, "erreur": str(e)}
+
+
+# ───────────────────────── contacts « partis » : nouvelle société, poste, e-mail ─────────────────────────
+@router.get("/v3/validation/api/partis")
+async def partis_liste(req: Request):
+    if (x := VALID._refus(req, "admin")):
+        return x
+    try:
+        socs = await VALID._toutes()
+    except RuntimeError as e:
+        return JSONResponse({"erreur": str(e)}, 502)
+    return {"a_rechercher": len(PARTIS.a_rechercher(socs)), "liste": PARTIS.liste(socs),
+            "etat": {k: PARTIS.ETAT[k] for k in ("actif", "debut", "phase", "total", "fait")} | {"journal": PARTIS.ETAT["journal"][-8:]}}
+
+
+@router.post("/v3/validation/api/partis/lancer")
+async def partis_lancer(req: Request):
+    if (x := VALID._refus(req, "admin")):
+        return x
+    return await PARTIS.lancer(entrer_file, sortir_file, JOBS)
+
+
+@router.post("/v3/validation/api/partis/arreter")
+async def partis_arreter(req: Request):
+    if (x := VALID._refus(req, "admin")):
+        return x
+    PARTIS.ETAT["stop"] = True
+    return {"ok": True}
+
+
+@router.post("/v3/validation/api/partis/{page_id}/{pid}")
+async def partis_decider(page_id: str, pid: str, req: Request):
+    """Valider / écarter un parti retrouvé, avec corrections éventuelles (e-mail, fonction, rôle)."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id) or not re.fullmatch(r"[\w-]{1,40}", pid):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    b = await req.json()
+    etat = b.get("etat")
+    if etat not in PARTIS.ETATS:
+        return JSONResponse({"erreur": "état inconnu"}, 400)
+    champs, erreur = VALID.verifier_saisie({k: b.get(k) for k in ("email", "fonction", "role") if b.get(k)})
+    if erreur:
+        return JSONResponse({"erreur": erreur}, 400)
+    try:
+        suivis = await PARTIS.enregistrer(page_id, {pid: {**champs, "etat": etat,
+                                                          "decide_le": datetime.now(timezone.utc).isoformat(timespec="seconds")}})
+    except RuntimeError as e:
+        return JSONResponse({"erreur": str(e)}, 502)
+    return {"ok": True, **suivis.get(pid, {}), "id": pid}
 
 
 # ───────────────────────── API : listes envoyées par les autres outils (prospection-hebdo…) ─────────────────────────
