@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lancer un enrichissement</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&family=Roboto:wght@400;500;700&display=swap">
+<style>
+:root{
+  --rouge:#B90009; --violet:#3C214B; --bleu:#77A1BA;
+  --bg:#F4F3F6; --panel:#FFFFFF; --ink:#231829; --muted:#62596A; --line:#DEDAE3;
+  --tag:#E8EFF4; --tag-ink:#3F667D; --accent:#B90009; --accent-soft:#F7E3E4;
+  --display:"Source Serif 4",Georgia,serif;
+  --body:Roboto,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#17111B; --panel:#221A28; --ink:#EEE9F2; --muted:#A99FB1; --line:#362B3E;
+  --tag:#243441; --tag-ink:#A9C6D8; --accent:#E0474E; --accent-soft:#3A1A1F; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#17111B; --panel:#221A28; --ink:#EEE9F2; --muted:#A99FB1; --line:#362B3E;
+  --tag:#243441; --tag-ink:#A9C6D8; --accent:#E0474E; --accent-soft:#3A1A1F; color-scheme:dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5}
+.band{background:var(--violet);color:#fff;border-bottom:4px solid var(--rouge)}
+.band-in{margin:0;padding:26px clamp(16px,3vw,40px) 28px;display:flex;align-items:center;gap:22px}
+.logo{width:52px;height:auto;flex:none}
+.eyebrow{font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--bleu)}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(26px,4.4vw,38px);line-height:1.08;margin:4px 0 6px}
+.sub{color:#D9D0E0;margin:0;max-width:60ch;font-size:14.5px}
+.back{color:#D9D0E0;font-size:13px;text-decoration:none;display:inline-block;margin-top:10px}
+.back:hover{color:#fff}
+.wrap{margin:0;padding:28px clamp(16px,3vw,40px) 56px}
+.guide p,.guide .steps,.steps{max-width:110ch}
+.grid{align-items:start}
+@media (min-width:1100px){.wrap .grid{grid-template-columns:minmax(300px,1fr) 2fr}
+  .choix{grid-template-columns:1fr 1fr}.choix legend,.choix #liInfo{grid-column:1/-1}}
+.floor{margin-bottom:30px}
+.floor-head{display:flex;align-items:baseline;gap:12px;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:14px}
+.floor-num{font-size:12px;font-weight:700;color:var(--accent);background:var(--accent-soft);padding:3px 8px;border-radius:4px;letter-spacing:.06em;min-width:34px;text-align:center}
+.floor-head h2{font-family:var(--display);font-weight:600;font-size:22px;margin:0}
+.floor-head .count{margin-left:auto;color:var(--muted);font-size:13px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px}
+.grid{display:grid;grid-template-columns:1.2fr 1fr;gap:14px}
+.steps{margin:0;padding-left:20px;display:grid;gap:6px;font-size:14px}
+.note{margin:12px 0 0;font-size:13px;color:var(--muted);background:var(--tag);border-radius:6px;padding:8px 10px}
+label{display:block;font-weight:500;font-size:14px;margin:0 0 6px}
+.drop{border:1.5px dashed var(--line);border-radius:8px;padding:18px;text-align:center;cursor:pointer;color:var(--muted);transition:border-color .15s,background .15s}
+.drop:hover,.drop.over{border-color:var(--bleu);background:var(--tag)}
+.drop b{color:var(--ink);font-weight:500}
+.drop input{display:none}
+.row{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:14px}
+.check{display:flex;gap:10px;align-items:flex-start;margin-top:14px;font-weight:400;font-size:14px;cursor:pointer}
+.check input{margin-top:3px;accent-color:var(--violet)}
+.check small{display:block;color:var(--muted);font-size:12.5px}
+.choix{border:0;padding:0;margin:14px 0 0;display:grid;gap:6px}
+.choix legend{font-weight:500;font-size:14px;margin-bottom:6px;padding:0}
+.choix label{display:flex;gap:10px;align-items:flex-start;font-weight:400;font-size:14px;margin:0;cursor:pointer;border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+.choix label:has(input:checked){border-color:var(--violet);background:var(--tag)}
+.choix label:has(input:disabled){opacity:.5;cursor:not-allowed}
+.choix input{margin-top:3px;accent-color:var(--violet)}
+.choix small{display:block;color:var(--muted);font-size:12.5px}
+.choix #liInfo{margin-top:2px}
+.journal{font-size:12.5px;color:var(--muted);margin-top:10px;font-family:ui-monospace,Menlo,monospace;white-space:pre-line}
+.or{color:var(--muted);font-size:13px;text-align:center;margin:12px 0 6px}
+textarea{font:inherit;width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);resize:vertical}
+input[type=email]{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%}
+.histo{width:100%;border-collapse:collapse;font-size:13.5px}
+.histo th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);padding:6px 8px}
+.histo td{border-bottom:1px solid var(--line);padding:8px;vertical-align:top}
+.histo td small{display:block;color:var(--muted);font-size:12px}
+.histo a{color:var(--tag-ink);font-weight:500}
+.pill{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:4px;background:var(--tag);color:var(--tag-ink);white-space:nowrap}
+.pill.ko{background:var(--accent-soft);color:var(--accent)}
+.histo-wrap{overflow-x:auto}
+@media (max-width:720px){.histo .opt{display:none}}
+input[type=number]{font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:120px}
+input:focus-visible,button:focus-visible,a:focus-visible,.drop:focus-within{outline:2px solid var(--accent);outline-offset:2px}
+.hint{color:var(--muted);font-size:12.5px;margin-top:4px}
+.btn{font:500 14px var(--body);border:0;border-radius:6px;padding:10px 16px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
+.btn.primary{background:var(--violet);color:#fff}.btn.primary:hover{background:var(--rouge)}
+.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.btn.dl{background:var(--rouge);color:#fff}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:12px 0 16px}
+.bar i{display:block;height:100%;background:var(--violet);width:0;transition:width .4s}
+.kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.kpi div{border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.kpi b{display:block;font-family:var(--display);font-size:26px;font-weight:600;line-height:1.1}
+.kpi span{font-size:12px;color:var(--muted)}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.tag{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:4px;background:var(--tag);color:var(--tag-ink)}
+.tag.warn{background:var(--accent-soft);color:var(--accent)}
+.status{font-size:14px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.guide{padding:6px 18px}
+.guide details{border-bottom:1px solid var(--line);padding:10px 0}
+.guide details:last-child{border-bottom:0}
+.guide summary{cursor:pointer;font-family:var(--display);font-weight:600;font-size:17px;list-style:none;display:flex;align-items:center;gap:8px}
+.guide summary::-webkit-details-marker{display:none}
+.guide summary::before{content:"+";color:var(--accent);font-family:var(--body);font-weight:700;width:14px}
+.guide details[open] summary::before{content:"–"}
+.guide p,.guide .steps{margin:10px 0 4px 22px;font-size:14px}
+.guide .note{margin-left:22px}
+.aide-lien{color:#D9D0E0;font-size:13px;display:inline-block;margin-top:10px}
+.aide-lien:hover{color:#fff}
+.jour{margin-bottom:24px}
+.jour .ligne{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline}
+.jour h2{font-family:var(--display);font-weight:600;font-size:20px;margin:0 0 8px}
+.jour table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:10px}
+.jour th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);padding:5px 8px}
+.jour td{border-bottom:1px solid var(--line);padding:7px 8px;vertical-align:top}
+.jour .creneau{font-size:13.5px;padding:6px 10px;border-radius:6px;background:var(--tag);color:var(--tag-ink)}
+.jour .creneau.ferme{background:var(--accent-soft);color:var(--accent)}
+.jour .vide{color:var(--muted);font-size:13.5px}
+footer{border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:13px;display:grid;gap:6px}
+footer b{color:var(--ink);font-weight:500}
+footer a{color:var(--tag-ink)}
+@media (max-width:720px){.grid{grid-template-columns:1fr}.kpi{grid-template-columns:repeat(2,1fr)}.logo{width:42px}.band-in{gap:14px}}
+
+.fini{border:1px solid var(--line);border-left:4px solid var(--rouge);border-radius:8px;padding:16px 18px;margin-top:14px}
+.fini h3{font-family:var(--display);font-size:22px;margin:0 0 6px}
+.fini p{margin:0 0 12px;color:var(--muted)}
+.btn.grand{font-size:16px;padding:13px 22px}
+.discret{color:var(--muted);font-size:13px;margin-left:10px;white-space:nowrap;display:inline-block;padding:6px 0}
+.discret:hover{color:var(--ink)}
+.kpi3{grid-template-columns:repeat(3,1fr)}
+.suite{margin-top:12px;font-size:14px;background:var(--tag);color:var(--tag-ink);border-radius:6px;padding:9px 12px}
+@media (max-width:720px){.kpi3{grid-template-columns:1fr 1fr 1fr}.kpi b{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="band"><div class="band-in">
+<svg viewBox="0 0 810.7 1176.1" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Equation" class="logo"><g fill="#FFFFFF"><path d="M128,315c-2.9,0-5.6,0.3-8.2,0.8c11.9,9.3,25.4,16.1,40.2,20.1C153.7,321.5,143.4,315,128,315z"/><path d="M480.2,340.1c-19.1,13.8-30.5,30.8-30.5,46.9c0,22,14.7,31.6,39.5,31.6c26.5,0,35-14.1,35-32.2 c0-6-1.3-14.1-4.6-23.2C505,359.6,490.9,352.5,480.2,340.1z"/><path d="M579.8,348.3c-18.7,0-29.6-7.6-34.4-24c-15.3,1.5-28.9,6.2-39.9,13.6c6.6,8.7,11.1,17.4,14,25.3 c9.3,2.3,18.7,3.3,27.4,3.3c24.8,0,44.6-5.5,59.3-16.6c-1.4-2.8-2.9-5.4-4.7-7.7C595.3,346.1,588.2,348.3,579.8,348.3z"/><path d="M556.3,323.8c20.2,0,35.5,5.5,45.1,18.4c8.7-5.6,15.3-14.7,20.8-26.4c-14.4-3-29.7-4.4-45.1-4.4 c-11.8,0-23.1,1.1-33.8,3c0.5,3.6,1.2,6.9,2,9.9C548.9,324,552.5,323.8,556.3,323.8z"/><path d="M430.4,66.9h19.2c11.3,0,11.8,1.5,11.8,37.3v144.4V281c0,27,7.5,46,18.8,59c16.2-11.7,38-21.1,63.2-25.6 c-0.6-4.6-0.9-9.6-0.9-15.2v-15.1v-27.5V66.4c0-4.4-1.5-6.9-4.4-6.9H430.4c-2.9,0-4.4,0.5-4.4,2.9v1 C426,66.4,427.4,66.9,430.4,66.9z"/><path d="M606.1,349.9c5.1,10.3,7.7,24,7.7,41.6v21.4c0,17.5,0,22-73.3,42.9c-67.7,18.6-101,33.3-101,87.4 c0,50.2,37.2,76.7,86.3,76.7c44.6,0,76.7-19.2,91.4-58.1h1.1c3.9,38.9,33.8,58.1,74.5,58.1c33.3,0,51.9-13,59.2-31.6 c1.7-3.4,1.1-4.5-1.1-5.6l-2.8-1.1c-2.3-1.1-3.9-0.6-5.1,2.8c-3.9,9.6-10.7,16.9-19.7,16.9c-11.3,0-16.4-7.9-16.4-40.6V407.9 c0-19.1-4.6-34.9-12.6-47.7h-58.5c-2.9,0-4.4-2.5-4.4-6.9V318c26.7,7.1,49.6,20.6,63,42.2h45.1c2.9,0,4.4-0.5,4.4-2.9v-1 c0-2.9-1.5-3.4-4.4-3.4h-19.2c-11.3,0-11.8-1.5-11.8-37.3v-66.8c-0.1,0-0.2,0-0.3,0c0-26.3,0-54.1,0.3-54.1V66.4 c0-4.4-1.5-6.9-4.4-6.9H598.9c-2.9,0-4.4,0.5-4.4,2.9v1c0,2.9,1.5,3.4,4.4,3.4h16.7c11.3,0,11.8,1.5,11.8,37.3V253v46.2v3.9 c-1.6,4.5-3.4,8.7-5.2,12.7c2.5,0.5,5,1.1,7.5,1.7C624.5,331.2,616.6,342,606.1,349.9z M613.8,547.8 c-10.2,29.3-25.9,47.9-48.5,47.9c-21.4,0-33.8-22.6-33.8-63.7c0-32.2,8.5-55.8,35.5-70.5c14.1-7.9,31-15.2,46.8-20.9V547.8z"/><path d="M135.6,566.3c69.2,0,100.1-41.7,107.2-83.5c0.5-2.8,0-4.3-1.9-4.7l-3.3-0.5c-2.4-0.5-3.8,0.9-4.3,3.8 c-7.1,38.9-32.2,70.7-78.7,70.7c-59.7,0-69.2-51.7-69.2-115.7V425h141.3c13.3,0,17.1-3.8,17.1-14.2v-1.9c0-30.4-10.7-54-27.8-70.8 c-7.7,1.2-16,1.8-25,1.8c-10.9,0-21.2-1.4-31-4c5.8,13.1,8.3,32.8,8.3,60.2c0,15.6-4.7,19.4-19.9,19.4H85.8 c0-60.6,7.5-94.3,34-99.7c-3.1-2.4-6.1-5-9-7.7C40.8,316.4,0,369.7,0,440.2C0,519.9,55.5,566.3,135.6,566.3z"/><path d="M216,338.1c37.3-5.6,60.6-24.4,74.5-51.7h1.2v110v186c0,47.2-0.6,49.7-16.8,49.7h-34.2c-4.3,0-6.2,0.6-6.2,4.3 v1.2c0,3.7,1.9,4.3,6.2,4.3h192c4.3,0,6.2-0.6,6.2-4.3v-1.2c0-3.7-1.9-4.3-6.2-4.3h-22.4c-15.5,0-16.2-2.5-16.2-49.7V49.2h0V8.7 c0-3.7-0.6-5-5-5h-0.6c-3.7,0-6.2,1.2-10.6,3.1l-74.6,31.1h-1.9C279.3,13.7,248.2,0,212.1,0C117.1,0,62.4,72.1,62.4,175.9 c0,56.1,18,103.1,48.5,132.2c6.3-0.7,12.7-1.2,19.5-1.2C163.5,306.9,194.7,317.3,216,338.1z M239.5,19.9 c24.9,0,43.5,11.2,52.2,24.9v29.4v185.6c-11.8,32.3-28,53.4-58.4,53.4c-40.4,0-59-42.9-59-142.9C174.2,67.7,194.1,19.9,239.5,19.9z "/><path d="M745.4,1110.9h-18.1c-11,0-11.4-1.4-11.4-36.2v-41.5v-72.5v-7.1c0-67.6-49.1-82.9-85.7-82.9 c-42.4,0-70.5,15.7-82.9,49.1h-1v-36.2c0-4.3-1.4-6.7-4.3-6.7H441.6c-2.9,0-4.3,0.5-4.3,2.9v1c0,2.9,1.4,3.3,4.3,3.3h18.6 c11,0,11.4,1.4,11.4,36.2v35.1v93.1v26.3c0,34.8-0.5,36.2-11.4,36.2h-18.6c-2.9,0-4.3,0.5-4.3,3.3v1c0,2.4,1.4,2.9,4.3,2.9h133.8 c2.9,0,4.3-0.5,4.3-2.9v-1c0-2.9-1.4-3.3-4.3-3.3h-13.8c-11,0-11.4-1.4-11.4-36.2v-31.2V931.7c10-26.2,23.3-43.3,49.1-43.3 c26.7,0,37.6,14.3,37.6,47.6v26.9v74.4v37.5c0,34.8-0.5,36.2-11.4,36.2h-13.3c-2.9,0-4.3,0.5-4.3,3.3v1c0,2.4,1.4,2.9,4.3,2.9 h133.4c2.9,0,4.3-0.5,4.3-2.9v-1C749.7,1111.4,748.3,1110.9,745.4,1110.9z"/><path d="M274,1042.4h-25.1c-3.9,0-5.8,0.6-5.8,4.5v1.3c0,3.2,1.9,3.9,5.8,3.9h187.2c3.9,0,5.8-0.6,5.8-3.9v-1.3 c0-3.9-1.9-4.5-5.8-4.5H411c-14.8,0-15.4-1.9-15.4-48.9v-83.4v-34.5c0-5.8-1.9-9-5.8-9H248.9c-3.9,0-5.8,0.6-5.8,3.9v1.3 c0,3.9,1.9,4.5,5.8,4.5H274c14.8,0,15.4,1.9,15.4,48.9v68.4C289.4,1040.4,288.8,1042.4,274,1042.4z"/><path d="M810.7,684.6c0-6.9-3.5-8-10.4-8l-112.9,0c7.1,6.1,13,13,17.7,20.7l95.2,0c6.9,0,10.3-1.2,10.3-6.9 L810.7,684.6z"/><path d="M511.6,697.3l113.5,0c-1.8-7.9-4.3-14.8-7.4-20.7l-98.4,0C516.1,682.4,513.6,689.3,511.6,697.3z"/><path d="M629.7,747.3c0.3,69-13.5,103.7-61.4,104c-47.9,0.2-61.4-32-61.7-96.7c-0.1-23,1.3-42,5.1-57.3l-76.2,0 c-11.9,16.7-18,36.5-17.9,58.5c0.3,63.9,52.7,103.8,148.7,103.4c97.6-0.4,152.3-48,152-113c-0.1-18.5-4.5-34.9-13-48.8l-80,0 C628.3,710.9,629.6,727.5,629.7,747.3z"/><path d="M568,651c24.9-0.1,40.5,8.3,49.8,25.6l69.7,0c-24.9-21.5-64.6-33.3-117.4-33.1c-50.1,0.2-88.9,12.5-114.8,33.1 l64.1,0C528.8,659.5,544.1,651.1,568,651z"/><path d="M455.2,676.6l-252.3,0l-0.1-74.9c0-3-0.6-10.6-1.1-17.1c-0.4-4.8-5.8-7.3-9.7-4.5 c-20.1,11.5-38.9,20.2-57.7,25.9c-18.8,5.6-40.1,12.5-55.8,15.5c-4.5-0.1-5.7,3.5-5.6,8.1v48.4l-5.3,0.1c0,0.3-0.1,0.6-0.1,1 l-39,0.9c-5.7,0-8.6,1-8.6,6.7l0,2.9c0,4.8,2.9,5.7,8.6,5.7l44.4,0v218v1.5v114.5c0.1,98.4,69.6,147,136.3,147 c71.7-0.1,107-29.7,115.6-88c0.9-4.8,0-7.6-4.8-8.6l-4.8-1c-4.8-1-7.6,1.9-8.6,7.7c-5.7,39.2-24.8,64-57.3,64.1 c-38.2,0-45.9-30.5-45.9-75.5l-0.1-143.5c0,0,0,0,0,0L203,697.3l232.4,0C440.8,689.7,447.5,682.7,455.2,676.6z"/><path d="M396.1,772.8c0-32.6-25.2-54.5-61.1-54.5c-36.5,0-61.8,21.9-61.8,54.5c0,33.2,27.2,55.1,63.8,55.1 C371.5,827.9,396.1,804.7,396.1,772.8z"/></g></svg>
+  <div>
+    <div class="eyebrow">Equation SIE · Enrichisseur</div>
+    <h1>Lancer un enrichissement</h1>
+    <p class="sub">Déposez votre liste de sociétés : l'outil retrouve les dirigeants et leurs e-mails. Vous les validez ensuite dans « Valider mes contacts ».</p>
+    <a class="aide-lien" href="/">← Accueil</a> · <a class="aide-lien" href="/v3/contacts">Valider mes contacts</a> · <a class="aide-lien" href="#aide">Mode d'emploi</a>
+  </div>
+</div></div>
+
+<div class="wrap">
+  <section class="floor">
+    <div class="floor-head"><span class="floor-num">1</span><h2>Votre liste</h2><span class="count">.xlsx ou .csv</span></div>
+    <div class="grid">
+      <div class="card">
+        <ol class="steps">
+          <li>Déposez un export Pipedrive (Organisations), ou n'importe quel fichier avec une colonne de noms de sociétés. Ou collez la liste, une société par ligne.</li>
+          <li>Laissez « Dirigeants et e-mails » coché : c'est ce qu'il vous faut pour prospecter.</li>
+          <li>Lancez. Vous pouvez fermer la page : un mail vous prévient quand c'est prêt.</li>
+          <li>Validez vos contacts dans « Valider mes contacts ».</li>
+        </ol>
+        <p class="note">Rien n'est écrit dans Pipedrive ni dans HubSpot tant que vous n'avez pas validé.</p>
+      </div>
+      <form class="card" id="f">
+        <input type="hidden" name="origine" value="negos">
+        <label for="fichier">Fichier</label>
+        <label class="drop" id="drop">
+          <input type="file" id="fichier" name="fichier" accept=".xlsx,.csv">
+          <span id="dropTxt"><b>Cliquez</b> ou glissez le fichier ici</span>
+        </label>
+        <div class="or">ou collez une liste de sociétés, une par ligne</div>
+        <textarea id="liste" name="liste" rows="4" placeholder="Poiscaille&#10;Easy Partner&#10;Je Rêve d'une Maison"></textarea>
+        <fieldset class="choix">
+          <legend>Ce que vous voulez</legend>
+          <label><input type="radio" name="perimetre" value="tout" checked>
+            <span><b>Dirigeants et e-mails</b><small>Le plus utile pour prospecter.</small></span></label>
+          <label><input type="radio" name="perimetre" value="dirigeants">
+            <span><b>Dirigeants, sans e-mails</b><small>Pour voir qui est qui avant de choisir.</small></span></label>
+          <label><input type="radio" name="perimetre" value="societes">
+            <span><b>Sociétés seulement</b><small>Adresse des bureaux et effectif réel.</small></span></label>
+          <label><input type="radio" name="perimetre" value="siren">
+            <span><b>Vérification rapide</b><small>SIREN, société active ou fermée. Une minute pour 50 sociétés.</small></span></label>
+        </fieldset>
+        <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(pour être prévenu quand c'est prêt)</span></label>
+        <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
+        <div class="row">
+          <div>
+            <label for="limite">Nombre de sociétés</label>
+            <input type="number" id="limite" name="limite" value="50" min="0">
+          </div>
+          <button class="btn primary" type="submit">Lancer</button>
+        </div>
+        <div class="hint">0 = tout le fichier. Comptez 20 à 40 minutes pour 50 sociétés.</div>
+      </form>
+    </div>
+  </section>
+
+  <section class="floor" id="suivi" hidden>
+    <div class="floor-head"><span class="floor-num">2</span><h2>Suivi</h2><span class="count" id="chrono"></span></div>
+    <div class="card">
+      <div id="enCours">
+        <div class="status" id="msg">Démarrage…</div>
+        <div class="bar"><i id="bar"></i></div>
+      </div>
+      <div class="kpi kpi3">
+        <div><b id="k1">0</b><span>sociétés traitées</span></div>
+        <div><b id="k2">0</b><span>dirigeants trouvés</span></div>
+        <div><b id="k3">0</b><span>e-mails trouvés</span></div>
+      </div>
+      <div class="suite" id="suite" hidden></div>
+      <div class="fini" id="fini" hidden>
+        <h3 id="finiTitre">C'est prêt</h3>
+        <p id="finiTexte"></p>
+        <a class="btn dl grand" id="valider" href="/v3/contacts">Valider mes contacts</a>
+        <a class="discret" id="dl" href="#">télécharger l'Excel</a>
+      </div>
+      <div class="actions" id="actions">
+        <span class="hint" style="margin:auto 0">Vous pouvez fermer cette page, un mail vous prévient à la fin.</span>
+        <button class="btn ghost" id="stop" type="button">Arrêter</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="floor">
+    <div class="floor-head"><span class="floor-num">3</span><h2>Mes lancements</h2><span class="count" id="hCount"></span></div>
+    <div class="card">
+      <div class="histo-wrap"><table class="histo">
+        <thead><tr><th>Liste</th><th class="opt">Résultats</th><th>Statut</th><th></th></tr></thead>
+        <tbody id="hBody"><tr><td colspan="4">Chargement…</td></tr></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="floor">
+    <div class="floor-head" id="aide"><span class="floor-num">?</span><h2>Mode d'emploi</h2><span class="count">cliquez sur une question</span></div>
+    <div class="card guide">
+      <details>
+        <summary>Que fait l'outil ?</summary>
+        <p>Pour chaque société de votre liste : il vérifie qu'elle existe toujours, retrouve l'adresse de ses bureaux, son effectif, ses dirigeants (président, fondateurs, directeurs, associés) et leurs e-mails professionnels.</p>
+        <p>Une société déjà recherchée il y a moins de 6 mois est reprise telle quelle, tout de suite.</p>
+      </details>
+      <details>
+        <summary>Ma liste est longue, que se passe-t-il ?</summary>
+        <p>L'outil traite une partie de la liste le jour même et programme la suite pour les matins suivants. Vous recevez un mail à la fin de chaque partie, et vous pouvez valider au fur et à mesure.</p>
+        <p>Si quelqu'un a lancé une liste juste avant vous, la vôtre démarre automatiquement après la sienne.</p>
+      </details>
+      <details>
+        <summary>Et ensuite ?</summary>
+        <p>Ouvrez « Valider mes contacts » : pour chaque dirigeant trouvé, vous complétez si besoin, puis vous le validez ou l'écartez. Seuls les contacts validés partent dans HubSpot.</p>
+      </details>
+      <details>
+        <summary>Un souci ?</summary>
+        <ul class="steps">
+          <li><b>La page met du temps à s'ouvrir</b> : l'outil s'endort quand personne ne s'en sert. Patientez une minute.</li>
+          <li><b>Pas de mail</b> : regardez dans les indésirables, puis dans « Mes lancements » ci-dessus.</li>
+          <li><b>Un lancement en « erreur »</b> : relancez-le. Si ça recommence, prévenez Marie.</li>
+        </ul>
+      </details>
+    </div>
+  </section>
+
+  <footer>
+    <div><b>La page met du temps à s'ouvrir ?</b> L'outil s'endort quand personne ne s'en sert. Patientez une minute.</div>
+  </footer>
+</div>
+
+<script>
+let jid=null,timer=null;
+const $=id=>document.getElementById(id);
+const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const drop=$("drop"),inp=$("fichier");
+inp.onchange=()=>{$("dropTxt").innerHTML=inp.files[0]?"<b>"+esc(inp.files[0].name)+"</b>":"<b>Cliquez</b> ou glissez le fichier ici"};
+["dragover","dragenter"].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add("over")}));
+["dragleave","drop"].forEach(e=>drop.addEventListener(e,()=>drop.classList.remove("over")));
+drop.addEventListener("drop",ev=>{ev.preventDefault();if(ev.dataTransfer.files.length){inp.files=ev.dataTransfer.files;inp.onchange()}});
+function monMail(){try{return (localStorage.getItem("v3mail")||"").toLowerCase()}catch(_){return ""}}
+
+$("f").onsubmit=async e=>{
+  e.preventDefault();
+  if(!inp.files.length&&!$("liste").value.trim()){$("dropTxt").innerHTML="<b>Déposez un fichier ou collez une liste</b>";return}
+  const fd=new FormData($("f"));
+  try{localStorage.setItem("v3mail",$("mail").value.trim())}catch(_){}
+  ouvrirSuivi();$("msg").textContent="Envoi de la liste…";
+  $("suivi").scrollIntoView({behavior:"smooth"});
+  try{
+    const r=await fetch("/v3/run",{method:"POST",body:fd});const j=await r.json();
+    if(!r.ok){$("msg").textContent=j.erreur||"Le lancement n'a pas marché.";return}
+    suivre(j.job);setTimeout(histo,3000);
+  }catch(err){$("msg").textContent="L'outil ne répond pas. Patientez une minute et relancez."}
+};
+function ouvrirSuivi(){
+  $("suivi").hidden=false;$("fini").hidden=true;$("suite").hidden=true;$("enCours").hidden=false;$("actions").hidden=false;
+  $("bar").style.width="0";["k1","k2","k3"].forEach(k=>$(k).textContent="0");
+}
+function suivre(id){
+  jid=id;try{localStorage.setItem("v3job",id)}catch(_){}
+  ouvrirSuivi();clearInterval(timer);timer=setInterval(poll,2500);poll();
+}
+// Étape en cours, en mots simples (le détail technique reste dans l'espace de Marie)
+function etape(s){
+  const p=s.phase||"";
+  if(/file d'attente/i.test(p)){const m=p.match(/occupé par « (.*?) »/);
+    return "Une autre liste est en cours"+(m?" (« "+m[1]+" »)":"")+". La vôtre démarre automatiquement juste après.";}
+  if(/mémoire/i.test(p))return "On regarde si ces sociétés ont déjà été recherchées récemment…";
+  if(/kaspr|fullenrich|e-mail/i.test(p))return "Recherche des e-mails des dirigeants…";
+  if(/sales navigator|dirigeant|profil|pipedrive/i.test(p))return "Recherche des dirigeants…";
+  if(/linkedin|google|adresse|effectif/i.test(p))return "Recherche des bureaux et des effectifs…";
+  if(/croissance/i.test(p))return "Dernières vérifications…";
+  return s.fait<s.total?"Vérification des sociétés… "+s.fait+" / "+s.total:"Traitement en cours…";
+}
+async function poll(){
+  let r,s;
+  try{r=await fetch("/v3/status/"+jid);s=await r.json()}catch(_){return}
+  if(!r.ok){$("msg").textContent="Ce lancement n'est plus suivi ici (l'outil a redémarré). Retrouvez-le dans « Mes lancements ».";clearInterval(timer);return}
+  $("bar").style.width=(s.total?100*s.fait/s.total:0)+"%";
+  $("k1").textContent=s.fait+" / "+s.total;$("k2").textContent=s.dirigeants;$("k3").textContent=s.emails;
+  $("chrono").textContent=Math.floor(s.secondes/60)+" min";
+  if(s.report_simple){$("suite").hidden=false;$("suite").textContent=s.report_simple}
+  if(s.etat==="en cours"){$("msg").textContent=etape(s);return}
+  $("enCours").hidden=true;$("actions").hidden=true;$("fini").hidden=false;
+  const contacts=s.perimetre==="dirigeants"||s.perimetre==="tout";
+  const titre={"arrêté":"Arrêté","erreur":"Interrompu sur une erreur"}[s.etat]||(s.fait?"C'est prêt":"Rien à traiter aujourd'hui");
+  $("finiTitre").textContent=titre;
+  let t=s.fait?s.fait+" sociétés traitées":"";
+  if(contacts&&s.fait)t+=", "+s.dirigeants+" dirigeants trouvés"+(s.perimetre==="tout"?", dont "+s.emails+" avec un e-mail":"");
+  if(s.etat==="erreur")t+=(t?". ":"")+"Relancez la liste ; si ça recommence, prévenez Marie.";
+  $("finiTexte").textContent=t?t+".":"";
+  $("valider").hidden=!(contacts&&s.fait);
+  $("dl").href="/v3/excel/"+jid+(contacts?"?version=contacts":"");$("dl").hidden=!s.fait;
+  $("dl").className=contacts?"discret":"btn dl grand";$("dl").textContent=contacts?"télécharger l'Excel":"Télécharger l'Excel";
+  if(s.envoi==="fait"){clearInterval(timer);try{localStorage.removeItem("v3job")}catch(_){};histo()}
+}
+$("stop").onclick=async()=>{if(jid&&confirmerArret()){await fetch("/v3/stop/"+jid,{method:"POST"});}};
+function confirmerArret(){const b=$("stop");if(b.dataset.ok){return true}b.dataset.ok="1";b.textContent="Cliquez encore pour arrêter";setTimeout(()=>{delete b.dataset.ok;b.textContent="Arrêter"},4000);return false}
+
+const STATUTS={TERMINE:["terminé",""],EN_COURS:["en cours",""],ARRETE:["arrêté","ko"],ERREUR:["erreur","ko"],EN_ATTENTE:["programmé",""],INTERROMPU:["interrompu","ko"]};
+async function histo(){
+  try{
+    const h=await (await fetch("/v3/historique")).json();
+    const moi=monMail();
+    let L=(h.lancements||[]).filter(x=>!moi||(x.par||"").toLowerCase().includes(moi));
+    $("hCount").textContent=L.length?L.length+" récents":"";
+    if(!L.length){$("hBody").innerHTML='<tr><td colspan="4">Aucun lancement pour l\'instant.</td></tr>';return}
+    $("hBody").innerHTML=L.slice(0,15).map(x=>{
+      const quand=x.debut?new Date(x.debut).toLocaleString("fr-FR",{timeZone:"Europe/Paris",weekday:"short",day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
+      const st=STATUTS[x.statut]||[x.statut,""];
+      const res=[x.societes!=null?x.societes+" sociétés":"",x.dirigeants?x.dirigeants+" dirigeants":""].filter(Boolean).join(" · ");
+      let act="";
+      if(x.statut==="EN_COURS"&&x.en_memoire)act=`<a href="#" data-job="${esc(x.job)}">Suivre</a>`;
+      else if(x.statut==="TERMINE"&&x.dirigeants)act=`<a href="/v3/contacts">Valider</a>`;
+      return `<tr><td>${esc(x.nom)}<small>${x.statut==="EN_ATTENTE"?"part ":""}${esc(quand)}</small></td>`+
+             `<td class="opt">${esc(res)}</td><td><span class="pill ${st[1]}">${esc(st[0])}</span></td><td>${act}</td></tr>`}).join("");
+    document.querySelectorAll("[data-job]").forEach(a=>a.onclick=ev=>{ev.preventDefault();suivre(a.dataset.job);$("suivi").scrollIntoView({behavior:"smooth"})});
+  }catch(_){$("hBody").innerHTML='<tr><td colspan="4">Liste indisponible pour le moment.</td></tr>'}
+}
+try{const m=localStorage.getItem("v3mail");if(m)$("mail").value=m;
+  const k=localStorage.getItem("v3job");if(k)fetch("/v3/status/"+k).then(r=>r.ok?r.json():null).then(s=>{if(s&&s.etat==="en cours")suivre(k)})}catch(_){}
+histo();
+</script>
+</body>
+</html>
