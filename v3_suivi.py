@@ -221,8 +221,36 @@ async def envoyer_resultat(job: dict, excel: bytes | None, nom_fichier: str, exc
         l += ["", ("Pour mémoire, " + version[0].lower() + version[1:]) if a_valider else version,
               "Rien n'a été modifié dans Pipedrive ni dans HubSpot.", "", "L'enrichisseur v3"]
         return "\n".join(l)
+    def corps_nego():
+        """Mail des négos : court, sans jargon, le lien de validation d'abord ; l'Excel n'est plus joint (lien discret)."""
+        titre = {"terminé": "est prête", "arrêté": "a été arrêtée avant la fin"}.get(job["etat"], "s'est arrêtée sur une erreur")
+        n_dir = sum(len(r.get("dirigeants", [])) for r in res)
+        n_mail = sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email"))
+        l = ["Bonjour,", "", f"Votre liste « {job['nom']} » {titre}."]
+        if res:
+            ligne = f"{len(res)} sociétés"
+            if job["perimetre"] in ("dirigeants", "tout"):
+                ligne += f", {n_dir} dirigeants trouvés" + (f", dont {n_mail} avec un e-mail" if job["perimetre"] == "tout" else "")
+            l += ["", ligne + "."]
+        if a_valider:
+            l += ["", f"Validez vos contacts ici : {base}/v3/contacts"]
+        if job.get("report_simple"):
+            l += ["", job["report_simple"]]
+        if job.get("erreur"):
+            l += ["", "Relancez la liste. Si ça recommence, prévenez Marie."]
+        if a_valider and job.get("notion_id"):
+            l += ["", f"Si besoin, l'Excel est ici : {base}/v3/historique/{job['notion_id']}/excel"]
+        elif res:
+            l += ["", "Le résultat est dans l'Excel joint."]
+        l += ["", "L'enrichisseur"]
+        return "\n".join(l)
+
     envois = []
-    if dest and excel_nego:
+    if dest and job.get("origine", "negos") == "negos":
+        envois.append((dest, "Votre liste est prête" if job["etat"] == "terminé" else "Votre liste", corps_nego(),
+                       None if a_valider else excel, "" if a_valider else nom_fichier))
+        complets = [m for m in COPIE_COMPLETE if m.lower() not in {d.lower() for d in dest}]
+    elif dest and excel_nego:
         envois.append((dest, "Vos contacts", corps("En pièce jointe : les dirigeants et leurs e-mails."), excel_nego, nom_nego))
         complets = [m for m in COPIE_COMPLETE if m.lower() not in {d.lower() for d in dest}]
         # si la personne qui lance est aussi le destinataire du complet, elle reçoit les deux fichiers
@@ -432,7 +460,8 @@ async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str, mot
     tout = sum(len(l) for _, l in lots)
     import v3_planning as PLAN
     qui = "" if PLAN.compte(origine) == "unique" else f" (compte LinkedIn « {PLAN.NOM_COMPTE[PLAN.compte(origine)]} »)"
-    pourquoi = (f"Pour ne pas dépasser le quota LinkedIn de {QUOTA_JOUR} sociétés par jour{qui}, elle a été découpée :")
+    pourquoi = ("Elle est traitée en plusieurs fois :" if origine == "negos" else
+                f"Pour ne pas dépasser le quota LinkedIn de {QUOTA_JOUR} sociétés par jour{qui}, elle a été découpée :")
     lignes = ["Bonjour,", "", f"Votre liste « {nom} » compte {tout} sociétés. {pourquoi}", ""]
     for depart, lot in lots:
         quand = "tout de suite" if depart is None else depart.strftime("le %d/%m à %H h")

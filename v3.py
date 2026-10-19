@@ -682,6 +682,9 @@ async def repartir(job: dict, orgs: list) -> list:
                      f"puis {_quand(lots)}.")
     if places < len(reste):
         job["report"] += f" {len(reste) - places} sociétés n'ont pas pu être programmées (plus de 30 jours) : relancez-les plus tard."
+    # version sans jargon pour l'écran et les mails des négos (ni quota, ni compte LinkedIn)
+    job["report_simple"] = ((f"Votre liste est traitée en plusieurs fois : {len(maintenant)} sociétés maintenant, puis "
+                             if maintenant else "Votre liste partira ") + _quand(lots) + ". Un mail vous prévient à chaque fois.")
     jlog(job, job["report"])
     await SUIVI.prevenir_report(job.get("mails", []), job["nom"], [(None, maintenant)] + lots if maintenant else lots, job["perimetre"],
                                 motif="quota", origine=origine)
@@ -751,14 +754,14 @@ async def traiter(job_id: str, orgs: list):
     fn = nom_fichier(job)
     job["envoi"] = "en cours"
     await SUIVI.notion_finir(job, xl, fn)
-    if job["resultats"] or not job.get("report"):     # tout reporté : le mail « programmé » suffit
-        await SUIVI.envoyer_resultat(job, xl, fn, xl_nego, fn.replace(".xlsx", "_contacts.xlsx"))
-    job["envoi"] = "fait"
-    try:
+    try:                                              # mémoire d'abord : le lien « Valider » du mail doit déjà marcher
         await MEM.enregistrer(job, norm_nom, lambda m: jlog(job, m))
         await MEM.ajouter_lanceurs(job, lambda m: jlog(job, m))
     except Exception as e:
         print(f"[V3 MEMOIRE] {e}")
+    if job["resultats"] or not job.get("report"):     # tout reporté : le mail « programmé » suffit
+        await SUIVI.envoyer_resultat(job, xl, fn, xl_nego, fn.replace(".xlsx", "_contacts.xlsx"))
+    job["envoi"] = "fait"
 
 
 async def _traiter(job_id: str, orgs: list):
@@ -1174,9 +1177,9 @@ async def run(req: Request, fichier: UploadFile | None = File(None), liste: str 
         detectee, outil = origine_fichier(fichier.filename, data)
     else:
         orgs = lire_liste(liste)
-    if origine == PLAN.OUTILS and not VALID.gestion_auto(req):
-        origine = "auto"                              # compte « automatisations » à la main : page privée de Marie seulement
-    origine = detectee if origine not in (PLAN.OUTILS, PLAN.NEGOS) else origine     # « auto » : selon le fichier
+    if not VALID.gestion_auto(req):
+        origine = PLAN.NEGOS                          # hors de l'espace de Marie : toujours le compte des négos, sans détection
+    origine = detectee if origine not in (PLAN.OUTILS, PLAN.NEGOS) else origine     # « auto » (espace de Marie) : selon le fichier
     if not orgs:
         return JSONResponse({"erreur": "Aucune société lue : déposez un fichier avec une colonne de noms, ou collez une liste."}, 400)
     if limite and limite > 0:
@@ -1342,7 +1345,7 @@ async def status(jid: str):
     res = j["resultats"]
     return {"etat": j["etat"], "total": j["total"], "fait": j["fait"], "phase": j.get("phase", ""),
             "nom": j.get("nom", ""), "mails": j.get("mails", []), "envoi": j.get("envoi", ""),
-            "memoire": j.get("nb_memoire", 0), "report": j.get("report", ""), "motif": j.get("motif_texte", ""),
+            "memoire": j.get("nb_memoire", 0), "report": j.get("report", ""), "report_simple": j.get("report_simple", ""), "motif": j.get("motif_texte", ""),
             "journal": j.get("journal", [])[-12:], "mode_linkedin": j.get("linkedin", False), "perimetre": j.get("perimetre", ""),
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
@@ -1473,6 +1476,6 @@ async def accueil():
 
 @router.get("/v3/lancer", response_class=HTMLResponse)
 async def lancer():
-    """Lancement d'un enrichissement par les négos."""
-    with open("templates/v3.html", encoding="utf-8") as f:
+    """Lancement d'un enrichissement par les négos : page simple, toujours sur le compte LinkedIn des négos."""
+    with open("templates/negos.html", encoding="utf-8") as f:
         return f.read()
