@@ -345,6 +345,7 @@ function ecranSociete() {
         <p>${esc(d.raison_domiciliation || "")}${d.mention_domiciliation ? "<br>Mention sur le site : " + esc(d.mention_domiciliation) : ""}</p></div>
       <div class="fait"><span>INSEE</span><b style="font-size:17px">${esc(d.raison_sociale || "—")}</b>
         <p>Siège : ${esc(d.siege_insee || "—")}<br>${esc(d.secteur || "")} ${d.naf ? "(" + esc(d.naf) + ")" : ""}</p></div>
+      <div class="fait" id="carteQuali"><span>Base quali</span><p class="msg">Lecture du CRM…</p></div>
       <div class="fait" id="carteSiren"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
         <p>${esc(d.action || "")}</p>
         <p><button class="lien" id="corrSiren" type="button">${info.siren ? "Corriger le SIREN" : "Ajouter le SIREN"}</button></p>
@@ -374,6 +375,7 @@ function ecranSociete() {
       <input type="text" id="motifLibre" placeholder="Autre précision (facultatif)" aria-label="Autre précision">
       <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
     </div>`;
+  chargerQuali(courant);
   // Correction du SIREN : l'outil contrôle la clé, relit la fiche INSEE du nouveau SIREN et garde l'ancien
   $("#corrSiren").onclick = () => { $("#panSiren").hidden = false; $("#corrSiren").hidden = true; $("#nouveauSiren").focus(); };
   $("#annSiren").onclick = () => { $("#panSiren").hidden = true; $("#corrSiren").hidden = false; };
@@ -402,6 +404,32 @@ function ecranSociete() {
   $("#raz") && ($("#raz").onclick = () => envoyerSociete({statut: "À valider"}, "societe"));
 }
 
+// « Base quali » : valeur du CRM (lue en direct dans Pipedrive), modifiable ; la valeur retenue part dans l'export HubSpot
+async function chargerQuali(page) {
+  let q;
+  try { q = await api("/v3/validation/api/base-quali/" + page); }
+  catch (e) { if (courant === page && $("#carteQuali")) $("#carteQuali").innerHTML = `<span>Base quali</span><p class="msg err">${esc(e.message)}</p>`; return; }
+  const c = $("#carteQuali");
+  if (courant !== page || !c) return;
+  const val = q.retenue || q.crm || "";
+  const opts = [...new Set([...(q.options || []), ...(val ? [val] : [])])];
+  const champ = opts.length > 1 || (q.options || []).length
+    ? `<select id="valQuali" aria-label="Base quali"><option value="">—</option>${opts.map(o => `<option ${o === val ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`
+    : `<input type="text" id="valQuali" value="${esc(val)}" placeholder="vide dans le CRM" aria-label="Base quali">`;
+  const note = q.retenue && q.retenue !== q.crm ? `modifiée ici · CRM : ${esc(q.crm || "vide")}`
+    : q.id_pipedrive ? `fiche Pipedrive ${esc(q.id_pipedrive)}` : "pas de fiche CRM connue";
+  c.innerHTML = `<span>Base quali</span><div style="margin:6px 0">${champ}</div>
+    <button class="btn ghost" id="okQuali" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
+    <p class="msg" id="msgQuali">${note}${q.champ_trouve === false && q.id_pipedrive ? " · champ « Base quali » introuvable dans Pipedrive" : ""}</p>`;
+  $("#okQuali").onclick = async () => {
+    $("#okQuali").disabled = true;
+    try {
+      const r = await api("/v3/validation/api/base-quali/" + page, {valeur: $("#valQuali").value});
+      $("#msgQuali").className = "msg"; $("#msgQuali").textContent = r.retenue === (q.crm || "") ? "enregistrée (identique au CRM)" : `enregistrée · CRM : ${q.crm || "vide"}`;
+    } catch (e) { $("#msgQuali").className = "msg err"; $("#msgQuali").textContent = e.message; }
+    $("#okQuali").disabled = false;
+  };
+}
 function message(t, err) { const m = $("#msg"); if (m) { m.textContent = t; m.className = "msg" + (err ? " err" : ""); } }
 
 async function envoyerSociete(corps, suite) {

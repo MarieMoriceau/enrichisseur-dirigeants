@@ -21,10 +21,10 @@ def _client(monkeypatch, siren_actuel="507807949", corrige=""):
             return {"raison_sociale": "POISCAILLE", "etat": "active", "date_fermeture": "", "siege": "12 RUE X 75011 PARIS",
                     "tranche_insee": "21", "naf": "47.11B", "secteur": "Commerce"}
         return {"raison_sociale": "", "etat": "introuvable", "date_fermeture": "", "siege": "", "tranche_insee": "", "naf": "", "secteur": ""}
-    async def colonne():
+    async def colonne(nom):
         return True
     monkeypatch.setattr(VALID, "_une", une); monkeypatch.setattr(VALID, "_maj", maj)
-    monkeypatch.setattr(VALID, "assurer_colonne_siren", colonne); monkeypatch.setattr(v3, "insee", insee)
+    monkeypatch.setattr(VALID, "assurer_colonne", colonne); monkeypatch.setattr(v3, "insee", insee)
     monkeypatch.setattr(VALID, "_refus", lambda req, besoin: None)
     app = FastAPI(); app.include_router(v3.router)
     return TestClient(app), ecrit

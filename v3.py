@@ -291,10 +291,41 @@ async def _champs_pipedrive(api: httpx.AsyncClient) -> dict:
                     _CHAMPS_PD["siren"] = f["key"]
                 elif n in ("site internet", "site web", "website") and "site" not in _CHAMPS_PD:
                     _CHAMPS_PD["site"] = f["key"]
+                elif "base quali" in norm_nom(n) and "base_quali" not in _CHAMPS_PD:
+                    _CHAMPS_PD["base_quali"] = f["key"]          # liste déroulante : on garde les libellés
+                    _CHAMPS_PD["base_quali_options"] = {str(o.get("id")): o.get("label", "") for o in (f.get("options") or [])}
         except Exception as e:
             print(f"[V3 PIPEDRIVE CHAMPS] {e}")
         _CHAMPS_PD.setdefault("ok", True)
     return _CHAMPS_PD
+
+
+def base_quali_de(d: dict, champs: dict) -> str:
+    """Valeur du champ « Base quali » d'une organisation Pipedrive, en clair (une liste déroulante renvoie des numéros)."""
+    v = d.get(champs.get("base_quali", ""), "") if champs.get("base_quali") else ""
+    if v in (None, ""):
+        return ""
+    opts = champs.get("base_quali_options") or {}
+    if opts:
+        return ", ".join(opts.get(x.strip(), x.strip()) for x in str(v).split(",") if x.strip())
+    return str(v).strip()
+
+
+async def base_quali_pipedrive(api: httpx.AsyncClient, org_id: str) -> str:
+    """« Base quali » lue directement sur la fiche Pipedrive (quand on connaît son ID)."""
+    org_id = re.sub(r"\D", "", str(org_id or ""))
+    if not PIPEDRIVE_KEY or not org_id:
+        return ""
+    try:
+        champs = await _champs_pipedrive(api)
+        if not champs.get("base_quali"):
+            return ""
+        d = (await api.get(f"https://api.pipedrive.com/v1/organizations/{org_id}",
+                           params={"api_token": PIPEDRIVE_KEY})).json().get("data") or {}
+        return base_quali_de(d, champs)
+    except Exception as e:
+        print(f"[V3 PIPEDRIVE BASE QUALI] {org_id}: {e}")
+        return ""
 
 
 async def chercher_crm(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
@@ -325,7 +356,7 @@ async def chercher_crm(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
         return {"id": str(org["id"]), "autres_fiches": ", ".join(str(c["id"]) for c in cands if c["id"] != org["id"]),
                 "nom_crm": d.get("name", ""), "siren": siren if luhn_ok(siren) else "",
                 "site": str(d.get(champs.get("site", ""), "") or ""), "adresse": d.get("address") or "",
-                "doublons": len(cands)}
+                "base_quali": base_quali_de(d, champs), "doublons": len(cands)}
     except Exception as e:
         print(f"[V3 PIPEDRIVE] {nom}: {e}")
         return {}
@@ -624,6 +655,7 @@ def lire_fichier(nom: str, data: bytes) -> list:
     c_site2 = col("site web") if c_site and "internet" in c_site.lower() else None
     c_siren = col("siren")
     c_notion = col("adresse notion") or col("adresse des locaux") or col("adresse locaux")
+    c_quali = col("base quali")
     c_adr = col("adresse", exclure=("verifi", "vérifi", "notion", "locaux")) or col("address")
     out = []
     for l in lignes:
@@ -636,7 +668,8 @@ def lire_fichier(nom: str, data: bytes) -> list:
                     "siren_crm": siren if luhn_ok(siren) else "",
                     "adresse_crm": (l.get(c_adr) or "").strip() if c_adr else "",
                     "cp": _cp(l, c_cp, c_adr), "ville": (l.get(c_ville) or "").strip() if c_ville else "",
-                    **({"adresse_notion": v} if c_notion and (v := (l.get(c_notion) or "").strip()) else {})})
+                    **({"adresse_notion": v} if c_notion and (v := (l.get(c_notion) or "").strip()) else {}),
+                    **({"base_quali_crm": q} if c_quali and (q := str(l.get(c_quali) or "").strip()) else {})})
     return out
 
 
@@ -795,6 +828,9 @@ async def _traiter(job_id: str, orgs: list):
                         o["siren_crm"] = crm["siren"]
                         o["site_crm"] = o["site_crm"] or crm["site"]
                         o["adresse_crm"] = o["adresse_crm"] or crm["adresse"]
+                        o["base_quali_crm"] = o.get("base_quali_crm") or crm.get("base_quali", "")
+                elif o.get("id") and not o.get("base_quali_crm"):    # fiche connue par son ID : on lit sa « Base quali »
+                    o["base_quali_crm"] = await base_quali_pipedrive(api, o["id"])
                 adresse_seule = bool(o["siren_crm"])      # SIREN déjà connu : pas de recherche de SIREN (adresse, effectif et dirigeants oui)
                 doms = domaines(o["site_crm"])
                 dom, src = (doms[0] if doms else ""), "CRM"
@@ -1388,6 +1424,42 @@ async def partis_arreter(req: Request):
     return {"ok": True}
 
 
+@router.get("/v3/validation/api/base-quali/{page_id}")
+async def base_quali_lire(page_id: str, req: Request):
+    """Admin : « Base quali » de la société. crm = valeur lue maintenant dans Pipedrive (sinon celle du fichier),
+    retenue = valeur enregistrée dans l'outil, options = choix de la liste déroulante Pipedrive (vide = texte libre)."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    info, data = await asyncio.gather(VALID._une(page_id), MEM.lire(page_id))
+    if not info:
+        return JSONResponse({"erreur": "société introuvable"}, 404)
+    async with httpx.AsyncClient(timeout=15) as api:
+        champs = await _champs_pipedrive(api) if PIPEDRIVE_KEY else {}
+        en_direct = await base_quali_pipedrive(api, (data or {}).get("id", "")) if (data or {}).get("id") else ""
+    return {"crm": en_direct or (data or {}).get("base_quali_crm", ""), "retenue": info.get("base_quali", ""),
+            "options": [o for o in (champs.get("base_quali_options") or {}).values() if o],
+            "champ_trouve": bool(champs.get("base_quali")), "id_pipedrive": (data or {}).get("id", "")}
+
+
+@router.post("/v3/validation/api/base-quali/{page_id}")
+async def base_quali_ecrire(page_id: str, req: Request):
+    """Admin : enregistre la « Base quali » retenue (rien n'est écrit dans Pipedrive). Corps : {"valeur": "…"}."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    b = await req.json()
+    valeur = re.sub(r"\s+", " ", str(b.get("valeur") or "")).strip()[:500]
+    if not await VALID.assurer_colonne("Base quali"):
+        return JSONResponse({"erreur": "Notion refuse de créer la colonne « Base quali »"}, 502)
+    maj = await VALID._maj(page_id, {"Base quali": MEM._txt(valeur)})
+    if isinstance(maj, JSONResponse):
+        return maj
+    return {"ok": True, "retenue": valeur}
+
+
 @router.post("/v3/validation/api/siren/{page_id}")
 async def corriger_siren(page_id: str, req: Request):
     """Admin : remplace un SIREN faux. Le nouveau est contrôlé (9 chiffres, clé) et sa fiche INSEE est relue.
@@ -1411,7 +1483,7 @@ async def corriger_siren(page_id: str, req: Request):
         return JSONResponse({"erreur": f"SIREN {siren} introuvable à l'INSEE"}, 400)
     if i["etat"] == "erreur API":
         return JSONResponse({"erreur": "l'INSEE ne répond pas, réessayez dans une minute"}, 502)
-    if not await VALID.assurer_colonne_siren():
+    if not await VALID.assurer_colonne("SIREN corrigé"):
         return JSONResponse({"erreur": "Notion refuse de créer la colonne « SIREN corrigé »"}, 502)
     avant = (VALID._json(info.get("siren_corrige"), {}).get("avant") or info["siren"])   # le tout premier SIREN
     quand = datetime.now(SUIVI.PARIS)
@@ -1472,7 +1544,8 @@ def _org_api(x: dict) -> dict:
     return {"id": re.sub(r"\.0$", "", t("id_pipedrive")), "nom": t("nom"), "site_crm": t("site"),
             "siren_crm": siren if luhn_ok(siren) else "", "adresse_crm": t("adresse"),
             "cp": re.sub(r"\D", "", t("code_postal"))[:5] or _cp_de(notion), "ville": t("ville"),
-            **({"adresse_notion": notion} if notion else {}), **({"infos_source": infos} if infos else {})}
+            **({"adresse_notion": notion} if notion else {}), **({"infos_source": infos} if infos else {}),
+            **({"base_quali_crm": t("base_quali")} if t("base_quali") else {})}
 
 
 def _fusion_doublons_api(orgs: list) -> tuple:

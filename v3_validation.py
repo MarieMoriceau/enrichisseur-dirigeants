@@ -293,7 +293,8 @@ def _props(pg: dict) -> dict:
             "hubspot": MEM._val(p, "Envoyée à HubSpot le")[:10], "lance_par": MEM._val(p, "Lancé par"),
             "negos": MEM._val(p, "Négos"),
             "decision_ecart": MEM._val(p, "Écartée pour"), "motif_ecart": MEM._val(p, "Motif écart"),
-            "partis": MEM._val(p, "Partis suivis"), "siren_corrige": MEM._val(p, "SIREN corrigé")}
+            "partis": MEM._val(p, "Partis suivis"), "siren_corrige": MEM._val(p, "SIREN corrigé"),
+            "base_quali": MEM._val(p, "Base quali")}
 
 
 async def _toutes() -> list:
@@ -391,19 +392,20 @@ def appliquer_correction_siren(info: dict):
         info["siren_avant"] = c.get("avant", "")
 
 
-_COLONNE_SIREN = {"ok": False}
+_COLONNES_TEXTE = set()
 
 
-async def assurer_colonne_siren() -> bool:
-    """Crée une fois la colonne texte « SIREN corrigé » (JSON : ancien SIREN + fiche INSEE du nouveau)."""
-    if not _COLONNE_SIREN["ok"]:
+async def assurer_colonne(nom: str) -> bool:
+    """Crée une fois une colonne texte dans la base mémoire si elle manque (« SIREN corrigé », « Base quali »…)."""
+    if nom not in _COLONNES_TEXTE:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await MEM._req(c, "PATCH", f"https://api.notion.com/v1/databases/{MEM.MEMOIRE_DB}",
-                               json={"properties": {"SIREN corrigé": {"rich_text": {}}}})
-        _COLONNE_SIREN["ok"] = r.status_code == 200
+                               json={"properties": {nom: {"rich_text": {}}}})
         if r.status_code != 200:
-            print(f"[V3 VALIDATION] colonne SIREN corrigé : Notion {r.status_code} {r.text[:200]}")
-    return _COLONNE_SIREN["ok"]
+            print(f"[V3 VALIDATION] colonne {nom} : Notion {r.status_code} {r.text[:200]}")
+            return False
+        _COLONNES_TEXTE.add(nom)
+    return True
 
 
 DECISIONS_ECART = ["Hors cible HubSpot", "À supprimer de la base"]
