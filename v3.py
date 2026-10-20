@@ -1437,6 +1437,28 @@ def _org_api(x: dict) -> dict:
             **({"adresse_notion": notion} if notion else {}), **({"infos_source": infos} if infos else {})}
 
 
+def _fusion_doublons_api(orgs: list) -> tuple:
+    """Une même société relevée deux fois dans un envoi (deux négos) : une seule recherche, les prénoms sont cumulés.
+    Même société = même SIREN, sinon même nom normalisé + même code postal."""
+    import v3_equipe as EQ
+    garde, index, n = [], {}, 0
+    for o in orgs:
+        k = ("s", o["siren_crm"]) if o.get("siren_crm") else ("n", norm_nom(o.get("nom", "")), o.get("cp", ""))
+        if k not in index:
+            index[k] = o
+            garde.append(o)
+            continue
+        n += 1
+        g = index[k]
+        neg = EQ.fusion((g.get("infos_source") or {}).get("nego", ""), [(o.get("infos_source") or {}).get("nego", "")])
+        if neg:
+            g.setdefault("infos_source", {})["nego"] = neg
+        for c in ("site_crm", "adresse_crm", "adresse_notion", "id", "ville"):
+            if not g.get(c) and o.get(c):
+                g[c] = o[c]
+    return garde, n
+
+
 def _cp_de(a: str) -> str:
     m = re.search(r"\b(\d{5})\b", a or "")
     return m.group(1) if m else ""
@@ -1462,6 +1484,7 @@ async def api_lancer(req: Request):
         (orgs if o.get("nom") else ignorees).append(o if o.get("nom") else i)
     if not orgs:
         return JSONResponse({"ok": False, "erreur": "aucune société avec un nom"}, 400)
+    orgs, fusionnees = _fusion_doublons_api(orgs)
     if len(orgs) > API_MAX_SOCIETES:
         return JSONResponse({"ok": False, "erreur": f"{len(orgs)} sociétés : {API_MAX_SOCIETES} au plus par envoi, découpez la liste"}, 413)
     if perimetre != "siren" and not LI.pb_configure():
@@ -1472,7 +1495,8 @@ async def api_lancer(req: Request):
     jid = nouveau_job(nom, mails, perimetre, orgs, forcer=bool(b.get("forcer")), origine=PLAN.OUTILS)
     JOBS[jid]["recues"] = len(orgs)
     jlog(JOBS[jid], f"reçu par l'API ({source}) : {len(orgs)} sociétés, compte LinkedIn « {PLAN.NOM_COMPTE[PLAN.compte(PLAN.OUTILS)]} »"
-                    + (f", {len(ignorees)} lignes sans nom ignorées" if ignorees else ""))
+                    + (f", {len(ignorees)} lignes sans nom ignorées" if ignorees else "")
+                    + (f", {fusionnees} doublons fusionnés (négos cumulés)" if fusionnees else ""))
     base = str(req.base_url).rstrip("/")
     return JSONResponse({"ok": True, "lancement": jid, "nom": nom, "recues": len(orgs), "ignorees_sans_nom": ignorees,
                          "perimetre": perimetre, "compte_linkedin": PLAN.NOM_COMPTE[PLAN.compte(PLAN.OUTILS)],

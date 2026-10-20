@@ -122,13 +122,14 @@ tr.ecarte td{opacity:.55}
   <div>
     <div class="eyebrow">Equation SIE · Enrichisseur v3</div>
     <h1>Nouveaux contacts</h1>
-    <p class="sub">Les dirigeants trouvés par l'enrichisseur et absents du CRM. Complétez ou corrigez e-mail, téléphone, fonction, rôle et LinkedIn, puis validez pour HubSpot. Connecté : <b>{{QUI}}</b>, vous voyez les sociétés que vous avez lancées. <a class="deco" href="/">Accueil</a> · <a class="deco" href="/v3/lancer">Lancer un enrichissement</a> · <a class="deco" href="/v3/deconnexion">Se déconnecter</a></p>
+    <p class="sub">Les dirigeants trouvés par l'enrichisseur et absents du CRM. Complétez ou corrigez e-mail, téléphone, fonction, rôle et LinkedIn, puis validez pour HubSpot. Connecté : <b>{{QUI}}</b>. <span id="perimetre">Vous voyez les sociétés relevées à votre prénom et celles que vous avez lancées.</span> <a class="deco" href="/">Accueil</a> · <a class="deco" href="/v3/lancer">Lancer un enrichissement</a> · <a class="deco" href="/v3/deconnexion">Se déconnecter</a></p>
   </div>
 </div></div>
 
 <div class="wrap">
   <aside class="card liste" aria-label="Sociétés">
     <div class="filtres" id="filtres" role="group" aria-label="Filtrer"></div>
+    <select id="qui" aria-label="Négociateur" hidden style="margin-bottom:8px"></select>
     <select id="fichier" aria-label="Fichier lancé"><option value="">Tous mes fichiers</option></select>
     <input type="search" id="cherche" placeholder="Chercher une société…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement…</div></div>
@@ -136,7 +137,7 @@ tr.ecarte td{opacity:.55}
   <main class="card" id="detail"><div class="vide">Choisissez une société dans la liste.</div></main>
 </div>
 <script>
-const ROLE = "{{ROLE}}";
+const ROLE = "{{ROLE}}", MOI = "{{MOI}}";
 const FILTRES = ["À traiter", "Terminées", "Toutes"];
 let SOC = [], filtre = "À traiter", courant = null;
 const $ = s => document.querySelector(s);
@@ -153,11 +154,39 @@ const finie = s => s.nb_nouveaux != null && s.nb_traites >= s.nb_nouveaux;
 async function charger() {
   try { SOC = (await api("/v3/contacts/api/societes")).societes; }
   catch (e) { $("#items").innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
-  dessinerFichiers(); dessinerFiltres(); dessinerListe();
+  dessinerQui(); dessinerFichiers(); dessinerFiltres(); dessinerListe();
+}
+// Admin : choisir un négo, « non attribuées », ou « mes sociétés » (Lionel est admin et négo)
+function dessinerQui() {
+  if (ROLE !== "admin") return;
+  $("#perimetre").textContent = "Vous voyez toutes les sociétés, tous négos confondus.";
+  const noms = [...new Set(SOC.flatMap(s => s.attribue_a || []))].sort((a, b) => a.localeCompare(b));
+  const nb = f => SOC.filter(s => quiOk(s, f)).length;
+  const garde = $("#qui").value || (MOI && nb("moi") ? "moi" : "");      // Lionel : ses sociétés d'abord, s'il en a
+  $("#qui").innerHTML = `<option value="">Tous les négos · ${SOC.length}</option>`
+    + (MOI ? `<option value="moi">Mes sociétés (${esc(MOI)}) · ${nb("moi")}</option>` : "")
+    + `<option value="non">Non attribuées · ${nb("non")}</option>`
+    + noms.filter(x => x !== MOI).map(x => `<option value="p:${esc(x)}">${esc(x)} · ${nb("p:" + x)}</option>`).join("");
+  $("#qui").value = [...$("#qui").options].some(o => o.value === garde) ? garde : "";
+  $("#qui").hidden = false;
+}
+function quiOk(s, f = $("#qui").value) {
+  if (!f) return true;
+  if (f === "moi") return !!s.a_moi;
+  if (f === "non") return !!s.non_attribue;
+  return (s.attribue_a || []).includes(f.slice(2));
+}
+function etiquette(s) {
+  if (ROLE === "admin") {
+    const inc = (s.prenoms_inconnus || []).length ? ` <span class="pill warn" title="Prénom reçu absent de la table Équipe négos">prénom inconnu : ${esc(s.prenoms_inconnus.join(", "))}</span>` : "";
+    return (s.non_attribue ? `<span class="pill ko">non attribué</span>` : `<span class="pill">${esc(s.attribue_a.join(" · "))}</span>`) + inc;
+  }
+  const autres = (s.attribue_a || []).filter(x => x !== MOI);
+  return autres.length ? `<span class="pill" title="Relevée aussi par">aussi suivie par ${esc(autres.join(", "))}</span>` : "";
 }
 function dessinerFiltres() {
   const fi = $("#fichier").value;
-  const n = f => SOC.filter(s => (f === "Toutes" || (f === "Terminées") === finie(s)) && (!fi || fichiersDe(s).includes(fi))).length;
+  const n = f => SOC.filter(s => quiOk(s) && (f === "Toutes" || (f === "Terminées") === finie(s)) && (!fi || fichiersDe(s).includes(fi))).length;
   $("#filtres").innerHTML = FILTRES.map(f => `<button aria-pressed="${f === filtre}" data-f="${f}">${f} · ${n(f)}</button>`).join("");
   $("#filtres").querySelectorAll("button").forEach(b => b.onclick = () => { filtre = b.dataset.f; dessinerFiltres(); dessinerListe(); });
 }
@@ -174,7 +203,7 @@ function dessinerFichiers() {
 }
 function visibles() {
   const q = norm($("#cherche").value), f = $("#fichier").value;
-  return SOC.filter(s => (filtre === "Toutes" || (filtre === "Terminées") === finie(s))
+  return SOC.filter(s => quiOk(s) && (filtre === "Toutes" || (filtre === "Terminées") === finie(s))
     && (!f || fichiersDe(s).includes(f))
     && (!q || norm(s.nom + " " + s.domaine + " " + (s.lancement || "")).includes(q)));
 }
@@ -185,11 +214,13 @@ function dessinerListe() {
       <b>${esc(s.nom)}</b>
       <small>${s.nb_nouveaux ?? "?"} nouveau(x) · ${s.nb_prets || 0} prêt(s) pour HubSpot · ${esc(s.traitee)}</small>
       <small class="fich">${esc(fichiersDe(s).join(" · "))}</small>
+      ${etiquette(s) ? `<small>${etiquette(s)}</small>` : ""}
     </button>`).join("") : `<div class="vide">Rien ici.</div>`;
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
 $("#cherche").oninput = dessinerListe;
 $("#fichier").onchange = () => { dessinerFiltres(); dessinerListe(); };
+$("#qui").onchange = () => { dessinerFiltres(); dessinerListe(); };
 
 let INFO = null;
 async function ouvrir(page) {

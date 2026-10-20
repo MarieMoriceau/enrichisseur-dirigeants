@@ -98,7 +98,24 @@ enrichisseur/
 Les deux écrans lisent la base Notion « Enrichisseur v3 — Mémoire des sociétés ». **Rien n'est envoyé dans un CRM** depuis ces écrans :
 l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blanc sur 50 lignes avant tout envoi réel.
 
-**`/v3/validation`, réservé à Marie et Michel Bastian (mot de passe admin)**
+**Connexion : lien par e-mail.** On saisit son e-mail sur `/v3/connexion`, on reçoit un lien valable 15 minutes
+(SMTP OVH), on reste connecté 30 jours. Qui a accès : la table Notion **« Enrichisseur v3 — Équipe négos »**
+(Services Render), colonnes Prénom / E-mail / Actif / Négo / Admin, relue toutes les 5 minutes.
+- **Négo** coché : la personne a un espace négo (ses sociétés). Le Prénom doit être écrit comme dans la liste « nego »
+  de prospection-hebdo ; accents et majuscules sont ignorés à la comparaison (« Sebastien » = « Sébastien »).
+- **Admin** coché : écran administrateur, tout voir. Les deux peuvent être cochés (Lionel).
+- **Actif** décoché ou ligne supprimée : l'accès négo est coupé tout de suite, même avec une session ouverte.
+- Le mot de passe admin (`VALIDATION_MDP_ADMIN`) reste en secours. Le mot de passe négos partagé n'ouvre plus rien.
+
+**À qui revient une société** (colonne « Négos » de la mémoire, créée automatiquement) :
+- le champ `nego` envoyé par prospection-hebdo (prénom), cumulé si plusieurs négos relèvent la même société
+  (« Marine ; Richard ») : elle apparaît dans les deux espaces, avec « aussi suivie par » ;
+- ou l'e-mail du négo dans « Lancé par » (ce qu'il a lancé lui-même depuis la page négos) ;
+- sinon : **non attribuée**, visible seulement côté admin, avec une pastille et un filtre ; un prénom reçu absent
+  de la table est affiché (« prénom inconnu : Seb ») pour repérer les fautes de frappe.
+- Dans un même envoi API, une société en double (même SIREN, ou même nom + code postal) n'est cherchée qu'une fois.
+
+**`/v3/validation`, administrateurs (Admin coché dans la table, ou mot de passe admin)**
 1. **Société** : adresses Notion (prospection hebdo, vraie adresse des locaux, cochée d'office) / CRM / site / LinkedIn / Google, recommandation de l'outil, effectif LinkedIn, domiciliation.
    On coche l'adresse retenue (ou on la saisit), puis « Valider la société » ou « Écarter ».
 2. **Contacts CRM** (une fois la société validée) : contacts Pipedrive « probablement parti » / « à vérifier » / « toujours là »,
@@ -108,9 +125,9 @@ l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blan
 et téléphone sont modifiables. Les cases corrigées à la main sont surlignées et remplacent la valeur de l'enrichisseur ou de Pipedrive
 (gardées dans Notion : `modifie`, `final_*`, `modifie_par`).
 
-**`/v3/contacts`, pour les négos (e-mail + mot de passe négos ; le mot de passe admin y donne aussi accès)**
-- Chaque négo ne voit que les sociétés qu'il a lancées : son e-mail de connexion est comparé au champ « Lancé par » de la
-  mémoire (e-mail saisi au lancement). Une société déjà en mémoire relancée par un autre négo lui est ajoutée.
+**`/v3/contacts`, pour les négos (lien e-mail ; les admins y voient tout, avec un filtre par négo)**
+- Chaque négo voit les sociétés relevées à son prénom et celles qu'il a lancées (son e-mail dans « Lancé par »).
+  Une société déjà en mémoire relancée par un autre négo lui est ajoutée.
 - Nouveaux dirigeants, visibles dès la fin du lancement : profil LinkedIn affiché, téléphone à compléter,
   « Valider pour HubSpot » ou « Écarter ». Liste commune à tous les négos.
 - Contacts déjà au CRM : lecture seule.
@@ -122,9 +139,10 @@ Contrôle des contacts CRM (étape 4b du pipeline, choix « Sociétés + dirigea
 
 | Variable Render | Rôle |
 |---|---|
-| `VALIDATION_MDP_ADMIN` | mot de passe de l'écran admin (Marie + Michel) |
-| `VALIDATION_MDP_NEGOS` | mot de passe de l'écran des négos |
-| `VALIDATION_SECRET` | facultatif : clé de signature de la connexion (changer = déconnecter tout le monde) |
+| `VALIDATION_MDP_ADMIN` | mot de passe admin de secours (Marie + Michel) |
+| `VALIDATION_MDP_NEGOS` | n'ouvre plus rien, mais **à laisser** : il entre dans la clé de signature tant que `VALIDATION_SECRET` est vide |
+| `VALIDATION_SECRET` | facultatif : clé de signature de la connexion et des liens (changer = déconnecter tout le monde) |
+| `NOTION_EQUIPE_DB` | facultatif : ID de la table « Équipe négos » (déjà renseigné par défaut) |
 | `PB_PROFILE_SCRAPER_ID` | ID du phantom LinkedIn Profile Scraper (sans lui, les contacts restent « à vérifier ») |
 | `PROFILS_MAX` | profils lus au plus par lancement (80 par défaut, quota LinkedIn) |
 

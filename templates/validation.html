@@ -142,7 +142,7 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
   <div>
     <div class="eyebrow">Equation SIE · Enrichisseur v3</div>
     <h1>Validation des résultats</h1>
-    <p class="sub">Réservé à Marie et Michel. Société par société : l'adresse à retenir, puis les contacts déjà au CRM. Rien ne part dans un CRM depuis cette page.
+    <p class="sub">Réservé aux administrateurs (Admin coché dans la table Équipe négos, ou mot de passe admin). Société par société : l'adresse à retenir, puis les contacts déjà au CRM. Rien ne part dans un CRM depuis cette page.
       <a href="/">Accueil</a> · <a href="/v3/lancer">Lancer</a> · <a href="/v3/contacts">Écran des négos</a> · <a href="/v3/deconnexion">Se déconnecter</a></p>
   </div>
 </div></div>
@@ -171,6 +171,7 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
 <div class="wrap">
   <aside class="card liste" aria-label="Sociétés">
     <div class="filtres" id="filtres" role="group" aria-label="Filtrer par étape"></div>
+    <select id="qui" aria-label="Négociateur" style="margin-bottom:8px"><option value="">Tous les négos</option></select>
     <input type="search" id="cherche" placeholder="Chercher une société, un SIREN, un lancement…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement de la mémoire Notion…</div></div>
   </aside>
@@ -203,13 +204,33 @@ async function api(url, corps) {
 }
 
 async function charger() {
-  try { SOC = (await api("/v3/validation/api/societes")).societes; }
+  let j;
+  try { j = await api("/v3/validation/api/societes"); SOC = j.societes; }
   catch (e) { $("#items").innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
-  dessinerFiltres(); dessinerListe();
+  if (j.equipe_erreur) $("#items").insertAdjacentHTML("beforebegin", `<p class="note">${esc(j.equipe_erreur)}</p>`);
+  dessinerQui(j.negos || []); dessinerFiltres(); dessinerListe();
+}
+
+// Filtre par négo : chaque société porte « attribue_a » (prénoms) et « non_attribue »
+function dessinerQui(negos) {
+  const noms = [...new Set([...negos, ...SOC.flatMap(s => s.attribue_a || [])])].sort((a, b) => a.localeCompare(b));
+  const garde = $("#qui").value, nb = f => SOC.filter(s => quiOk(s, f)).length;
+  $("#qui").innerHTML = `<option value="">Tous les négos · ${SOC.length}</option><option value="non">Non attribuées · ${nb("non")}</option>`
+    + noms.map(x => `<option value="p:${esc(x)}">${esc(x)} · ${nb("p:" + x)}</option>`).join("");
+  $("#qui").value = [...$("#qui").options].some(o => o.value === garde) ? garde : "";
+}
+function quiOk(s, f = $("#qui").value) {
+  if (!f) return true;
+  if (f === "non") return !!s.non_attribue;
+  return (s.attribue_a || []).includes(f.slice(2));
+}
+function etiquetteNego(s) {
+  const inc = (s.prenoms_inconnus || []).length ? ` <span class="pill warn" title="Prénom reçu absent de la table Équipe négos">prénom inconnu : ${esc(s.prenoms_inconnus.join(", "))}</span>` : "";
+  return (s.non_attribue ? `<span class="pill ko">non attribué</span>` : `<span class="pill">${esc((s.attribue_a || []).join(" · "))}</span>`) + inc;
 }
 
 function dessinerFiltres() {
-  const n = e => SOC.filter(s => e === "Toutes" || s.validation === e).length;
+  const n = e => SOC.filter(s => quiOk(s) && (e === "Toutes" || s.validation === e)).length;
   $("#filtres").innerHTML = [...ETAPES, "Toutes"].map(e =>
     `<button aria-pressed="${e === filtre}" data-f="${esc(e)}"${e === "À valider" || e === "Société validée" ? ' class="file"' : ""}>${esc(lib(e))} · ${n(e)}</button>`).join("");
   $("#filtres").querySelectorAll("button").forEach(b => b.onclick = () => { filtre = b.dataset.f; dessinerFiltres(); dessinerListe(); });
@@ -217,7 +238,7 @@ function dessinerFiltres() {
 
 function visibles() {
   const q = norm($("#cherche").value);
-  return SOC.filter(s => (filtre === "Toutes" || s.validation === filtre)
+  return SOC.filter(s => quiOk(s) && (filtre === "Toutes" || s.validation === filtre)
     && (!q || norm([s.nom, s.siren, s.domaine, s.lancement].join(" ")).includes(q)));
 }
 
@@ -228,11 +249,13 @@ function dessinerListe() {
       <b>${esc(s.nom)}</b>
       <small>${esc(s.domaine || s.siren || "—")} · ${s.effectif ?? "?"} sal. LinkedIn · ${esc(s.traitee)}</small>
       ${filtre === "Toutes" ? `<span class="pill ${PILL[s.validation]}">${esc(lib(s.validation))}</span>` : ""}
+      ${etiquetteNego(s)}
       ${s.validation === "Écartée" ? `<span class="pill ko">${s.decision_ecart === "À supprimer de la base" ? "à supprimer" : "hors HubSpot"}</span>` : ""}
     </button>`).join("") : `<div class="vide">Rien ici.</div>`;
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
 $("#cherche").oninput = dessinerListe;
+$("#qui").onchange = () => { dessinerFiltres(); dessinerListe(); };
 
 async function ouvrir(page, vers) {
   courant = page; dessinerListe();
@@ -250,7 +273,8 @@ function dessinerDetail() {
       <h2>${esc(info.nom)}</h2>
       <span class="pill ${PILL[info.validation]}">${esc(lib(info.validation))}</span>
       <span class="meta">${[d.domaine ? `<a href="https://${esc(d.domaine)}" target="_blank" rel="noopener">${esc(d.domaine)}</a>` : "",
-        "SIREN " + esc(info.siren || "—"), esc(d.statut || ""), `lancement « ${esc(info.lancement)} » du ${esc(info.traitee)}`].filter(Boolean).join(" · ")}</span>
+        "SIREN " + esc(info.siren || "—"), esc(d.statut || ""), `lancement « ${esc(info.lancement)} » du ${esc(info.traitee)}`,
+        info.non_attribue ? "non attribué" : "négo : " + esc((info.attribue_a || []).join(", "))].filter(Boolean).join(" · ")}</span>
     </div>
     <div class="etapes" role="group" aria-label="Étapes">
       <button data-e="societe" aria-pressed="${ecran === "societe"}"><span class="num">1</span>Société</button>
