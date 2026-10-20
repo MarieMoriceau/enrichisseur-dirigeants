@@ -623,7 +623,8 @@ def lire_fichier(nom: str, data: bytes) -> list:
     c_site = col("site internet") or col("site web") or col("website") or col("site")
     c_site2 = col("site web") if c_site and "internet" in c_site.lower() else None
     c_siren = col("siren")
-    c_adr = col("adresse", exclure=("verifi", "vérifi")) or col("address")
+    c_notion = col("adresse notion") or col("adresse des locaux") or col("adresse locaux")
+    c_adr = col("adresse", exclure=("verifi", "vérifi", "notion", "locaux")) or col("address")
     out = []
     for l in lignes:
         if not (l.get(c_nom) or "").strip():
@@ -634,7 +635,8 @@ def lire_fichier(nom: str, data: bytes) -> list:
                     "site_crm": ((l.get(c_site) or "").strip() or (l.get(c_site2) or "").strip()) if c_site else "",
                     "siren_crm": siren if luhn_ok(siren) else "",
                     "adresse_crm": (l.get(c_adr) or "").strip() if c_adr else "",
-                    "cp": _cp(l, c_cp, c_adr), "ville": (l.get(c_ville) or "").strip() if c_ville else ""})
+                    "cp": _cp(l, c_cp, c_adr), "ville": (l.get(c_ville) or "").strip() if c_ville else "",
+                    **({"adresse_notion": v} if c_notion and (v := (l.get(c_notion) or "").strip()) else {})})
     return out
 
 
@@ -1054,6 +1056,8 @@ def excel(job) -> bytes:
             ("Siège légal INSEE", "siege_insee"), ("Code NAF", "naf"), ("Secteur", "secteur"), ("LinkedIn (site)", "linkedin_site"),
             ("Statut proposé", "statut"), ("Action", "action"), ("Confiance", "confiance"), ("Note", "note_site")]
     li_ = bool(job.get("linkedin"))
+    if any(r.get("adresse_notion") for r in job.get("resultats", [])):
+        cols += [("Adresse Notion (locaux)", "adresse_notion")]
     cols += [("Adresse CRM", "adresse_crm"), ("Adresse site", "adresse_site"), ("Page de l'adresse site", "page_adresse_site")]
     if li_:
         cols += [("Page LinkedIn retenue", "linkedin"), ("Trouvée via", "source_linkedin"), ("Contrôle LinkedIn", "controle_linkedin"),
@@ -1342,6 +1346,20 @@ async def quota():
         return {"quota": SUIVI.QUOTA_JOUR, "utilise": None, "reste": None, "erreur": str(e)}
 
 
+# ───────────────────────── rattrapage : « Lancé par » des sociétés enrichies avant le 16/10 ─────────────────────────
+@router.get("/v3/validation/api/attribuer-anciens")
+async def attribuer_anciens(req: Request, mail: str = "mmoriceau@equation-sie.com", avant: str = "2026-10-16",
+                            confirmer: int = 0, limite: int = 50):
+    """Admin seulement. Sans &confirmer=1 : essai à blanc (on compte, rien n'est écrit).
+    Avec &confirmer=1 : met « mail » dans « Lancé par » de « limite » sociétés au plus (50 par défaut)."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    m = SUIVI.mails_valides(mail)
+    if len(m) != 1 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", avant):
+        return JSONResponse({"erreur": "mail ou date (AAAA-MM-JJ) invalide"}, 400)
+    return await MEM.attribuer_anciens(m[0], avant, bool(confirmer), min(max(limite, 0), 5000))
+
+
 # ───────────────────────── contacts « partis » : nouvelle société, poste, e-mail ─────────────────────────
 @router.get("/v3/validation/api/partis")
 async def partis_liste(req: Request):
@@ -1412,9 +1430,16 @@ def _org_api(x: dict) -> dict:
     t = lambda k: str(x.get(k) or "").strip()
     siren = re.sub(r"\D", "", t("siren"))[:9]
     infos = {k: t(k) for k in ("statut_pipedrive", "nego", "campagne", "ref_notion") if t(k)}
+    notion = t("adresse_notion") or t("adresse_locaux")
     return {"id": re.sub(r"\.0$", "", t("id_pipedrive")), "nom": t("nom"), "site_crm": t("site"),
             "siren_crm": siren if luhn_ok(siren) else "", "adresse_crm": t("adresse"),
-            "cp": re.sub(r"\D", "", t("code_postal"))[:5], "ville": t("ville"), **({"infos_source": infos} if infos else {})}
+            "cp": re.sub(r"\D", "", t("code_postal"))[:5] or _cp_de(notion), "ville": t("ville"),
+            **({"adresse_notion": notion} if notion else {}), **({"infos_source": infos} if infos else {})}
+
+
+def _cp_de(a: str) -> str:
+    m = re.search(r"\b(\d{5})\b", a or "")
+    return m.group(1) if m else ""
 
 
 @router.post("/v3/api/lancer")

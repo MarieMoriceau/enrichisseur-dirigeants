@@ -206,6 +206,25 @@ def fusion_lancements(existant: str, nom: str) -> str:
     return " ; ".join(vus)[:2000]
 
 
+async def attribuer_anciens(mail: str, avant: str, confirmer: bool, limite: int, journal=lambda m: None) -> dict:
+    """Sociétés de la mémoire sans « Lancé par » traitées avant une date : on y met un mail (rattrapage du 16/10).
+    Sans confirmer : essai à blanc, rien n'est écrit. Avec confirmer : au plus « limite » sociétés modifiées."""
+    idx = await index(journal, tout=True)
+    cibles = [e for e in idx if not (e.get("lance_par") or "").strip() and (e.get("date") or "")[:10] < avant]
+    a_faire = cibles[:max(0, limite)] if confirmer else []
+    erreurs = 0
+    if a_faire:
+        async with httpx.AsyncClient(timeout=30) as c:
+            for i in range(0, len(a_faire), 10):
+                rs = await asyncio.gather(*(_req(c, "PATCH", f"https://api.notion.com/v1/pages/{e['page']}",
+                                                 json={"properties": {"Lancé par": _txt(mail)}}) for e in a_faire[i:i + 10]))
+                erreurs += sum(1 for r in rs if r.status_code != 200)
+    return {"essai_a_blanc": not confirmer, "mail": mail, "avant": avant, "sans_lance_par": len(cibles),
+            "modifiees": len(a_faire) - erreurs, "erreurs": erreurs,
+            "reste_apres": len(cibles) - (len(a_faire) - erreurs),
+            "exemples": [f"{e['nom']} ({(e.get('date') or '')[:10]})" for e in (a_faire or cibles)[:50]]}
+
+
 async def ajouter_lanceurs(job: dict, journal):
     """Société reprise de la mémoire : le négo qui l'a relancée est ajouté à « Lancé par » pour qu'il la voie dans son écran,
     et le nom de son fichier est ajouté à « Lancement » pour qu'il la retrouve en filtrant par fichier."""
