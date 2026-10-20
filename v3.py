@@ -1057,7 +1057,7 @@ def excel(job) -> bytes:
             ("Statut proposé", "statut"), ("Action", "action"), ("Confiance", "confiance"), ("Note", "note_site")]
     li_ = bool(job.get("linkedin"))
     if any(r.get("adresse_notion") for r in job.get("resultats", [])):
-        cols += [("Adresse Notion (locaux)", "adresse_notion")]
+        cols += [("Adresse prospection physique (locaux)", "adresse_notion")]
     cols += [("Adresse CRM", "adresse_crm"), ("Adresse site", "adresse_site"), ("Page de l'adresse site", "page_adresse_site")]
     if li_:
         cols += [("Page LinkedIn retenue", "linkedin"), ("Trouvée via", "source_linkedin"), ("Contrôle LinkedIn", "controle_linkedin"),

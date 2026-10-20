@@ -116,7 +116,7 @@ l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blan
 - Dans un même envoi API, une société en double (même SIREN, ou même nom + code postal) n'est cherchée qu'une fois.
 
 **`/v3/validation`, administrateurs (Admin coché dans la table, ou mot de passe admin)**
-1. **Société** : adresses Notion (prospection hebdo, vraie adresse des locaux, cochée d'office) / CRM / site / LinkedIn / Google, recommandation de l'outil, effectif LinkedIn, domiciliation.
+1. **Société** : adresses « Prospection physique » (relevée sur place via prospection hebdo, vraie adresse des locaux, cochée d'office ; anciennement « Notion ») / CRM / site / LinkedIn / Google, recommandation de l'outil, effectif LinkedIn, domiciliation.
    On coche l'adresse retenue (ou on la saisit), puis « Valider la société » ou « Écarter ».
 2. **Contacts CRM** (une fois la société validée) : contacts Pipedrive « probablement parti » / « à vérifier » / « toujours là »,
    décision garder / marquer parti / à revoir. Les nouveaux contacts y sont visibles en lecture seule, avec l'avancement des négos.

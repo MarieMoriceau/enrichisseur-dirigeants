@@ -32,7 +32,7 @@ import v3_linkedin as LI
 import v3_equipe as EQ
 
 router = APIRouter()
-SOURCES = ("Notion", "CRM", "Site", "LinkedIn", "Google", "Saisie")
+SOURCES = ("Prospection physique", "CRM", "Site", "LinkedIn", "Google", "Saisie", "Notion")   # « Notion » : ancien nom, gardé pour les fiches déjà validées
 ACTIONS_CRM = ("garder", "marquer parti", "à supprimer", "à revoir")
 ACTIONS_AILLEURS = ("à décider", "changer de société", "deux sociétés")   # contact déjà fiché chez une autre société
 ETATS_NOUVEAU = ("à traiter", "prêt pour HubSpot", "écarté")

@@ -68,7 +68,7 @@ h3{font-family:var(--display);font-weight:600;font-size:18px;margin:18px 0 8px}
 .reco{background:var(--tag);border-radius:8px;padding:12px 14px;font-size:14px}
 .reco b{font-weight:500}
 .adresses{display:grid;gap:6px}
-.adr{display:grid;grid-template-columns:auto 86px 1fr auto;gap:10px;align-items:start;border:1px solid var(--line);border-radius:6px;padding:9px 11px;cursor:pointer}
+.adr{display:grid;grid-template-columns:auto 140px 1fr auto;gap:10px;align-items:start;border:1px solid var(--line);border-radius:6px;padding:9px 11px;cursor:pointer}
 .adr:has(input:checked){border-color:var(--violet);background:var(--tag)}
 .adr input[type=radio]{margin-top:4px;accent-color:var(--violet)}
 .adr .src{font-weight:500;font-size:13px;color:var(--muted)}
@@ -286,11 +286,13 @@ function dessinerDetail() {
 }
 
 /* ─────────── écran 1 : société ─────────── */
+// Fiches enregistrées avant le 20/10 : « Notion » s'appelle désormais « prospection physique »
+const physique = t => String(t || "").replace(/\bNotion\b/g, "prospection physique");
 function ecranSociete() {
   const d = info.data || {};
   const site = d.adresse_site || (d.adresses_site_liste || [])[0] || "";
   const sources = [
-    ["Notion", d.adresse_notion, "prospection hebdo · vraie adresse des locaux"],
+    ["Prospection physique", d.adresse_notion, "relevée sur place · vraie adresse des locaux"],
     ["CRM", d.adresse_crm, d.dans_crm ? "fiche " + d.dans_crm : ""],
     ["Site", site, d.page_adresse_site || ((d.adresses_site_liste || []).length > 1 ? (d.adresses_site_liste.length - 1) + " autre(s) adresse(s) sur le site" : "")],
     ["LinkedIn", d.adresse_linkedin, d.controle_linkedin || ""],
@@ -322,9 +324,9 @@ function ecranSociete() {
   $("#ecran").innerHTML = `
     ${alertes.length ? `<div class="alerte"><b>À regarder :</b> ${alertes.map(a => esc(a[1])).join(" · ")}. Elle n'entre peut-être pas dans HubSpot.</div>` : ""}
     ${info.validation === "Écartée" ? `<div class="alerte ko"><b>${esc(info.decision_ecart || "Hors cible HubSpot")}</b>${info.motif_ecart ? " · " + esc(info.motif_ecart) : ""}${info.validee ? ` · le ${esc(info.validee)}` : ""}</div>` : ""}
-    <div class="reco"><b>Recommandation de l'outil :</b> ${esc(d.action_adresse || "aucune")}
+    <div class="reco"><b>Recommandation de l'outil :</b> ${esc(physique(d.action_adresse) || "aucune")}
       ${d.adresse_proposee ? `<br><b>Adresse proposée :</b> ${esc(d.adresse_proposee)}` : ""}
-      ${d.confiance_adresse ? `<br><small>Confiance ${esc(d.confiance_adresse)}${d.sources_adresse ? " · sources : " + esc(d.sources_adresse) : ""}</small>` : ""}
+      ${d.confiance_adresse ? `<br><small>Confiance ${esc(d.confiance_adresse)}${d.sources_adresse ? " · sources : " + esc(physique(d.sources_adresse)) : ""}</small>` : ""}
     </div>
     <h3>Adresse des bureaux à retenir</h3>
     <div class="adresses">
