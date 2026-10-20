@@ -459,6 +459,7 @@ class PhantomBuster:
             except Exception as e:
                 self.log(f"{nom} : lecture du résultat impossible ({e})")
         fin = re.sub(r"\s+", " ", sortie[-400:]) if sortie else "aucune sortie"
+        self.derniere_sortie = fin
         self.log(f"{nom} : aucun résultat récupéré. Fin du journal du phantom : {fin}")
         return []
 
@@ -468,11 +469,20 @@ class PhantomBuster:
         cid = await self.lancer(c, agent, nom_csv, **kw)
         self.log(f"phantom lancé ({nom_csv})")
         st = await self.attendre(c, cid, stop, agent=agent)
+        self.dernier_statut, self.derniere_sortie = st, ""
         if st != "finished":
             self.log(f"phantom {nom_csv} : {st}")
             if st != "error":
                 return []
         return await self.resultats(c, cid, nom_csv)
+
+
+class PhantomEnPanne(RuntimeError):
+    """Un phantom indispensable échoue à chaque fois (cookie LinkedIn expiré, Sales Navigator non configuré…) :
+    on arrête le lancement au lieu de continuer à vide."""
+
+
+SN_ECHECS_MAX = 2          # lots Sales Navigator d'affilée en erreur et sans aucun profil avant d'arrêter
 
 
 # ───────────────────────── Kaspr ─────────────────────────
@@ -915,7 +925,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         f"({', '.join(r['nom'] for r in grandes[:6])}{'…' if len(grandes) > 6 else ''})")
             file_lots = ([(petites[i:i + 12], True) for i in range(0, len(petites), 12)]
                          + [(grandes[i:i + 12], False) for i in range(0, len(grandes), 12)])
-            n_lot = 0
+            n_lot, echecs = 0, 0
             while file_lots:
                 if stop():
                     return
@@ -928,7 +938,15 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                                                resultats_par_recherche=PLAFOND_SN)
                 except Exception as e:
                     journal(f"Sales Navigator lot {n_lot} en échec : {e}")
+                    lignes = None
+                # phantom en panne : erreur et zéro profil, plusieurs lots de suite, sans un seul profil depuis le début
+                if not lignes and (lignes is None or getattr(pb, "dernier_statut", "") in ("error", "launch error")):
+                    echecs += 1
+                    if echecs >= SN_ECHECS_MAX and not job.get("sn_lignes"):
+                        detail = getattr(pb, "derniere_sortie", "") or "voir le journal du phantom dans PhantomBuster"
+                        raise PhantomEnPanne(f"le phantom Sales Navigator (dirigeants) échoue à chaque lot : {detail[:300]}")
                     continue
+                echecs = 0
                 if len(lignes) >= PLAFOND_SN and len(lot) > 1:
                     m = len(lot) // 2
                     file_lots[:0] = [(lot[:m], avec_dir), (lot[m:], avec_dir)]

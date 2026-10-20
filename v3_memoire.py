@@ -84,7 +84,7 @@ async def index(journal, tout: bool = False) -> list:
                             "hist": _val(p, "Historique effectifs"), "validation": _val(p, "Validation"),
                             "adresse_retenue": _val(p, "Adresse retenue"), "source_retenue": _val(p, "Source adresse retenue"),
                             "lance_par": _val(p, "Lancé par"), "lancement": _val(p, "Lancement"),
-                            "negos": _val(p, "Négos")})
+                            "negos": _val(p, "Négos"), "nb_dir": (p.get("Nb dirigeants") or {}).get("number")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -135,6 +135,8 @@ def chercher(idx: list, o: dict, perim: str, norm_nom, domaines) -> dict:
     for e in idx:                                   # déjà triées de la plus récente à la plus ancienne
         if RANG.get(e["perim"], -1) < RANG[perim]:
             continue
+        if RANG[perim] >= RANG["dirigeants"] and e.get("nb_dir") == 0:
+            continue                                # zéro dirigeant (phantom en panne ?) : on recherche à nouveau
         if (siren and e["siren"] == siren) or (e["domaine"] and e["domaine"] in doms) or (nom and e["nom"] == nom):
             return e
     return {}

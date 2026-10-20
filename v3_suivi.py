@@ -453,6 +453,39 @@ async def a_lancer(jusqua=None) -> list:
     return out
 
 
+async def suspendre_attente(origine: str, motif: str) -> int:
+    """Passe en SUSPENDU les listes programmées (EN_ATTENTE) d'une origine. Pour les relancer : remettre EN_ATTENTE dans Notion."""
+    if not NOTION_KEY:
+        return 0
+    n = 0
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+            {"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
+            {"property": "Origine", "select": {"equals": ORIGINE_NOTION.get(origine, "Négos")}}]}, "page_size": 100})
+        for pg in (r.json().get("results", []) if r.status_code == 200 else []):
+            rr = await c.patch(f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
+                "Statut": {"select": {"name": "SUSPENDU"}},
+                "Erreur": _txt(f"Suspendu le {datetime.now(PARIS):%d/%m %H:%M} : {motif}. Remettre EN_ATTENTE une fois réparé.")}})
+            n += rr.status_code == 200
+    return n
+
+
+async def alerte_phantom(job: dict, suspendues: int):
+    """Mail à l'administratrice : un phantom indispensable est en panne, rien ne repartira tant qu'il n'est pas réparé."""
+    if not SMTP_USER or not SMTP_PASS or not COPIE_COMPLETE:
+        return
+    import v3_planning as PLAN
+    compte = PLAN.NOM_COMPTE.get(PLAN.compte(job.get("origine", "")), "")
+    corps = (f"Bonjour,\n\nLe lancement « {job['nom']} » s'est arrêté : {job['phantom_en_panne']}\n\n"
+             f"Compte LinkedIn concerné : {compte}.\n"
+             f"Cause la plus fréquente : le cookie LinkedIn du phantom n'est plus valable (déconnexion de LinkedIn, "
+             f"changement de compte dans le même navigateur) ou Sales Navigator n'est pas actif sur ce compte.\n\n"
+             f"{suspendues} liste(s) programmée(s) sur ce compte ont été suspendues pour ne pas consommer le quota à vide.\n"
+             f"Une fois le phantom réparé, remettez-les EN_ATTENTE dans la base Notion « Enrichisseur Dirigeants — Runs » "
+             f"et relancez les sociétés traitées sans dirigeants.\n")
+    await asyncio.to_thread(_envoyer, COPIE_COMPLETE, f"⛔ Enrichisseur : phantom en panne ({compte})", corps, None, "")
+
+
 async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str, motif: str = "quota", origine: str = "negos"):
     """Mail immédiat au négo : sa liste est coupée, la suite part demain (ou plus tard)."""
     if not mails or not SMTP_USER or not SMTP_PASS:
