@@ -112,6 +112,8 @@ tr.ecarte td{opacity:.55}
 .legende i{display:inline-block;width:10px;height:10px;border:1px solid var(--warn);background:var(--warn-soft);border-radius:2px;margin-right:4px;vertical-align:-1px}
 .ro td{color:var(--muted)}
 .deco{color:#D9D0E0;font-size:13px}
+#fichier{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);margin:0 0 8px}
+.item small.fich{color:var(--tag-ink)}
 </style>
 </head>
 <body>
@@ -127,6 +129,7 @@ tr.ecarte td{opacity:.55}
 <div class="wrap">
   <aside class="card liste" aria-label="Sociétés">
     <div class="filtres" id="filtres" role="group" aria-label="Filtrer"></div>
+    <select id="fichier" aria-label="Fichier lancé"><option value="">Tous mes fichiers</option></select>
     <input type="search" id="cherche" placeholder="Chercher une société…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement…</div></div>
   </aside>
@@ -150,16 +153,30 @@ const finie = s => s.nb_nouveaux != null && s.nb_traites >= s.nb_nouveaux;
 async function charger() {
   try { SOC = (await api("/v3/contacts/api/societes")).societes; }
   catch (e) { $("#items").innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
-  dessinerFiltres(); dessinerListe();
+  dessinerFichiers(); dessinerFiltres(); dessinerListe();
 }
 function dessinerFiltres() {
-  const n = f => SOC.filter(s => f === "Toutes" || (f === "Terminées") === finie(s)).length;
+  const fi = $("#fichier").value;
+  const n = f => SOC.filter(s => (f === "Toutes" || (f === "Terminées") === finie(s)) && (!fi || fichiersDe(s).includes(fi))).length;
   $("#filtres").innerHTML = FILTRES.map(f => `<button aria-pressed="${f === filtre}" data-f="${f}">${f} · ${n(f)}</button>`).join("");
   $("#filtres").querySelectorAll("button").forEach(b => b.onclick = () => { filtre = b.dataset.f; dessinerFiltres(); dessinerListe(); });
 }
+// Fichiers lancés (une société reprise de la mémoire peut appartenir à plusieurs : « Liste A ; Liste B »)
+const fichiersDe = s => String(s.lancement || "").split(";").map(x => x.trim()).filter(Boolean);
+function dessinerFichiers() {
+  const dernier = {};
+  SOC.forEach(s => fichiersDe(s).forEach(f => { if (!dernier[f] || s.traitee > dernier[f]) dernier[f] = s.traitee; }));
+  const noms = Object.keys(dernier).sort((a, b) => (dernier[b] || "").localeCompare(dernier[a] || "") || a.localeCompare(b));
+  const garde = $("#fichier").value;
+  $("#fichier").innerHTML = `<option value="">Tous mes fichiers · ${SOC.length}</option>` + noms.map(f =>
+    `<option value="${esc(f)}">${esc(f)} · ${SOC.filter(s => fichiersDe(s).includes(f)).length}</option>`).join("");
+  if (noms.includes(garde)) $("#fichier").value = garde;
+}
 function visibles() {
-  const q = norm($("#cherche").value);
-  return SOC.filter(s => (filtre === "Toutes" || (filtre === "Terminées") === finie(s)) && (!q || norm(s.nom + " " + s.domaine).includes(q)));
+  const q = norm($("#cherche").value), f = $("#fichier").value;
+  return SOC.filter(s => (filtre === "Toutes" || (filtre === "Terminées") === finie(s))
+    && (!f || fichiersDe(s).includes(f))
+    && (!q || norm(s.nom + " " + s.domaine + " " + (s.lancement || "")).includes(q)));
 }
 function dessinerListe() {
   const v = visibles();
@@ -167,10 +184,12 @@ function dessinerListe() {
     <button class="item" data-p="${s.page}" aria-current="${s.page === courant}">
       <b>${esc(s.nom)}</b>
       <small>${s.nb_nouveaux ?? "?"} nouveau(x) · ${s.nb_prets || 0} prêt(s) pour HubSpot · ${esc(s.traitee)}</small>
+      <small class="fich">${esc(fichiersDe(s).join(" · "))}</small>
     </button>`).join("") : `<div class="vide">Rien ici.</div>`;
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
 $("#cherche").oninput = dessinerListe;
+$("#fichier").onchange = () => { dessinerFiltres(); dessinerListe(); };
 
 let INFO = null;
 async function ouvrir(page) {

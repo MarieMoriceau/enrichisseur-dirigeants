@@ -15,7 +15,7 @@ NOTION_KEY = os.getenv("NOTION_API_KEY", "")
 MEMOIRE_DB = os.getenv("NOTION_MEMOIRE_DB", "0447dcf54a344a3883be1d4170aaa692")
 DUREE_JOURS = int(os.getenv("MEMOIRE_JOURS", "183"))          # 6 mois
 RANG = {"siren": 0, "societes": 1, "dirigeants": 2, "tout": 3}
-A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par"}   # brut du scan du site, inutile à garder
+A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par", "_lancement"}   # brut du scan du site, inutile à garder
 _SEM = asyncio.Semaphore(3)                                    # Notion : environ 3 requêtes par seconde
 
 
@@ -83,7 +83,7 @@ async def index(journal, tout: bool = False) -> list:
                             "domaine": _val(p, "Domaine"), "perim": _val(p, "Périmètre"), "date": _val(p, "Traitée le"),
                             "hist": _val(p, "Historique effectifs"), "validation": _val(p, "Validation"),
                             "adresse_retenue": _val(p, "Adresse retenue"), "source_retenue": _val(p, "Source adresse retenue"),
-                            "lance_par": _val(p, "Lancé par")})
+                            "lance_par": _val(p, "Lancé par"), "lancement": _val(p, "Lancement")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -179,7 +179,7 @@ async def reprendre(job: dict, orgs: list, norm_nom, domaines, journal) -> tuple
             reste.append(o)                          # traitée avant la recherche de dirigeants des SIREN connus : on relance
             continue
         row["memoire"] = f"oui, traitée le {e['date'][:10]}"
-        row["_page_memoire"], row["_lance_par"] = e["page"], e.get("lance_par", "")
+        row["_page_memoire"], row["_lance_par"], row["_lancement"] = e["page"], e.get("lance_par", ""), e.get("lancement", "")
         row["id"] = o.get("id") or row.get("id", "")  # l'ID Pipedrive du fichier du jour prime
         reprises.append(row)
     if reprises:
@@ -196,18 +196,41 @@ def fusion_mails(existant: str, nouveaux) -> str:
     return "; ".join(vus)
 
 
+def fusion_lancements(existant: str, nom: str) -> str:
+    """« Liste A ; Liste B » : une société reprise de la mémoire garde les noms de tous les fichiers qui l'ont contenue."""
+    vus = []
+    for x in (existant or "").split(";") + [nom or ""]:
+        x = x.strip()
+        if x and x not in vus:
+            vus.append(x)
+    return " ; ".join(vus)[:2000]
+
+
 async def ajouter_lanceurs(job: dict, journal):
-    """Société reprise de la mémoire : le négo qui l'a relancée est ajouté à « Lancé par » pour qu'il la voie dans son écran."""
-    if not NOTION_KEY or not job.get("mails"):
+    """Société reprise de la mémoire : le négo qui l'a relancée est ajouté à « Lancé par » pour qu'il la voie dans son écran,
+    et le nom de son fichier est ajouté à « Lancement » pour qu'il la retrouve en filtrant par fichier."""
+    if not NOTION_KEY:
         return
-    a_faire = [(r["_page_memoire"], fusion_mails(r.get("_lance_par", ""), job["mails"])) for r in job["resultats"]
-               if r.get("_page_memoire") and fusion_mails(r.get("_lance_par", ""), job["mails"]) != fusion_mails(r.get("_lance_par", ""), [])]
+    a_faire = []
+    for r in job["resultats"]:
+        if not r.get("_page_memoire"):
+            continue
+        props = {}
+        m = fusion_mails(r.get("_lance_par", ""), job.get("mails", []))
+        if m != fusion_mails(r.get("_lance_par", ""), []):
+            props["Lancé par"] = _txt(m)
+        l = fusion_lancements(r.get("_lancement", ""), job.get("nom", ""))
+        if l != (r.get("_lancement") or "").strip():
+            props["Lancement"] = _txt(l)
+        if props:
+            a_faire.append((r["_page_memoire"], props))
     if not a_faire:
         return
     async with httpx.AsyncClient(timeout=30) as c:
-        await asyncio.gather(*(_req(c, "PATCH", f"https://api.notion.com/v1/pages/{p}", json={"properties": {"Lancé par": _txt(m)}})
-                               for p, m in a_faire))
-    journal(f"mémoire : {len(a_faire)} sociétés déjà connues ajoutées à l'écran de {', '.join(job['mails'])}")
+        await asyncio.gather(*(_req(c, "PATCH", f"https://api.notion.com/v1/pages/{p}", json={"properties": props})
+                               for p, props in a_faire))
+    journal(f"mémoire : {len(a_faire)} sociétés déjà connues rattachées à ce lancement"
+            + (f" ({', '.join(job['mails'])})" if job.get("mails") else ""))
 
 
 async def enregistrer(job: dict, norm_nom, journal):
@@ -239,7 +262,8 @@ async def enregistrer(job: dict, norm_nom, journal):
             props = {"Société": {"title": [{"text": {"content": (r.get("nom") or "")[:100]}}]},
                      "Nom normalisé": _txt(nom), "SIREN": _txt(siren), "Domaine": _txt(r.get("domaine", "")),
                      "Périmètre": {"select": {"name": job["perimetre"]}}, "Traitée le": {"date": {"start": maintenant}},
-                     "Lancement": _txt(job.get("nom", "")), "Nb dirigeants": {"number": len(r.get("dirigeants", []))},
+                     "Lancement": _txt(fusion_lancements(" ; ".join(e.get("lancement", "") for e in meme), job.get("nom", ""))),
+                     "Nb dirigeants": {"number": len(r.get("dirigeants", []))},
                      "Nb e-mails": {"number": sum(1 for d in r.get("dirigeants", []) if d.get("email"))},
                      "Nb nouveaux contacts": {"number": sum(1 for d in r.get("dirigeants", []) if not d.get("dans_pipedrive"))},
                      "Effectif LinkedIn": {"number": int(r["effectif_linkedin"]) if r.get("effectif_linkedin") not in (None, "") else None},
