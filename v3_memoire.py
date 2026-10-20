@@ -84,7 +84,9 @@ async def index(journal, tout: bool = False) -> list:
                             "hist": _val(p, "Historique effectifs"), "validation": _val(p, "Validation"),
                             "adresse_retenue": _val(p, "Adresse retenue"), "source_retenue": _val(p, "Source adresse retenue"),
                             "lance_par": _val(p, "Lancé par"), "lancement": _val(p, "Lancement"),
-                            "negos": _val(p, "Négos"), "nb_dir": (p.get("Nb dirigeants") or {}).get("number")})
+                            "negos": _val(p, "Négos"), "nb_dir": (p.get("Nb dirigeants") or {}).get("number"),
+                            "validee": _val(p, "Validée le"), "siren_corrige": _val(p, "SIREN corrigé"),
+                            "base_quali": _val(p, "Base quali")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -329,6 +331,18 @@ async def enregistrer(job: dict, norm_nom, journal):
                      "Lancé par": _txt(fusion_mails(ancienne_l, job.get("mails", [])))}
             if negos_ok:                                    # les prénoms des relevés précédents suivent la société
                 props["Négos"] = _txt(EQ.fusion(" ; ".join(e.get("negos", "") for e in meme), [nego_de(r)]))
+            # le travail déjà fait à la main suit la société quand elle est retraitée (relance après une panne…)
+            validee = next((e for e in meme if e.get("validation") in ("Société validée", "Contacts validés")), None)
+            if validee:                                     # adresse déjà validée ; les nouveaux contacts restent à valider
+                props["Validation"] = {"select": {"name": "Société validée"}}
+                if validee.get("validee"):
+                    props["Validée le"] = {"date": {"start": validee["validee"]}}
+            for cle, col in (("siren_corrige", "SIREN corrigé"), ("base_quali", "Base quali")):
+                v = next((e[cle] for e in meme if e.get(cle)), "")
+                if v:                                       # la colonne existe forcément : une ancienne ligne l'a remplie
+                    props[col] = _txts(v)
+            if next((e for e in meme if e.get("siren_corrige")), None):
+                props["SIREN"] = _txt(next(e for e in meme if e.get("siren_corrige"))["siren"])   # le SIREN corrigé à la main prime
             ancienne = next((e for e in meme if e.get("adresse_retenue")), None)
             if ancienne:                                                     # l'adresse déjà retenue suit la société
                 props["Adresse retenue"] = _txt(ancienne["adresse_retenue"])

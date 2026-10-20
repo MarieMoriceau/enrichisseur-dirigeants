@@ -106,3 +106,37 @@ def test_relancer_vides(monkeypatch):
     assert r["relancees"] == 1 and kw["origine"] == "outils"
     assert orgs[0] == {"id": "", "nom": "Cleerly", "site_crm": "cleerly.fr", "siren_crm": "", "adresse_crm": "", "cp": "", "ville": "",
                        "adresse_notion": "1 rue X 75002 Paris", "infos_source": {"nego": "Richard"}}
+
+
+def test_relance_garde_le_travail_manuel(monkeypatch):
+    """Société déjà validée, SIREN corrigé, Base quali saisie : la relance garde tout, avec les nouveaux dirigeants."""
+    corr = '{"avant": "947938924", "insee": {"raison_sociale": "CREME DE LA CREME"}}'
+    idx = [{"page": "old", "nom": "creme de la creme", "siren": "443061841", "domaine": "cremedelacreme.io", "perim": "tout",
+            "lancement": "Prospection hebdo 20/10", "lance_par": "", "negos": "Lionel", "nb_dir": 0, "hist": "",
+            "validation": "Société validée", "validee": "2026-10-20T14:24:00.000Z", "siren_corrige": corr,
+            "base_quali": "YES", "adresse_retenue": "46 Rue Notre-Dame des Victoires, 75002 Paris", "source_retenue": "Notion"}]
+    envoyes = []
+    class FauxClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+    async def faux_req(c, methode, url, **kw):
+        envoyes.append((methode, url, kw.get("json")))
+        class R:
+            status_code = 200
+            def json(self): return {"id": "new"}
+        return R()
+    monkeypatch.setattr(MEM, "NOTION_KEY", "x"); monkeypatch.setattr(MEM, "_COLONNE_NEGOS", {"ok": True})
+    monkeypatch.setattr(MEM.httpx, "AsyncClient", lambda **k: FauxClient()); monkeypatch.setattr(MEM, "_req", faux_req)
+    r = {"nom": "Crème de la crème", "siren_crm": "443061841", "domaine": "cremedelacreme.io", "infos_source": {"nego": "Lionel"},
+         "dirigeants": [{"nom_complet": "A B", "linkedin": "x", "email": ""}]}
+    job = {"etat": "terminé", "perimetre": "tout", "nom": "Prospection hebdo 20/10 (relance sans dirigeants)", "mails": [],
+           "resultats": [r], "_idx_tout": idx}
+    asyncio.run(MEM.enregistrer(job, v3.norm_nom, print))
+    props = next(j for m, u, j in envoyes if m == "POST")["properties"]
+    assert props["Validation"]["select"]["name"] == "Société validée" and props["Validée le"]["date"]["start"].startswith("2026-10-20")
+    assert props["SIREN"]["rich_text"][0]["text"]["content"] == "443061841"
+    assert "CREME DE LA CREME" in props["SIREN corrigé"]["rich_text"][0]["text"]["content"]
+    assert props["Base quali"]["rich_text"][0]["text"]["content"] == "YES"
+    assert props["Adresse retenue"]["rich_text"][0]["text"]["content"].startswith("46 Rue")
+    assert props["Nb dirigeants"]["number"] == 1
+    assert ("PATCH", "https://api.notion.com/v1/pages/old", {"archived": True}) in envoyes      # l'ancienne fiche vide est archivée
