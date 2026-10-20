@@ -45,6 +45,7 @@ async def _donnees() -> list:
     async def lire(s):
         async with _SEM:
             s["data"] = await MEM.lire(s["page"])
+        VALID.appliquer_correction_siren(s)                 # SIREN corrigé à la main : la bonne fiche INSEE
         s["decisions"] = VALID._json(s["decisions"], [])
         s["nouveaux"] = VALID._json(s["nouveaux"], {})
         return s

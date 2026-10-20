@@ -6,7 +6,7 @@ Enrichisseur v3 — étapes 1 et 2
 Entrée : export Pipedrive des Organisations (xlsx ou csv).
 Sortie : Excel prêt pour HubSpot (rien n'est écrit dans un CRM).
 """
-import asyncio, csv, io, os, re, time, unicodedata, uuid
+import asyncio, csv, io, json, os, re, time, unicodedata, uuid
 from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta, timezone
 from html import unescape
@@ -1386,6 +1386,44 @@ async def partis_arreter(req: Request):
         return x
     PARTIS.ETAT["stop"] = True
     return {"ok": True}
+
+
+@router.post("/v3/validation/api/siren/{page_id}")
+async def corriger_siren(page_id: str, req: Request):
+    """Admin : remplace un SIREN faux. Le nouveau est contrôlé (9 chiffres, clé) et sa fiche INSEE est relue.
+    Corps : {"siren": "123456789"}. L'ancien SIREN est gardé dans « SIREN corrigé » (JSON) pour l'historique."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    b = await req.json()
+    siren = re.sub(r"\D", "", str(b.get("siren") or ""))
+    if not luhn_ok(siren):
+        return JSONResponse({"erreur": "SIREN invalide : 9 chiffres, et la clé de contrôle ne correspond pas (faute de frappe ?)"}, 400)
+    info = await VALID._une(page_id)
+    if not info:
+        return JSONResponse({"erreur": "société introuvable"}, 404)
+    if siren == info["siren"]:
+        return JSONResponse({"erreur": "c'est déjà ce SIREN"}, 400)
+    async with httpx.AsyncClient(timeout=20) as c:
+        i = await insee(c, siren)
+    if i["etat"] == "introuvable":
+        return JSONResponse({"erreur": f"SIREN {siren} introuvable à l'INSEE"}, 400)
+    if i["etat"] == "erreur API":
+        return JSONResponse({"erreur": "l'INSEE ne répond pas, réessayez dans une minute"}, 502)
+    if not await VALID.assurer_colonne_siren():
+        return JSONResponse({"erreur": "Notion refuse de créer la colonne « SIREN corrigé »"}, 502)
+    avant = (VALID._json(info.get("siren_corrige"), {}).get("avant") or info["siren"])   # le tout premier SIREN
+    quand = datetime.now(SUIVI.PARIS)
+    fiche = {"raison_sociale": i["raison_sociale"], "siege_insee": i["siege"], "tranche_insee": i["tranche_insee"],
+             "naf": i["naf"], "secteur": i["secteur"], "date_fermeture": i["date_fermeture"],
+             "statut": "Active" if i["etat"] == "active" else "Radiée, à vérifier",
+             "action": f"✏️ SIREN corrigé à la main le {quand:%d/%m} (l'outil avait trouvé {avant})"}
+    corr = {"avant": avant, "le": quand.isoformat(timespec="seconds"), "par": VALID.utilisateur(req) or "admin", "insee": fiche}
+    maj = await VALID._maj(page_id, {"SIREN": MEM._txt(siren), "SIREN corrigé": MEM._txt(json.dumps(corr, ensure_ascii=False))})
+    if isinstance(maj, JSONResponse):
+        return maj
+    return {"ok": True, "siren": siren, "avant": avant, **fiche}
 
 
 @router.post("/v3/validation/api/partis/{page_id}/{pid}")
