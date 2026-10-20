@@ -1435,6 +1435,8 @@ async def relancer_vides(req: Request, lancement: str = "", confirmer: int = 0, 
         async with sem:
             d = await MEM.lire(e["page"])
         o = {k: str(d.get(k) or "") for k in ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville")}   # comme un fichier
+        if e.get("siren_corrige") and luhn_ok(e.get("siren") or ""):
+            o["siren_crm"] = e["siren"]                 # SIREN corrigé à la main : c'est lui qu'on cherche
         return o | {k: d[k] for k in CHAMPS_ORG[7:] if d.get(k) not in (None, "", {})}
     orgs = [o for o in await asyncio.gather(*(org(e) for e in cibles)) if o.get("nom")]
     jid = nouveau_job(f"{lancement} (relance sans dirigeants)", [VALID.utilisateur(req)] if VALID.utilisateur(req) else [],
