@@ -77,3 +77,32 @@ def test_lots_vides_sans_panne_continuent(monkeypatch):
 def test_motif_et_erreur():
     job = {"erreur": "le phantom Sales Navigator (dirigeants) échoue à chaque lot : x", "stop": False}
     assert v3.motif_arret(job).startswith("erreur : le phantom Sales Navigator")
+
+
+def test_relancer_vides(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import v3_validation as VALID
+    async def index(j, tout=False):
+        return [{"page": "p1", "nom": "cleerly", "lancement": "Prospection hebdo 20/10", "nb_dir": 0, "perim": "tout"},
+                {"page": "p2", "nom": "alan", "lancement": "Prospection hebdo 20/10 ; S42", "nb_dir": 3, "perim": "tout"},
+                {"page": "p3", "nom": "ecartee", "lancement": "Prospection hebdo 20/10", "nb_dir": 0, "perim": "tout"},
+                {"page": "p4", "nom": "autre", "lancement": "Prospection hebdo 20/10 (suite 1/3)", "nb_dir": 0, "perim": "tout"}]
+    async def toutes():
+        return [{"page": "p3", "validation": "Écartée"}]
+    async def lire(p):
+        return {"nom": "Cleerly", "siren_crm": "", "site_crm": "cleerly.fr", "adresse_notion": "1 rue X 75002 Paris",
+                "infos_source": {"nego": "Richard"}, "dirigeants": [], "mode": "complet"}
+    lances = []
+    monkeypatch.setattr(MEM, "index", index); monkeypatch.setattr(MEM, "lire", lire)
+    monkeypatch.setattr(VALID, "_toutes", toutes); monkeypatch.setattr(VALID, "_refus", lambda r, b: None)
+    monkeypatch.setattr(v3, "nouveau_job", lambda nom, mails, perim, orgs, **kw: lances.append((nom, orgs, kw)) or "jid")
+    monkeypatch.setattr(v3, "jlog", lambda j, m: None); monkeypatch.setitem(v3.JOBS, "jid", {})
+    app = FastAPI(); app.include_router(v3.router); c = TestClient(app)
+    r = c.get("/v3/validation/api/relancer-vides", params={"lancement": "Prospection hebdo 20/10"}).json()
+    assert r["essai_a_blanc"] and r["a_relancer"] == 1 and r["exemples"] == ["cleerly"] and not lances
+    r = c.get("/v3/validation/api/relancer-vides", params={"lancement": "Prospection hebdo 20/10", "confirmer": 1}).json()
+    nom, orgs, kw = lances[0]
+    assert r["relancees"] == 1 and kw["origine"] == "outils"
+    assert orgs[0] == {"id": "", "nom": "Cleerly", "site_crm": "cleerly.fr", "siren_crm": "", "adresse_crm": "", "cp": "", "ville": "",
+                       "adresse_notion": "1 rue X 75002 Paris", "infos_source": {"nego": "Richard"}}
