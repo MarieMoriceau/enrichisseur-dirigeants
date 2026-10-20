@@ -11,8 +11,8 @@ def test_notion_prioritaire():
          "adresse_google": "12 av. de l'Opéra, 75001 Paris"}
     d = LI._decider_adresse(r)
     assert d["adresse_proposee"] == r["adresse_notion"] and d["confiance_adresse"] == "haute"
-    assert d["sources_adresse"].startswith("Notion") and "corriger le CRM" in d["action_adresse"]
-    assert "Notion" not in LI._decider_adresse({"adresse_crm": "1 rue de la Paix 75002 Paris"})["sources_adresse"]
+    assert d["sources_adresse"].startswith("prospection physique") and "corriger le CRM" in d["action_adresse"]
+    assert "prospection physique" not in LI._decider_adresse({"adresse_crm": "1 rue de la Paix 75002 Paris"})["sources_adresse"]
 
 
 def test_api_adresse_notion():

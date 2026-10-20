@@ -163,7 +163,8 @@ def test_lien_refuse(monkeypatch):
     # lien expiré ou trafiqué
     vieux = VALID._jeton_lien("mbureau@equation-sie.com", int(time.time()) - 1)
     assert "info=expire" in c.get(f"/v3/connexion/lien?t={vieux}", follow_redirects=False).headers["location"]
-    faux = VALID._jeton_lien("mbureau@equation-sie.com", int(time.time()) + 600)[:-2] + "00"
+    bon = VALID._jeton_lien("mbureau@equation-sie.com", int(time.time()) + 600)
+    faux = bon[:-1] + ("0" if bon[-1] != "0" else "1")                         # signature modifiée à coup sûr
     assert "info=expire" in c.get(f"/v3/connexion/lien?t={faux}", follow_redirects=False).headers["location"]
     # un lien par minute
     _connecter(c, monkeypatch, "mbureau@equation-sie.com")
