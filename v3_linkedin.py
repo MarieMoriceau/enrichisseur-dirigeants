@@ -179,6 +179,18 @@ def _decider_adresse(r: dict) -> dict:
         sources.append(("Google", r["adresse_google"]))
     if crm and cle_adresse(crm):
         sources.append(("CRM", crm))
+    notion = (r.get("adresse_notion") or "").strip()
+    if notion:                                               # prospection hebdo : la fiche Notion donne la vraie adresse des locaux
+        autres = [n for n, a in (("CRM", crm), ("site", r.get("adresse_site") or ""), ("LinkedIn", r.get("adresse_linkedin") or ""),
+                                 ("Google", r.get("adresse_google") or "")) if a and meme_adresse(a, notion)]
+        src = " + ".join(["Notion"] + autres)
+        if crm and meme_adresse(crm, notion):
+            act = "✅ adresse des locaux (Notion) identique au CRM"
+        elif crm:
+            act = f"🔄 adresse des locaux (Notion) différente du CRM : corriger le CRM{_hors_idf(notion)}"
+        else:
+            act = f"➕ adresse des locaux (Notion) : à ajouter au CRM{_hors_idf(notion)}"
+        return {"adresse_proposee": notion, "confiance_adresse": "haute", "sources_adresse": src, "action_adresse": act}
 
     # groupes de sources qui donnent la même adresse
     groupes = []

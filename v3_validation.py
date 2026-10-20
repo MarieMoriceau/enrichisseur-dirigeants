@@ -26,7 +26,7 @@ import v3_memoire as MEM
 import v3_linkedin as LI
 
 router = APIRouter()
-SOURCES = ("CRM", "Site", "LinkedIn", "Google", "Saisie")
+SOURCES = ("Notion", "CRM", "Site", "LinkedIn", "Google", "Saisie")
 ACTIONS_CRM = ("garder", "marquer parti", "à supprimer", "à revoir")
 ACTIONS_AILLEURS = ("à décider", "changer de société", "deux sociétés")   # contact déjà fiché chez une autre société
 ETATS_NOUVEAU = ("à traiter", "prêt pour HubSpot", "écarté")

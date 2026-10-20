@@ -266,6 +266,7 @@ function ecranSociete() {
   const d = info.data || {};
   const site = d.adresse_site || (d.adresses_site_liste || [])[0] || "";
   const sources = [
+    ["Notion", d.adresse_notion, "prospection hebdo · vraie adresse des locaux"],
     ["CRM", d.adresse_crm, d.dans_crm ? "fiche " + d.dans_crm : ""],
     ["Site", site, d.page_adresse_site || ((d.adresses_site_liste || []).length > 1 ? (d.adresses_site_liste.length - 1) + " autre(s) adresse(s) sur le site" : "")],
     ["LinkedIn", d.adresse_linkedin, d.controle_linkedin || ""],
@@ -289,7 +290,7 @@ function ecranSociete() {
   // Signaux « hors cible » : effectif trop faible, bureaux hors de Paris (suggestion seulement, c'est vous qui décidez)
   const effN = eff === "" || eff == null ? null : Number(eff);
   const cpDe = a => ((a || "").match(/\b(\d{5})\b/) || [])[1] || "";
-  const cp = cpDe(info.adresse_retenue) || cpDe(d.adresse_proposee) || cpDe(site) || cpDe(d.adresse_linkedin) || cpDe(d.adresse_google) || cpDe(d.adresse_crm);
+  const cp = cpDe(info.adresse_retenue) || cpDe(d.adresse_notion) || cpDe(d.adresse_proposee) || cpDe(site) || cpDe(d.adresse_linkedin) || cpDe(d.adresse_google) || cpDe(d.adresse_crm);
   const alertes = [];
   if (effN != null && !isNaN(effN) && effN < SEUIL_EFFECTIF) alertes.push(["Effectif trop faible", `Effectif LinkedIn ${effN} (moins de ${SEUIL_EFFECTIF})`]);
   if (cp && !IDF.includes(cp.slice(0, 2))) alertes.push(["Hors Île-de-France", `Bureaux hors d'Île-de-France (${cp})`]);

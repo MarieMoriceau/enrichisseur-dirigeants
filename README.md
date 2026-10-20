@@ -99,7 +99,7 @@ Les deux écrans lisent la base Notion « Enrichisseur v3 — Mémoire des soci�
 l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blanc sur 50 lignes avant tout envoi réel.
 
 **`/v3/validation`, réservé à Marie et Michel Bastian (mot de passe admin)**
-1. **Société** : adresses CRM / site / LinkedIn / Google, recommandation de l'outil, effectif LinkedIn, domiciliation.
+1. **Société** : adresses Notion (prospection hebdo, vraie adresse des locaux, cochée d'office) / CRM / site / LinkedIn / Google, recommandation de l'outil, effectif LinkedIn, domiciliation.
    On coche l'adresse retenue (ou on la saisit), puis « Valider la société » ou « Écarter ».
 2. **Contacts CRM** (une fois la société validée) : contacts Pipedrive « probablement parti » / « à vérifier » / « toujours là »,
    décision garder / marquer parti / à revoir. Les nouveaux contacts y sont visibles en lecture seule, avec l'avancement des négos.
@@ -208,7 +208,7 @@ Tout ce qui arrive par l'API part sur le compte LinkedIn **automatisations**, ja
 
 - `POST /v3/api/lancer` — en-tête `X-Enrichisseur-Cle: <ENRICHISSEUR_API_KEY>`, corps JSON :
   `{"nom": "...", "source": "prospection-hebdo", "perimetre": "tout", "mails": ["..."], "forcer": false,
-    "societes": [{"nom", "siren", "code_postal", "ville", "adresse", "site", "id_pipedrive", "statut_pipedrive", "nego", "campagne", "ref_notion"}]}`
+    "societes": [{"nom", "siren", "code_postal", "ville", "adresse", "adresse_notion", "site", "id_pipedrive", "statut_pipedrive", "nego", "campagne", "ref_notion"}]}`
   Seul `nom` est obligatoire par société. Réponse 202 : `{"ok": true, "lancement": "<id>", "recues", "ignorees_sans_nom", "suivi": "<url>"}`.
   Erreurs : 400 (JSON / champs), 401 (clé), 413 (plus de `API_MAX_SOCIETES`, 2000 par défaut), 503 (clé ou PhantomBuster non configurés).
 - `GET /v3/api/lancement/<id>` (même en-tête) : état, sociétés déjà enrichies (mémoire 6 mois), part du jour, parts reportées.
@@ -227,3 +227,9 @@ dans la limite du quota du jour (le reste attend le lendemain). Étapes : Profil
 Company Scraper (site, adresse, effectif), Kaspr (e-mail). Résultat dans la colonne Notion « Partis suivis » (JSON, page
 mémoire de l'ancienne société, créée automatiquement). Alertes effectif < 10 et hors Île-de-France, l'admin tranche.
 Validés → export HubSpot, onglets « Contacts partis » (clé = e-mail actuel, nouvel e-mail à côté) et « Sociétés des partis ».
+
+## Rattrapage « Lancé par » (sociétés enrichies avant le 16/10)
+
+Connecté en admin : `/v3/validation/api/attribuer-anciens` = essai à blanc (compte, n'écrit rien).
+`?confirmer=1` met le mail (par défaut mmoriceau@equation-sie.com) sur 50 sociétés ; `&limite=5000` pour le reste.
+Options : `&mail=…`, `&avant=AAAA-MM-JJ` (16/10 par défaut).
