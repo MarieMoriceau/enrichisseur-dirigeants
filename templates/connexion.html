@@ -86,6 +86,7 @@ h3{font-family:var(--display);font-weight:600;font-size:18px;margin:18px 0 8px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px;align-items:center}
 .msg{font-size:13.5px;color:var(--muted)}
 .msg.err{color:var(--accent)}
+.msg.ok{color:var(--ok)}
 .tab-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);padding:6px 8px}
@@ -112,16 +113,24 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
 </div></div>
 
 <div class="login"><div class="card">
-  <form method="post" action="/v3/connexion">
+  <form method="post" action="/v3/connexion/lien">
     <input type="hidden" name="suite" value="{{SUITE}}">
-    <label for="mail" style="font-weight:500">Votre e-mail <span class="msg">(négos : celui que vous saisissez au lancement)</span></label>
-    <input type="email" id="mail" autofocus name="mail" autocomplete="email" placeholder="prenom.nom@equation-sie.com"
+    <label for="mail" style="font-weight:500">Votre e-mail Equation</label>
+    <input type="email" id="mail" autofocus name="mail" autocomplete="email" required placeholder="prenom.nom@equation-sie.com"
       style="font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);width:100%">
-    <label for="mdp" style="font-weight:500">Mot de passe</label>
-    <input type="password" id="mdp" name="mdp" autocomplete="current-password" required>
-    <button class="btn primary" type="submit">Entrer</button>
-    <p class="msg err" style="margin:0">{{MSG}}</p>
+    <button class="btn primary" type="submit">Recevoir mon lien de connexion</button>
+    <p class="msg" style="margin:0">Pas de mot de passe : vous recevez un lien par e-mail, valable 15 minutes. Ensuite, vous restez connecté 30 jours sur cet appareil.</p>
   </form>
+  <p class="msg {{MSG_CLASSE}}" role="status" style="margin:14px 0 0">{{MSG}}</p>
+  <details style="margin-top:18px;border-top:1px solid var(--line);padding-top:12px">
+    <summary class="msg" style="cursor:pointer">Accès administrateur par mot de passe</summary>
+    <form method="post" action="/v3/connexion" style="margin-top:10px">
+      <input type="hidden" name="suite" value="{{SUITE}}">
+      <label for="mdp" style="font-weight:500">Mot de passe admin</label>
+      <input type="password" id="mdp" name="mdp" autocomplete="current-password" required>
+      <button class="btn ghost" type="submit">Entrer</button>
+    </form>
+  </details>
 </div></div>
 </body>
 </html>

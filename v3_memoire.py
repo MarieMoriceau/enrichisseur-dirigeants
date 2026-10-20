@@ -15,7 +15,7 @@ NOTION_KEY = os.getenv("NOTION_API_KEY", "")
 MEMOIRE_DB = os.getenv("NOTION_MEMOIRE_DB", "0447dcf54a344a3883be1d4170aaa692")
 DUREE_JOURS = int(os.getenv("MEMOIRE_JOURS", "183"))          # 6 mois
 RANG = {"siren": 0, "societes": 1, "dirigeants": 2, "tout": 3}
-A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par", "_lancement"}   # brut du scan du site, inutile à garder
+A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par", "_lancement", "_negos", "_nego_nouveau"}   # brut du scan du site, inutile à garder
 _SEM = asyncio.Semaphore(3)                                    # Notion : environ 3 requêtes par seconde
 
 
@@ -83,7 +83,8 @@ async def index(journal, tout: bool = False) -> list:
                             "domaine": _val(p, "Domaine"), "perim": _val(p, "Périmètre"), "date": _val(p, "Traitée le"),
                             "hist": _val(p, "Historique effectifs"), "validation": _val(p, "Validation"),
                             "adresse_retenue": _val(p, "Adresse retenue"), "source_retenue": _val(p, "Source adresse retenue"),
-                            "lance_par": _val(p, "Lancé par"), "lancement": _val(p, "Lancement")})
+                            "lance_par": _val(p, "Lancé par"), "lancement": _val(p, "Lancement"),
+                            "negos": _val(p, "Négos")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -180,11 +181,39 @@ async def reprendre(job: dict, orgs: list, norm_nom, domaines, journal) -> tuple
             continue
         row["memoire"] = f"oui, traitée le {e['date'][:10]}"
         row["_page_memoire"], row["_lance_par"], row["_lancement"] = e["page"], e.get("lance_par", ""), e.get("lancement", "")
+        row["_negos"], row["_nego_nouveau"] = e.get("negos", ""), nego_de(o)   # le négo de CET envoi, pas celui de l'ancien
         row["id"] = o.get("id") or row.get("id", "")  # l'ID Pipedrive du fichier du jour prime
         reprises.append(row)
     if reprises:
         journal(f"mémoire : {len(reprises)} sociétés déjà traitées depuis moins de 6 mois, reprises sans nouvelle recherche")
     return reprises, reste
+
+
+def nego_de(o: dict) -> str:
+    """Prénom du négo envoyé par prospection-hebdo (champ « nego » du JSON), tel que reçu."""
+    return str((o.get("infos_source") or {}).get("nego") or o.get("nego") or "").strip()
+
+
+_COLONNE_NEGOS = {"ok": None}
+
+
+async def assurer_colonne_negos(c=None) -> bool:
+    """Crée une fois la colonne texte « Négos » dans la base mémoire si elle manque. False si Notion refuse."""
+    if _COLONNE_NEGOS["ok"] is not None:
+        return _COLONNE_NEGOS["ok"]
+    if not NOTION_KEY:
+        return False
+    async def go(c):
+        r = await _req(c, "PATCH", f"https://api.notion.com/v1/databases/{MEMOIRE_DB}", json={"properties": {"Négos": {"rich_text": {}}}})
+        _COLONNE_NEGOS["ok"] = r.status_code == 200
+        if r.status_code != 200:
+            print(f"[V3 MÉMOIRE] colonne Négos : Notion {r.status_code} {r.text[:200]}")
+    if c is None:
+        async with httpx.AsyncClient(timeout=30) as c2:
+            await go(c2)
+    else:
+        await go(c)
+    return _COLONNE_NEGOS["ok"]
 
 
 def fusion_mails(existant: str, nouveaux) -> str:
@@ -230,11 +259,16 @@ async def ajouter_lanceurs(job: dict, journal):
     et le nom de son fichier est ajouté à « Lancement » pour qu'il la retrouve en filtrant par fichier."""
     if not NOTION_KEY:
         return
+    import v3_equipe as EQ
+    negos_ok = await assurer_colonne_negos()
     a_faire = []
     for r in job["resultats"]:
         if not r.get("_page_memoire"):
             continue
         props = {}
+        n = EQ.fusion(r.get("_negos", ""), [r.get("_nego_nouveau", "")])
+        if negos_ok and n != EQ.fusion(r.get("_negos", ""), []):
+            props["Négos"] = _txt(n)
         m = fusion_mails(r.get("_lance_par", ""), job.get("mails", []))
         if m != fusion_mails(r.get("_lance_par", ""), []):
             props["Lancé par"] = _txt(m)
@@ -248,7 +282,7 @@ async def ajouter_lanceurs(job: dict, journal):
     async with httpx.AsyncClient(timeout=30) as c:
         await asyncio.gather(*(_req(c, "PATCH", f"https://api.notion.com/v1/pages/{p}", json={"properties": props})
                                for p, props in a_faire))
-    journal(f"mémoire : {len(a_faire)} sociétés déjà connues rattachées à ce lancement"
+    journal(f"mémoire : {len(a_faire)} sociétés déjà connues rattachées à ce lancement (négo, fichier, lancé par)"
             + (f" ({', '.join(job['mails'])})" if job.get("mails") else ""))
 
 
@@ -260,7 +294,9 @@ async def enregistrer(job: dict, norm_nom, journal):
                  or r.get("siren_nom") or r.get("domaine"))]
     if not nouvelles:
         return
+    import v3_equipe as EQ
     idx = job.get("_idx_tout") or await index(lambda *_: None, tout=True)
+    negos_ok = await assurer_colonne_negos()
     maintenant = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ok = 0
     async with httpx.AsyncClient(timeout=30) as c:
@@ -289,6 +325,8 @@ async def enregistrer(job: dict, norm_nom, journal):
                      "Historique effectifs": _txt(hist_txt),
                      "Validation": {"select": {"name": "À valider"}},       # nouvelles données : à revoir dans l'onglet Validation
                      "Lancé par": _txt(fusion_mails(ancienne_l, job.get("mails", [])))}
+            if negos_ok:                                    # les prénoms des relevés précédents suivent la société
+                props["Négos"] = _txt(EQ.fusion(" ; ".join(e.get("negos", "") for e in meme), [nego_de(r)]))
             ancienne = next((e for e in meme if e.get("adresse_retenue")), None)
             if ancienne:                                                     # l'adresse déjà retenue suit la société
                 props["Adresse retenue"] = _txt(ancienne["adresse_retenue"])

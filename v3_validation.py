@@ -7,14 +7,19 @@ Enrichisseur v3 — validation des résultats, en deux écrans
       Écran Contacts CRM : contacts déjà dans Pipedrive « probablement parti » / « à vérifier » / « toujours là ».
                       Seuls ces deux-là décident (garder / marquer parti / à supprimer / à revoir).
 
-  /v3/contacts    (mot de passe NÉGOS ; l'admin y a aussi accès)
+  /v3/contacts    (négos, connectés par lien e-mail ; l'admin y a aussi accès)
       Nouveaux dirigeants trouvés, dès la fin du lancement : profil LinkedIn visible, téléphone à compléter,
       « Valider pour HubSpot » ou « Écarter ». Les contacts déjà au CRM sont visibles en lecture seule.
+      Un négo ne voit que ses sociétés : son prénom dans « Négos » (champ « nego » de prospection-hebdo)
+      ou son e-mail dans « Lancé par » (ce qu'il a lancé lui-même). Voir v3_equipe.py.
+
+  Connexion : lien envoyé par e-mail aux membres « Actif » de la table Notion « Équipe négos » (v3_equipe.py) ;
+  « Admin » coché = écran admin. Le mot de passe admin reste en secours ; le mot de passe négos partagé n'ouvre plus rien.
 
 Tout est gardé dans la mémoire Notion (« Enrichisseur v3 — Mémoire des sociétés »). Rien n'est envoyé dans un CRM
 depuis ces écrans : l'envoi HubSpot viendra après la migration de fin octobre, avec un test à blanc sur 50 lignes.
 """
-import hashlib, hmac, json, os, re
+import asyncio, base64, hashlib, hmac, json, os, re, time
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -24,6 +29,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import v3_memoire as MEM
 import v3_linkedin as LI
+import v3_equipe as EQ
 
 router = APIRouter()
 SOURCES = ("Notion", "CRM", "Site", "LinkedIn", "Google", "Saisie")
@@ -80,13 +86,18 @@ def _jeton(role: str, mail: str = "") -> str:
     return v + "." + hmac.new(SECRET, v.encode(), hashlib.sha256).hexdigest()
 
 
+# Rôles gardés dans le cookie : « admin » (mot de passe, ou lien e-mail d'un membre Admin) et « nego » (lien e-mail).
+# Les anciens cookies « negos » du mot de passe partagé ne sont plus acceptés : chacun se reconnecte une fois par lien.
+ROLES_COOKIE = {"admin": "admin", "nego": "negos"}
+
+
 def _session(req: Request) -> tuple:
     """(rôle, e-mail) lus dans le cookie signé ; ('', '') si absent ou falsifié. L'e-mail sert à filtrer l'écran des négos."""
     v = req.cookies.get(COOKIE, "")
     corps = v.rsplit(".", 1)[0]
     r, _, mail = corps.partition("|")
-    if r in ("admin", "negos") and hmac.compare_digest(v, _jeton(r, mail)):
-        return r, mail
+    if r in ROLES_COOKIE and hmac.compare_digest(v, _jeton(r, mail)):
+        return ROLES_COOKIE[r], mail
     return "", ""
 
 
@@ -107,10 +118,36 @@ def mails_de(txt: str) -> set:
     return {m.strip().lower() for m in re.split(r"[;,\s]+", txt or "") if "@" in m}
 
 
-def visible_par(req: Request, s: dict) -> bool:
-    """L'admin voit tout ; un négo ne voit que les sociétés qu'il a lancées."""
+async def moi(req: Request) -> dict:
+    """La personne connectée : {"role", "mail", "membre" (sa ligne de la table Équipe négos, ou {})}.
+    Un négo retiré de la table (ou décoché « Actif ») perd l'accès tout de suite, même avec un cookie encore valable."""
     r, mail = _session(req)
-    return r == "admin" or (r == "negos" and bool(mail) and mail in mails_de(s.get("lance_par", "")))
+    liste = await EQ.membres() if (r == "negos" or mail) else []
+    m = EQ.par_mail(liste, mail) if mail else {}
+    if r == "negos" and not (m and m.get("nego")):
+        r = ""
+    return {"role": r, "mail": mail, "membre": m, "equipe": liste}
+
+
+def visible_par(qui: dict, s: dict) -> bool:
+    """L'admin voit tout ; un négo voit les sociétés à son prénom et celles qu'il a lancées lui-même."""
+    return qui["role"] == "admin" or (qui["role"] == "negos" and EQ.visible_pour(qui["membre"], s, qui["equipe"]))
+
+
+def avec_attribution(s: dict, liste: list) -> dict:
+    """Ajoute à une société : à qui elle revient, les prénoms reçus inconnus, et « non attribué »."""
+    a = EQ.attribution(liste, s.get("negos", ""), s.get("lance_par", ""))
+    return {**s, "attribue_a": a["a"], "prenoms_inconnus": a["inconnus"], "non_attribue": a["non_attribue"]}
+
+
+async def _refus_negos(req: Request):
+    """Comme _refus(req, "negos"), mais vérifie aussi que le négo est toujours dans la table. Renvoie (refus, qui)."""
+    qui = await moi(req)
+    if qui["role"] in ("admin", "negos"):
+        return None, qui
+    if req.url.path.startswith("/v3/contacts/api"):
+        return JSONResponse({"erreur": "accès refusé : reconnectez-vous"}, 401), qui
+    return RedirectResponse(f"/v3/connexion?suite={quote(req.url.path)}" + ("&retire=1" if _session(req)[0] else ""), 303), qui
 
 
 def _refus(req: Request, besoin: str):
@@ -124,32 +161,108 @@ def _refus(req: Request, besoin: str):
     return RedirectResponse(f"/v3/connexion?suite={quote(req.url.path)}" + ("&refus=1" if r else ""), 303)
 
 
+SUITES = ("/v3/validation", "/v3/contacts")
+LIEN_MINUTES = 15
+_DERNIER_ENVOI = {}                      # e-mail → heure du dernier lien envoyé (un lien par minute au plus)
+
+
+def _jeton_lien(mail: str, expire: int) -> str:
+    corps = base64.urlsafe_b64encode(f"lien|{mail}|{expire}".encode()).decode().rstrip("=")
+    return corps + "." + hmac.new(SECRET, corps.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _lire_lien(t: str) -> str:
+    """E-mail contenu dans un lien de connexion, ou "" s'il est falsifié ou expiré."""
+    corps, _, sig = (t or "").partition(".")
+    if not corps or not hmac.compare_digest(sig, hmac.new(SECRET, corps.encode(), hashlib.sha256).hexdigest()[:32]):
+        return ""
+    try:
+        quoi, mail, expire = base64.urlsafe_b64decode(corps + "=" * (-len(corps) % 4)).decode().split("|")
+    except ValueError:
+        return ""
+    return mail if quoi == "lien" and int(expire) >= time.time() else ""
+
+
+MESSAGES = {
+    "envoye": ("ok", "C'est parti : un lien de connexion vient d'être envoyé à cette adresse. Il est valable 15 minutes. "
+                     "Pensez à regarder dans les indésirables."),
+    "inconnu": ("err", "Cette adresse n'est pas dans l'équipe de l'enrichisseur (ou n'est plus active). Demandez à Marie de vous ajouter."),
+    "attendre": ("err", "Un lien vient déjà de partir vers cette adresse. Attendez une minute avant d'en redemander un."),
+    "expire": ("err", "Ce lien a expiré ou a déjà servi à une autre adresse. Redemandez-en un ci-dessous."),
+    "retire": ("err", "Votre accès a été retiré ou votre session a expiré. Redemandez un lien ci-dessous."),
+    "smtp": ("err", "L'envoi de mail n'est pas configuré (SMTP_USER / SMTP_PASS dans Render)."),
+    "envoi": ("err", "Le mail n'a pas pu partir. Réessayez dans un instant ; si ça persiste, prévenez Marie."),
+    "mdp": ("err", "Mot de passe incorrect."),
+    "refus": ("err", "Votre compte ne donne pas accès à cette page."),
+}
+
+
 @router.get("/v3/connexion", response_class=HTMLResponse)
-async def connexion(suite: str = "/v3/contacts", refus: str = "", erreur: str = ""):
-    with open("templates/connexion.html", encoding="utf-8") as f:
-        html = f.read()
-    msg = ("Ce mot de passe ne donne pas accès à cette page." if refus else
-           "Indiquez votre e-mail, celui que vous saisissez quand vous lancez l'enrichisseur." if erreur == "mail" else
-           "Mot de passe incorrect." if erreur else
-           "Accès non configuré : ajoutez VALIDATION_MDP_ADMIN et VALIDATION_MDP_NEGOS dans Render." if not (MDP_ADMIN and MDP_NEGOS) else "")
-    suite = suite if suite in ("/v3/validation", "/v3/contacts") else "/v3/contacts"
-    return html.replace("{{SUITE}}", suite).replace("{{MSG}}", msg)
+async def connexion(suite: str = "/v3/contacts", refus: str = "", erreur: str = "", info: str = "", retire: str = ""):
+    import html as _h
+    cle = info or erreur or ("refus" if refus else "") or ("retire" if retire else "")
+    if erreur == "1":
+        cle = "mdp"
+    genre, msg = MESSAGES.get(cle, ("", ""))
+    await EQ.membres()
+    if EQ.erreur():
+        genre, msg = "err", EQ.erreur()
+    suite = suite if suite in SUITES else "/v3/contacts"
+    return (_page_html("connexion.html").replace("{{SUITE}}", suite).replace("{{MSG}}", _h.escape(msg))
+            .replace("{{MSG_CLASSE}}", genre))
 
 
-@router.post("/v3/connexion")
-async def se_connecter(mdp: str = Form(""), suite: str = Form("/v3/contacts"), mail: str = Form("")):
-    suite = suite if suite in ("/v3/validation", "/v3/contacts") else "/v3/contacts"
+@router.post("/v3/connexion/lien")
+async def demander_lien(req: Request, mail: str = Form(""), suite: str = Form("/v3/contacts")):
+    import v3_suivi as SUIVI
+    suite = suite if suite in SUITES else "/v3/contacts"
     mail = mail.strip().lower()
-    r = ("admin" if MDP_ADMIN and hmac.compare_digest(mdp, MDP_ADMIN) else
-         "negos" if MDP_NEGOS and hmac.compare_digest(mdp, MDP_NEGOS) else "")
-    if not r:
-        return RedirectResponse(f"/v3/connexion?suite={quote(suite)}&erreur=1", 303)
-    if r == "negos" and not re.fullmatch(r"[^@\s|]+@[^@\s|]+\.[a-z]{2,}", mail):
-        return RedirectResponse(f"/v3/connexion?suite={quote(suite)}&erreur=mail", 303)
+    retour = lambda cle: RedirectResponse(f"/v3/connexion?suite={quote(suite)}&info={cle}", 303)
+    m = EQ.par_mail(await EQ.membres(forcer=True), mail)
+    if not m or not (m["nego"] or m["admin"]):
+        return retour("inconnu")
+    if time.time() - _DERNIER_ENVOI.get(mail, 0) < 60:
+        return retour("attendre")
+    if not (SUIVI.SMTP_USER and SUIVI.SMTP_PASS):
+        return retour("smtp")
+    base = (os.getenv("RENDER_EXTERNAL_URL", "") or str(req.base_url)).rstrip("/")
+    lien = f"{base}/v3/connexion/lien?t={_jeton_lien(mail, int(time.time()) + LIEN_MINUTES * 60)}&suite={quote(suite)}"
+    corps = (f"Bonjour {m['prenom'] or ''},\n\n"
+             f"Voici votre lien pour entrer dans l'enrichisseur (valable {LIEN_MINUTES} minutes) :\n{lien}\n\n"
+             f"Une fois connecté, vous le restez 30 jours sur cet appareil.\n"
+             f"Si vous n'avez rien demandé, ignorez ce message.")
+    try:
+        await asyncio.to_thread(SUIVI._envoyer, [mail], "Votre lien de connexion à l'enrichisseur", corps, None, "")
+    except Exception as e:
+        print(f"[V3 CONNEXION] envoi du lien à {mail} : {e}")
+        return retour("envoi")
+    _DERNIER_ENVOI[mail] = time.time()
+    return retour("envoye")
+
+
+@router.get("/v3/connexion/lien")
+async def ouvrir_lien(t: str = "", suite: str = "/v3/contacts"):
+    suite = suite if suite in SUITES else "/v3/contacts"
+    mail = _lire_lien(t)
+    m = EQ.par_mail(await EQ.membres(forcer=True), mail) if mail else {}
+    if not m or not (m["nego"] or m["admin"]):
+        return RedirectResponse(f"/v3/connexion?suite={quote(suite)}&info={'expire' if not mail else 'inconnu'}", 303)
+    r = "admin" if m["admin"] else "nego"
     if suite == "/v3/validation" and r != "admin":
         suite = "/v3/contacts"
     rep = RedirectResponse(suite, 303)
-    rep.set_cookie(COOKIE, _jeton(r, mail if r == "negos" else ""), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    rep.set_cookie(COOKIE, _jeton(r, mail), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
+    return rep
+
+
+@router.post("/v3/connexion")
+async def se_connecter(mdp: str = Form(""), suite: str = Form("/v3/validation")):
+    """Mot de passe administrateur (secours, Marie et Michel). Le mot de passe négos partagé n'ouvre plus rien."""
+    suite = suite if suite in SUITES else "/v3/validation"
+    if not (MDP_ADMIN and hmac.compare_digest(mdp, MDP_ADMIN)):
+        return RedirectResponse(f"/v3/connexion?suite={quote(suite)}&erreur=1", 303)
+    rep = RedirectResponse(suite, 303)
+    rep.set_cookie(COOKIE, _jeton("admin", ""), max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax", secure=True)
     return rep
 
 
@@ -178,6 +291,7 @@ def _props(pg: dict) -> dict:
             "source_retenue": MEM._val(p, "Source adresse retenue"), "validee": MEM._val(p, "Validée le")[:10],
             "decisions": MEM._val(p, "Décisions contacts"), "nouveaux": MEM._val(p, "Nouveaux contacts"),
             "hubspot": MEM._val(p, "Envoyée à HubSpot le")[:10], "lance_par": MEM._val(p, "Lancé par"),
+            "negos": MEM._val(p, "Négos"),
             "decision_ecart": MEM._val(p, "Écartée pour"), "motif_ecart": MEM._val(p, "Motif écart"),
             "partis": MEM._val(p, "Partis suivis")}
 
@@ -241,9 +355,12 @@ async def admin_societes(req: Request):
     if (x := _refus(req, "admin")):
         return x
     try:
-        return {"societes": [_sans_listes(s) for s in await _toutes()]}
+        toutes = await _toutes()
     except RuntimeError as e:
         return JSONResponse({"erreur": str(e)}, 502)
+    liste = await EQ.membres()
+    return {"societes": [avec_attribution(_sans_listes(s), liste) for s in toutes],
+            "negos": [m["prenom"] for m in EQ.actifs(liste) if m["nego"]], "equipe_erreur": EQ.erreur()}
 
 
 @router.get("/v3/validation/api/societe/{page_id}")
@@ -262,7 +379,7 @@ async def admin_societe(page_id: str, req: Request):
         p.setdefault("role", LI.role(p.get("fonction", "")))
     info["fiches"] = [fiche_nouveau(d, info["nouveaux"].get(cle_contact(d), {})) for d in nouveaux_dirigeants(info["data"])]
     info["roles"] = ROLES
-    return info
+    return avec_attribution(info, await EQ.membres())
 
 
 DECISIONS_ECART = ["Hors cible HubSpot", "À supprimer de la base"]
@@ -351,13 +468,20 @@ async def valider_contacts_crm(page_id: str, req: Request):
 @router.get("/v3/contacts", response_class=HTMLResponse)
 async def page_negos(req: Request):
     import html as _h
-    qui = utilisateur(req) or ("admin : toutes les sociétés" if role(req) == "admin" else "")
-    return _refus(req, "negos") or HTMLResponse(_page_html("contacts.html").replace("{{ROLE}}", role(req)).replace("{{QUI}}", _h.escape(qui)))
+    x, qui = await _refus_negos(req)
+    if x:
+        return x
+    m = qui["membre"]
+    nom = (m.get("prenom") or qui["mail"]) if m else (qui["mail"] or "")
+    texte = (f"{nom} (admin : toutes les sociétés)" if nom else "admin : toutes les sociétés") if qui["role"] == "admin" else nom
+    return HTMLResponse(_page_html("contacts.html").replace("{{ROLE}}", qui["role"]).replace("{{QUI}}", _h.escape(texte))
+                        .replace("{{MOI}}", _h.escape(m.get("prenom", "") if m.get("nego") else "")))
 
 
 @router.get("/v3/contacts/api/societes")
 async def negos_societes(req: Request):
-    if (x := _refus(req, "negos")):
+    x, qui = await _refus_negos(req)
+    if x:
         return x
     try:
         toutes = await _toutes()
@@ -365,25 +489,29 @@ async def negos_societes(req: Request):
         return JSONResponse({"erreur": str(e)}, 502)
     out = []
     for s in toutes:
-        if s["validation"] == "Écartée" or s["perimetre"] not in ("dirigeants", "tout") or not visible_par(req, s):
+        if s["validation"] == "Écartée" or s["perimetre"] not in ("dirigeants", "tout") or not visible_par(qui, s):
             continue
         if s["nb_nouveaux"] == 0:                       # None = société enregistrée avant ce compteur : on l'affiche
             continue
         etats = _json(s["nouveaux"], {})
         s["nb_traites"] = sum(1 for e in etats.values() if e.get("etat") in ("prêt pour HubSpot", "écarté"))
+        s = avec_attribution(s, qui["equipe"] or await EQ.membres())
+        s["a_moi"] = EQ.visible_pour(qui["membre"], s, qui["equipe"])
         out.append({k: s[k] for k in ("page", "nom", "domaine", "traitee", "lancement", "effectif", "nb_nouveaux",
-                                      "nb_prets", "nb_traites", "validation")})
+                                      "nb_prets", "nb_traites", "validation", "attribue_a", "prenoms_inconnus",
+                                      "non_attribue", "a_moi")})
     return {"societes": out}
 
 
 @router.get("/v3/contacts/api/societe/{page_id}")
 async def negos_societe(page_id: str, req: Request):
-    if (x := _refus(req, "negos")):
+    x, qui = await _refus_negos(req)
+    if x:
         return x
     if not RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     info = await _une(page_id)
-    if not info or info["validation"] == "Écartée" or not visible_par(req, info):
+    if not info or info["validation"] == "Écartée" or not visible_par(qui, info):
         return JSONResponse({"erreur": "société introuvable (retraitée depuis ? rechargez la liste)"}, 404)
     data = await MEM.lire(page_id)
     etats = _json(info["nouveaux"], {})
@@ -400,6 +528,7 @@ async def negos_societe(page_id: str, req: Request):
     adresse_validee = info["validation"] in ("Société validée", "Contacts validés")
     return {"page": page_id, "nom": info["nom"], "domaine": info["domaine"], "siren": info["siren"], "effectif": info["effectif"],
             "lancement": info["lancement"], "traitee": info["traitee"],
+            "attribue_a": avec_attribution(info, qui["equipe"] or await EQ.membres())["attribue_a"],
             "adresse": info["adresse_retenue"] if adresse_validee else (data.get("adresse_proposee") or data.get("adresse_crm") or ""),
             "adresse_validee": adresse_validee, "linkedin_societe": data.get("linkedin", ""),
             "nouveaux": nouveaux, "crm": crm, "roles": ROLES}
@@ -414,7 +543,8 @@ def _telephone(t: str) -> str:
 
 @router.post("/v3/contacts/api/contact/{page_id}")
 async def negos_contact(page_id: str, req: Request):
-    if (x := _refus(req, "negos")):
+    x, qui = await _refus_negos(req)
+    if x:
         return x
     if not RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
@@ -426,7 +556,7 @@ async def negos_contact(page_id: str, req: Request):
     if erreur:
         return JSONResponse({"erreur": erreur}, 400)
     info = await _une(page_id)                          # relu juste avant d'écrire : deux négos peuvent travailler en même temps
-    if not info or info["validation"] == "Écartée" or not visible_par(req, info):
+    if not info or info["validation"] == "Écartée" or not visible_par(qui, info):
         return JSONResponse({"erreur": "société introuvable"}, 404)
     data = await MEM.lire(page_id)
     d = next((d for d in nouveaux_dirigeants(data) if cle_contact(d) == cle), None)
