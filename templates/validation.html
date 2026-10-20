@@ -81,6 +81,7 @@ h3{font-family:var(--display);font-weight:600;font-size:18px;margin:18px 0 8px}
 .fait span{display:block;font-size:12px;color:var(--muted)}
 .fait b{font-family:var(--display);font-size:22px;font-weight:600;line-height:1.2}
 .fait p{margin:4px 0 0;font-size:13px}
+.lien{font:inherit;font-size:13px;background:none;border:0;padding:0;color:var(--tag-ink);text-decoration:underline;cursor:pointer}
 .btn{font:500 14px var(--body);border:0;border-radius:6px;padding:10px 16px;cursor:pointer}
 .btn.primary{background:var(--violet);color:#fff}.btn.primary:hover{background:var(--rouge)}
 .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
@@ -344,8 +345,16 @@ function ecranSociete() {
         <p>${esc(d.raison_domiciliation || "")}${d.mention_domiciliation ? "<br>Mention sur le site : " + esc(d.mention_domiciliation) : ""}</p></div>
       <div class="fait"><span>INSEE</span><b style="font-size:17px">${esc(d.raison_sociale || "—")}</b>
         <p>Siège : ${esc(d.siege_insee || "—")}<br>${esc(d.secteur || "")} ${d.naf ? "(" + esc(d.naf) + ")" : ""}</p></div>
-      <div class="fait"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
-        <p>${esc(d.action || "")}</p></div>
+      <div class="fait" id="carteQuali"><span>Base quali</span><p class="msg">Lecture du CRM…</p></div>
+      <div class="fait" id="carteSiren"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
+        <p>${esc(d.action || "")}</p>
+        <p><button class="lien" id="corrSiren" type="button">${info.siren ? "Corriger le SIREN" : "Ajouter le SIREN"}</button></p>
+        <div id="panSiren" hidden>
+          <input type="text" id="nouveauSiren" inputmode="numeric" maxlength="11" placeholder="9 chiffres" aria-label="Nouveau SIREN" style="margin:6px 0">
+          <div style="display:flex;gap:6px"><button class="btn primary" id="okSiren" type="button" style="padding:6px 10px;font-size:13px">Vérifier et enregistrer</button>
+          <button class="btn ghost" id="annSiren" type="button" style="padding:6px 10px;font-size:13px">Annuler</button></div>
+          <p class="msg" id="msgSiren"></p>
+        </div></div>
     </div>
     ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}
     <div class="actions">
@@ -366,6 +375,19 @@ function ecranSociete() {
       <input type="text" id="motifLibre" placeholder="Autre précision (facultatif)" aria-label="Autre précision">
       <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
     </div>`;
+  chargerQuali(courant);
+  // Correction du SIREN : l'outil contrôle la clé, relit la fiche INSEE du nouveau SIREN et garde l'ancien
+  $("#corrSiren").onclick = () => { $("#panSiren").hidden = false; $("#corrSiren").hidden = true; $("#nouveauSiren").focus(); };
+  $("#annSiren").onclick = () => { $("#panSiren").hidden = true; $("#corrSiren").hidden = false; };
+  $("#okSiren").onclick = async () => {
+    const b = $("#okSiren"); b.disabled = true; $("#msgSiren").className = "msg"; $("#msgSiren").textContent = "Vérification à l'INSEE…";
+    try {
+      const r = await api("/v3/validation/api/siren/" + courant, {siren: $("#nouveauSiren").value});
+      const p = SOC.find(s => s.page === courant); if (p) p.siren = r.siren;
+      await ouvrir(courant);
+      message(`SIREN corrigé : ${r.siren} (${r.raison_sociale || "raison sociale inconnue"}).`);
+    } catch (e) { $("#msgSiren").className = "msg err"; $("#msgSiren").textContent = e.message; b.disabled = false; }
+  };
   $("#saisie").onfocus = () => { document.querySelector("input[name=adr][value=Saisie]").checked = true; };
   $("#okSoc").onclick = () => {
     const r = document.querySelector("input[name=adr]:checked");
@@ -382,6 +404,32 @@ function ecranSociete() {
   $("#raz") && ($("#raz").onclick = () => envoyerSociete({statut: "À valider"}, "societe"));
 }
 
+// « Base quali » : valeur du CRM (lue en direct dans Pipedrive), modifiable ; la valeur retenue part dans l'export HubSpot
+async function chargerQuali(page) {
+  let q;
+  try { q = await api("/v3/validation/api/base-quali/" + page); }
+  catch (e) { if (courant === page && $("#carteQuali")) $("#carteQuali").innerHTML = `<span>Base quali</span><p class="msg err">${esc(e.message)}</p>`; return; }
+  const c = $("#carteQuali");
+  if (courant !== page || !c) return;
+  const val = q.retenue || q.crm || "";
+  const opts = [...new Set([...(q.options || []), ...(val ? [val] : [])])];
+  const champ = opts.length > 1 || (q.options || []).length
+    ? `<select id="valQuali" aria-label="Base quali"><option value="">—</option>${opts.map(o => `<option ${o === val ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`
+    : `<input type="text" id="valQuali" value="${esc(val)}" placeholder="vide dans le CRM" aria-label="Base quali">`;
+  const note = q.retenue && q.retenue !== q.crm ? `modifiée ici · CRM : ${esc(q.crm || "vide")}`
+    : q.id_pipedrive ? `fiche Pipedrive ${esc(q.id_pipedrive)}` : "pas de fiche CRM connue";
+  c.innerHTML = `<span>Base quali</span><div style="margin:6px 0">${champ}</div>
+    <button class="btn ghost" id="okQuali" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
+    <p class="msg" id="msgQuali">${note}${q.champ_trouve === false && q.id_pipedrive ? " · champ « Base quali » introuvable dans Pipedrive" : ""}</p>`;
+  $("#okQuali").onclick = async () => {
+    $("#okQuali").disabled = true;
+    try {
+      const r = await api("/v3/validation/api/base-quali/" + page, {valeur: $("#valQuali").value});
+      $("#msgQuali").className = "msg"; $("#msgQuali").textContent = r.retenue === (q.crm || "") ? "enregistrée (identique au CRM)" : `enregistrée · CRM : ${q.crm || "vide"}`;
+    } catch (e) { $("#msgQuali").className = "msg err"; $("#msgQuali").textContent = e.message; }
+    $("#okQuali").disabled = false;
+  };
+}
 function message(t, err) { const m = $("#msg"); if (m) { m.textContent = t; m.className = "msg" + (err ? " err" : ""); } }
 
 async function envoyerSociete(corps, suite) {
