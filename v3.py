@@ -784,6 +784,13 @@ async def traiter(job_id: str, orgs: list):
     if job["etat"] == "en cours":
         job["etat"] = "erreur" if job.get("erreur") else ("arrêté" if job["stop"] else "terminé")
     job["motif_texte"] = motif_arret(job)
+    if job.get("phantom_en_panne"):
+        try:
+            n = await SUIVI.suspendre_attente(job.get("origine", PLAN.NEGOS), f"phantom en panne ({job['nom']})")
+            jlog(job, f"{n} liste(s) programmée(s) sur ce compte suspendue(s) en attendant la réparation")
+            await SUIVI.alerte_phantom(job, n)
+        except Exception as e:
+            jlog(job, f"alerte phantom impossible : {e}")
     jlog(job, f"fin du run : {job['motif_texte']}" + (f" · {job['reliquat']} sociétés reportées" if job.get("reliquat") else ""))
     try:
         xl = excel(job) if job["resultats"] else None
@@ -912,6 +919,9 @@ async def _traiter(job_id: str, orgs: list):
                 await LI.etapes_linkedin(job, ressemblance, domaine)
                 if not job["stop"]:
                     job["li_fini"] = True
+        except LI.PhantomEnPanne as e:                  # dirigeants impossibles : on s'arrête et on prévient
+            job["erreur"] = job["phantom_en_panne"] = str(e)
+            jlog(job, f"⛔ {e}")
         except Exception as e:
             job.setdefault("journal", []).append(f"étapes LinkedIn interrompues : {e}")
             print(f"[V3 LINKEDIN] {e}")
