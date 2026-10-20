@@ -1406,6 +1406,43 @@ async def attribuer_anciens(req: Request, mail: str = "mmoriceau@equation-sie.co
     return await MEM.attribuer_anciens(m[0], avant, bool(confirmer), min(max(limite, 0), 5000))
 
 
+# ───────────────────────── relance des sociétés traitées sans dirigeants (phantom en panne) ─────────────────────────
+CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "infos_source", "base_quali_crm")
+
+
+@router.get("/v3/validation/api/relancer-vides")
+async def relancer_vides(req: Request, lancement: str = "", confirmer: int = 0, origine: str = PLAN.OUTILS):
+    """Admin. Sociétés d'un lancement enregistrées avec 0 dirigeant (ex. phantom Sales Navigator en panne le 20/10).
+    Sans &confirmer=1 : essai à blanc (liste, rien n'est lancé). Avec : relance ces sociétés, telles qu'elles avaient été
+    envoyées (nom, SIREN, site, adresse, adresse prospection physique, négo), sur le compte « origine » (outils par défaut)."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    lancement = lancement.strip()
+    if len(lancement) < 3:
+        return JSONResponse({"erreur": "précisez le nom du lancement (?lancement=Prospection hebdo 20/10)"}, 400)
+    if origine not in (PLAN.OUTILS, PLAN.NEGOS):
+        return JSONResponse({"erreur": "origine : outils ou negos"}, 400)
+    idx = await MEM.index(lambda m: None, tout=True)
+    ecartees = {s["page"] for s in await VALID._toutes() if s["validation"] == "Écartée"}
+    cibles = [e for e in idx if lancement in [x.strip() for x in (e.get("lancement") or "").split(";")]
+              and e.get("nb_dir") == 0 and e.get("perim") in ("dirigeants", "tout") and e["page"] not in ecartees]
+    rep = {"essai_a_blanc": not confirmer, "lancement": lancement, "a_relancer": len(cibles),
+           "compte_linkedin": PLAN.NOM_COMPTE[PLAN.compte(origine)], "exemples": [e["nom"] for e in cibles[:30]]}
+    if not confirmer or not cibles:
+        return rep
+    sem = asyncio.Semaphore(3)
+    async def org(e):
+        async with sem:
+            d = await MEM.lire(e["page"])
+        o = {k: str(d.get(k) or "") for k in ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville")}   # comme un fichier
+        return o | {k: d[k] for k in CHAMPS_ORG[7:] if d.get(k) not in (None, "", {})}
+    orgs = [o for o in await asyncio.gather(*(org(e) for e in cibles)) if o.get("nom")]
+    jid = nouveau_job(f"{lancement} (relance sans dirigeants)", [VALID.utilisateur(req)] if VALID.utilisateur(req) else [],
+                      "tout", orgs, origine=origine)
+    jlog(JOBS[jid], f"relance de {len(orgs)} sociétés du lancement « {lancement} » enregistrées sans dirigeant")
+    return rep | {"lance": jid, "relancees": len(orgs), "suivi": f"/v3/status/{jid}"}
+
+
 # ───────────────────────── contacts « partis » : nouvelle société, poste, e-mail ─────────────────────────
 @router.get("/v3/validation/api/partis")
 async def partis_liste(req: Request):
