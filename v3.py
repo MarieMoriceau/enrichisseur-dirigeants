@@ -1424,9 +1424,17 @@ async def relancer_vides(req: Request, lancement: str = "", confirmer: int = 0, 
         return JSONResponse({"erreur": "origine : outils ou negos"}, 400)
     idx = await MEM.index(lambda m: None, tout=True)
     ecartees = {s["page"] for s in await VALID._toutes() if s["validation"] == "Écartée"}
-    cibles = [e for e in idx if lancement in [x.strip() for x in (e.get("lancement") or "").split(";")]
-              and e.get("nb_dir") == 0 and e.get("perim") in ("dirigeants", "tout") and e["page"] not in ecartees]
+    try:                                               # déjà dans une liste programmée (ou suspendue) : on ne double pas
+        prog = await SUIVI.orgs_programmees()
+    except RuntimeError as e:
+        return JSONResponse({"erreur": str(e)}, 502)
+    noms_prog = {norm_nom(o.get("nom") or "") for o in prog} - {""}
+    sirens_prog = {o.get("siren_crm") for o in prog if o.get("siren_crm")}
+    vides = [e for e in idx if lancement in [x.strip() for x in (e.get("lancement") or "").split(";")]
+             and e.get("nb_dir") == 0 and e.get("perim") in ("dirigeants", "tout") and e["page"] not in ecartees]
+    cibles = [e for e in vides if e.get("nom") not in noms_prog and not (e.get("siren") and e["siren"] in sirens_prog)]
     rep = {"essai_a_blanc": not confirmer, "lancement": lancement, "a_relancer": len(cibles),
+           "deja_programmees": len(vides) - len(cibles),
            "compte_linkedin": PLAN.NOM_COMPTE[PLAN.compte(origine)], "exemples": [e["nom"] for e in cibles[:30]]}
     if not confirmer or not cibles:
         return rep

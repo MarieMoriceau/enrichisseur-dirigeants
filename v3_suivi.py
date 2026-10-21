@@ -453,6 +453,41 @@ async def a_lancer(jusqua=None) -> list:
     return out
 
 
+async def orgs_programmees() -> list:
+    """Sociétés des listes déjà programmées (EN_ATTENTE ou SUSPENDU), tous comptes : pour ne pas les relancer deux fois."""
+    if not NOTION_KEY:
+        return []
+    out, curseur = [], None
+    async with httpx.AsyncClient(timeout=30) as c:
+        while True:
+            corps = {"filter": {"and": [{"property": "Phases", "rich_text": {"starts_with": "v3"}},
+                                        {"or": [{"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
+                                                {"property": "Statut", "select": {"equals": "SUSPENDU"}}]}]}, "page_size": 100}
+            if curseur:
+                corps["start_cursor"] = curseur
+            r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
+            if r.status_code != 200:
+                raise RuntimeError(f"listes programmées illisibles (Notion {r.status_code})")
+            j = r.json()
+            for pg in j.get("results", []):
+                texte, cur_b = "", None
+                while True:
+                    b = (await c.get(f"https://api.notion.com/v1/blocks/{pg['id']}/children", headers=_h(),
+                                     params={"page_size": 100, **({"start_cursor": cur_b} if cur_b else {})})).json()
+                    texte += "".join(t.get("plain_text", "") for bl in b.get("results", []) if bl.get("type") == "code"
+                                     for t in bl["code"]["rich_text"])
+                    if not b.get("has_more"):
+                        break
+                    cur_b = b.get("next_cursor")
+                try:
+                    out += [o for o in json.loads(texte) if isinstance(o, dict)]
+                except ValueError:
+                    pass
+            if not j.get("has_more"):
+                return out
+            curseur = j.get("next_cursor")
+
+
 async def suspendre_attente(origine: str, motif: str) -> int:
     """Passe en SUSPENDU les listes programmées (EN_ATTENTE) d'une origine. Pour les relancer : remettre EN_ATTENTE dans Notion."""
     if not NOTION_KEY:
