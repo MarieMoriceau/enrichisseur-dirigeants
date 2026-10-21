@@ -344,7 +344,7 @@ function ecranSociete() {
       <div class="fait"><span>Domiciliation</span><b style="font-size:17px">${esc(d.verdict_domiciliation || "—")}</b>
         <p>${esc(d.raison_domiciliation || "")}${d.mention_domiciliation ? "<br>Mention sur le site : " + esc(d.mention_domiciliation) : ""}</p></div>
       <div class="fait"><span>INSEE</span><b style="font-size:17px">${esc(d.raison_sociale || "—")}</b>
-        <p>Siège : ${esc(d.siege_insee || "—")}<br>${esc(d.secteur || "")} ${d.naf ? "(" + esc(d.naf) + ")" : ""}</p></div>
+        <p>Siège : ${esc(d.siege_insee || "—")}<br>${d.naf ? "<b style=\"font-size:14px\">" + esc(d.activite || d.secteur || "") + " (" + esc(d.naf) + ")</b>" : ""}${d.activite && d.secteur ? "<br><small>Section : " + esc(d.secteur) + "</small>" : ""}</p></div>
       <div class="fait" id="carteQuali"><span>Base quali</span><p class="msg">Lecture du CRM…</p></div>
       <div class="fait" id="carteSiren"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
         <p>${esc(d.action || "")}</p>
