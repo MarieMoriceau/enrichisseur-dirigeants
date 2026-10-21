@@ -295,7 +295,7 @@ def _props(pg: dict) -> dict:
             "negos": MEM._val(p, "Négos"),
             "decision_ecart": MEM._val(p, "Écartée pour"), "motif_ecart": MEM._val(p, "Motif écart"),
             "partis": MEM._val(p, "Partis suivis"), "siren_corrige": MEM._val(p, "SIREN corrigé"),
-            "base_quali": MEM._val(p, "Base quali")}
+            "base_quali": MEM._val(p, "Base quali"), "debut_bail": MEM._val(p, "Début de bail")}
 
 
 async def _toutes() -> list:
@@ -410,12 +410,13 @@ def appliquer_correction_siren(info: dict):
 _COLONNES_TEXTE = set()
 
 
-async def assurer_colonne(nom: str) -> bool:
-    """Crée une fois une colonne texte dans la base mémoire si elle manque (« SIREN corrigé », « Base quali »…)."""
+async def assurer_colonne(nom: str, genre: str = "rich_text") -> bool:
+    """Crée une fois une colonne dans la base mémoire si elle manque (« SIREN corrigé », « Base quali » en texte,
+    « Début de bail » en date…)."""
     if nom not in _COLONNES_TEXTE:
         async with httpx.AsyncClient(timeout=30) as c:
             r = await MEM._req(c, "PATCH", f"https://api.notion.com/v1/databases/{MEM.MEMOIRE_DB}",
-                               json={"properties": {nom: {"rich_text": {}}}})
+                               json={"properties": {nom: {genre: {}}}})
         if r.status_code != 200:
             print(f"[V3 VALIDATION] colonne {nom} : Notion {r.status_code} {r.text[:200]}")
             return False
