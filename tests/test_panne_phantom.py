@@ -140,3 +140,65 @@ def test_relance_garde_le_travail_manuel(monkeypatch):
     assert props["Adresse retenue"]["rich_text"][0]["text"]["content"].startswith("46 Rue")
     assert props["Nb dirigeants"]["number"] == 1
     assert ("PATCH", "https://api.notion.com/v1/pages/old", {"archived": True}) in envoyes      # l'ancienne fiche vide est archivée
+
+
+def _job_sites(n):
+    j = _job(n)
+    for r in j["resultats"]:
+        r["linkedin_site"] = r["linkedin"]
+        r.pop("linkedin_id")
+    return j
+
+
+def _faux_scraper(reponses, appels):
+    """Faux PhantomBuster : le Company Scraper renvoie, lot après lot, les lignes de `reponses` (None = trop long)."""
+    class Faux:
+        def __init__(self, journal):
+            pass
+        async def executer(self, c, agent, nom, stop, valeurs=(), limite_s=3600, **kw):
+            appels.append((nom, len(valeurs), limite_s))
+            if "scraper" not in nom:
+                self.dernier_statut = "finished"
+                return []
+            rep = reponses.pop(0) if reponses else []
+            self.dernier_statut = "trop long" if rep is None else "finished"
+            return [{"query": u, "companyUrl": u, "name": "x", "linkedinID": "42", "employeesOnLinkedIn": "30",
+                     "companyAddress": "1 rue X, Paris, 75002, FR"} for u in (valeurs if rep == "tout" else [])]
+    return Faux
+
+
+def test_scraper_par_lots(monkeypatch):
+    _phantoms(monkeypatch)
+    appels = []
+    monkeypatch.setattr(LI, "PhantomBuster", _faux_scraper(["tout", "tout", None, "tout", "tout", "tout", "tout"], appels))
+    job = _job_sites(125)                                             # le lancement du 21/10
+    job["perimetre"] = "societes"
+    asyncio.run(LI.etapes_linkedin(job, v3.ressemblance, v3.domaine))
+    lots = [a for a in appels if "scraper" in a[0]]
+    assert len(lots) == 7 and all(n <= LI.SCRAPER_LOT for _, n, _ in lots) and all(l >= 1800 for _, _, l in lots)
+    lus = sum(1 for r in job["resultats"] if r.get("effectif_linkedin") == 30)
+    assert lus == 125 - 20 and job["li_utilise"] == 125             # un lot trop long perdu, pas les 6 autres
+
+
+def test_scraper_en_panne(monkeypatch):
+    _phantoms(monkeypatch)
+    appels = []
+    monkeypatch.setattr(LI, "PhantomBuster", _faux_scraper([[], []], appels))
+    with pytest.raises(LI.PhantomEnPanne) as e:
+        asyncio.run(LI.etapes_linkedin(_job_sites(125), v3.ressemblance, v3.domaine))
+    assert "Company Scraper" in str(e.value) and sum("scraper" in a[0] for a in appels) == LI.SCRAPER_ECHECS_MAX
+
+
+def test_trop_long_recupere_le_partiel(monkeypatch):
+    pb = LI.PhantomBuster(lambda m: None)
+    faits = []
+    async def lancer(c, agent, nom, **kw): return "cid"
+    async def attendre(c, cid, stop, limite_s=3600, agent=""): faits.append(("attendre", limite_s)); return "trop long"
+    async def arreter(c, agent): faits.append(("arreter", agent))
+    async def resultats(c, cid, nom=""): faits.append(("resultats", cid)); return [{"a": 1}]
+    async def dodo(s): pass
+    monkeypatch.setattr(pb, "lancer", lancer); monkeypatch.setattr(pb, "attendre", attendre)
+    monkeypatch.setattr(pb, "arreter", arreter); monkeypatch.setattr(pb, "resultats", resultats)
+    monkeypatch.setattr(LI.asyncio, "sleep", dodo)
+    assert asyncio.run(pb.executer(None, "ag", "n", lambda: False, limite_s=2400)) == [{"a": 1}]
+    assert faits == [("attendre", 2400), ("arreter", "ag"), ("resultats", "cid")]

@@ -463,15 +463,19 @@ class PhantomBuster:
         self.log(f"{nom} : aucun résultat récupéré. Fin du journal du phantom : {fin}")
         return []
 
-    async def executer(self, c, agent, nom_csv, stop, **kw) -> list:
+    async def executer(self, c, agent, nom_csv, stop, limite_s: int = 3600, **kw) -> list:
         if stop():                                      # arrêt demandé (bouton, ou 9 h) : on ne lance plus rien
             return []
         cid = await self.lancer(c, agent, nom_csv, **kw)
         self.log(f"phantom lancé ({nom_csv})")
-        st = await self.attendre(c, cid, stop, agent=agent)
+        st = await self.attendre(c, cid, stop, limite_s=limite_s, agent=agent)
         self.dernier_statut, self.derniere_sortie = st, ""
         if st != "finished":
             self.log(f"phantom {nom_csv} : {st}")
+            if st == "trop long":                       # 21/10 : 125 sociétés en un lancement, plus d'une heure → tout perdu.
+                await self.arreter(c, agent)            # on arrête le phantom (il ne doit plus utiliser le compte LinkedIn)
+                await asyncio.sleep(15)                 # et on garde ce qu'il a déjà lu
+                return await self.resultats(c, cid, nom_csv)
             if st != "error":
                 return []
         return await self.resultats(c, cid, nom_csv)
@@ -483,6 +487,8 @@ class PhantomEnPanne(RuntimeError):
 
 
 SN_ECHECS_MAX = 2          # lots Sales Navigator d'affilée en erreur et sans aucun profil avant d'arrêter
+SCRAPER_LOT = int(os.getenv("SCRAPER_LOT", "20"))   # Company Scraper : sociétés par lancement (125 d'un coup = plus d'une heure)
+SCRAPER_ECHECS_MAX = 2     # lots Company Scraper d'affilée sans aucune page lue avant d'arrêter
 
 
 # ───────────────────────── Kaspr ─────────────────────────
@@ -823,14 +829,27 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         # 3b. Company Scraper : adresse + effectif
         a_scraper = [r for r in res if r["linkedin"]]
         if a_scraper:
-            job["phase"] = f"LinkedIn : adresse et effectif de {len(a_scraper)} sociétés…"
-            try:
-                lignes = await pb.executer(c, PB_SCRAPER, f"v3_{jid}_scraper", stop,
-                                           valeurs=[r["linkedin"] for r in a_scraper], colonne="linkedinUrl")
-                job["li_utilise"] = len(a_scraper)          # sociétés réellement passées par LinkedIn (compteur 150/jour)
-            except Exception as e:
-                journal(f"Company Scraper en échec : {e}")
-                lignes = []
+            lignes, echecs, lus = [], 0, 0
+            lots_sc = [a_scraper[i:i + SCRAPER_LOT] for i in range(0, len(a_scraper), SCRAPER_LOT)]
+            for n_sc, lot in enumerate(lots_sc, 1):     # par lots : un lot lent ou en erreur ne fait pas tout perdre
+                if stop():
+                    return
+                job["phase"] = (f"LinkedIn : adresse et effectif, lot {n_sc}/{len(lots_sc)} "
+                                f"({len(lot)} sociétés sur {len(a_scraper)})…")
+                try:
+                    l_lot = await pb.executer(c, PB_SCRAPER, f"v3_{jid}_scraper_{n_sc}", stop, limite_s=max(1800, 120 * len(lot)),
+                                              valeurs=[r["linkedin"] for r in lot], colonne="linkedinUrl")
+                except Exception as e:
+                    journal(f"Company Scraper lot {n_sc} en échec : {e}")
+                    l_lot = []
+                job["li_utilise"] = job.get("li_utilise", 0) + len(lot)   # passées par LinkedIn (compteur 150/jour)
+                lignes += l_lot
+                lus += len(l_lot)
+                echecs = 0 if l_lot else echecs + 1
+                if echecs >= SCRAPER_ECHECS_MAX and not lus:
+                    detail = getattr(pb, "derniere_sortie", "") or getattr(pb, "dernier_statut", "") or "aucune page lue"
+                    raise PhantomEnPanne(f"le phantom Company Scraper (pages LinkedIn des sociétés) ne lit aucune page, "
+                                         f"{echecs} lots de suite : {detail[:300]}")
             par_url = {cle_linkedin(l.get("query") or ""): l for l in lignes}
             for l in lignes:
                 par_url.setdefault(cle_linkedin(l.get("companyUrl") or ""), l)
