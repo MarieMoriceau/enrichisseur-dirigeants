@@ -96,6 +96,8 @@ def test_relancer_vides(monkeypatch):
     lances = []
     monkeypatch.setattr(MEM, "index", index); monkeypatch.setattr(MEM, "lire", lire)
     monkeypatch.setattr(VALID, "_toutes", toutes); monkeypatch.setattr(VALID, "_refus", lambda r, b: None)
+    async def prog(): return []
+    monkeypatch.setattr(v3.SUIVI, "orgs_programmees", prog)
     monkeypatch.setattr(v3, "nouveau_job", lambda nom, mails, perim, orgs, **kw: lances.append((nom, orgs, kw)) or "jid")
     monkeypatch.setattr(v3, "jlog", lambda j, m: None); monkeypatch.setitem(v3.JOBS, "jid", {})
     app = FastAPI(); app.include_router(v3.router); c = TestClient(app)
@@ -236,3 +238,22 @@ def test_texte_alerte(monkeypatch):
     asyncio.run(SUIVI.alerte_phantom({"nom": "L", "origine": "outils", "phantom_en_panne": "phantom occupé depuis plus de 45 min"}, 5))
     asyncio.run(SUIVI.alerte_phantom({"nom": "L", "origine": "outils", "phantom_en_panne": "Sales Navigator account not set up"}, 0))
     assert "Stop" in mails[0] and "cookie" not in mails[0] and "cookie" in mails[1] and "5 liste" in mails[0]
+
+
+def test_relancer_vides_ecarte_les_programmees(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import v3_validation as VALID
+    async def index(j, tout=False):
+        return [{"page": f"p{i}", "nom": n, "siren": s, "lancement": "Prospection hebdo 20/10 (suite 1/3)", "nb_dir": 0, "perim": "tout"}
+                for i, (n, s) in enumerate([("kraaft", ""), ("joivy", "443061841"), ("klox", ""), ("lazeo", "")])]
+    async def toutes(): return []
+    async def prog(): return [{"nom": "Kraaft"}, {"nom": "Autre nom", "siren_crm": "443061841"}]   # même SIREN = même société
+    monkeypatch.setattr(MEM, "index", index); monkeypatch.setattr(VALID, "_toutes", toutes)
+    monkeypatch.setattr(VALID, "_refus", lambda r, b: None); monkeypatch.setattr(v3.SUIVI, "orgs_programmees", prog)
+    for k in ("PB_COMPANY_SCRAPER_ID_NEGOS", "PB_SALESNAV_ID_NEGOS"):     # deux comptes LinkedIn, comme sur Render
+        monkeypatch.setenv(k, "1")
+    app = FastAPI(); app.include_router(v3.router); c = TestClient(app)
+    r = c.get("/v3/validation/api/relancer-vides", params={"lancement": "Prospection hebdo 20/10 (suite 1/3)", "origine": "negos"}).json()
+    assert r["a_relancer"] == 2 and r["deja_programmees"] == 2 and sorted(r["exemples"]) == ["klox", "lazeo"]
+    assert r["compte_linkedin"] == "négos"
