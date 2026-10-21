@@ -202,3 +202,26 @@ def test_trop_long_recupere_le_partiel(monkeypatch):
     monkeypatch.setattr(LI.asyncio, "sleep", dodo)
     assert asyncio.run(pb.executer(None, "ag", "n", lambda: False, limite_s=2400)) == [{"a": 1}]
     assert faits == [("attendre", 2400), ("arreter", "ag"), ("resultats", "cid")]
+
+
+def test_phantom_occupe_on_attend(monkeypatch):
+    """21/10 : 429 « maxParallelismReached » (phantom encore occupé) → on attend au lieu d'échouer."""
+    class Rep:
+        def __init__(self, code, txt=""):
+            self.status_code, self.text = code, txt
+        def json(self): return {"containerId": "cid"}
+    reps = [Rep(429, '{"detailedErrorSlug":"maxParallelismReached"}')] * 3 + [Rep(200)]
+    class C:
+        async def post(self, *a, **k): return reps.pop(0)
+    pb = LI.PhantomBuster(lambda m: None)
+    async def arg(c, agent): return {"spreadsheetUrl": ""}
+    async def heb(c, col, vals): return "https://x/y.csv"
+    async def dodo(s): pass
+    monkeypatch.setattr(pb, "_argument", arg); monkeypatch.setattr(pb, "_heberger_csv", heb)
+    monkeypatch.setattr(LI.asyncio, "sleep", dodo)
+    assert asyncio.run(pb.lancer(C(), "ag", "n", valeurs=["a"], colonne="linkedinUrl")) == "cid"
+    reps[:] = [Rep(429, "maxParallelismReached")] * 5
+    monkeypatch.setattr(LI, "ATTENTE_PHANTOM_OCCUPE", 0)
+    with pytest.raises(RuntimeError) as e:
+        asyncio.run(pb.lancer(C(), "ag", "n", valeurs=["a"], colonne="linkedinUrl"))
+    assert "occupé" in str(e.value)

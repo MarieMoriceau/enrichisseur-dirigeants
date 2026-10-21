@@ -478,8 +478,10 @@ async def alerte_phantom(job: dict, suspendues: int):
     compte = PLAN.NOM_COMPTE.get(PLAN.compte(job.get("origine", "")), "")
     corps = (f"Bonjour,\n\nLe lancement « {job['nom']} » s'est arrêté : {job['phantom_en_panne']}\n\n"
              f"Compte LinkedIn concerné : {compte}.\n"
-             f"Cause la plus fréquente : le cookie LinkedIn du phantom n'est plus valable (déconnexion de LinkedIn, "
-             f"changement de compte dans le même navigateur) ou Sales Navigator n'est pas actif sur ce compte.\n\n"
+             + ("Cause : le phantom est encore occupé par un lancement précédent. Arrêtez-le dans PhantomBuster (bouton Stop) "
+                "ou attendez qu'il ait fini.\n\n" if "occupé" in job["phantom_en_panne"] else
+                "Causes les plus fréquentes : le cookie LinkedIn du phantom n'est plus valable (déconnexion de LinkedIn, "
+                "changement de compte dans le même navigateur) ou Sales Navigator n'est pas actif sur ce compte.\n\n")
              f"{suspendues} liste(s) programmée(s) sur ce compte ont été suspendues pour ne pas consommer le quota à vide.\n"
              f"Une fois le phantom réparé, remettez-les EN_ATTENTE dans la base Notion « Enrichisseur Dirigeants — Runs » "
              f"et relancez les sociétés traitées sans dirigeants.\n")

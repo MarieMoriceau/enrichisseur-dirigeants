@@ -380,13 +380,27 @@ class PhantomBuster:
             if "crm" in k.lower() and isinstance(arg[k], bool):
                 arg[k] = False
         arg["csvName"] = nom_csv
-        for essai in range(4):
+        essai, occupe_depuis = 0, None
+        while True:
             r = await c.post(f"{PB_API}/agents/launch", headers={**self.h, "Content-Type": "application/json"},
                              json={"id": agent, "argument": json.dumps(arg), "saveArgument": False})
             if r.status_code == 200:
                 return r.json()["containerId"]
+            # 21/10 : le phantom tournait encore sur une liste précédente → « maxParallelismReached ». On attend qu'il se
+            # libère (jusqu'à ATTENTE_PHANTOM_OCCUPE) au lieu de compter un échec au bout de 3 minutes.
+            if r.status_code == 429 and "maxParallelism" in r.text:
+                occupe_depuis = occupe_depuis or time.time()
+                if time.time() - occupe_depuis < ATTENTE_PHANTOM_OCCUPE:
+                    if essai % 5 == 0:
+                        self.log(f"{nom_csv} : phantom encore occupé par un lancement précédent, on attend qu'il se libère…")
+                    essai += 1
+                    await asyncio.sleep(60)
+                    continue
+                raise RuntimeError(f"phantom occupé depuis plus de {ATTENTE_PHANTOM_OCCUPE // 60} min par un autre lancement "
+                                   f"(à arrêter dans PhantomBuster)")
             if r.status_code in (429, 500, 502, 503, 504) and essai < 3:
-                await asyncio.sleep(30 * (essai + 1))
+                essai += 1
+                await asyncio.sleep(30 * essai)
                 continue
             raise RuntimeError(f"lancement refusé ({r.status_code}) : {r.text[:200]}")
 
@@ -489,6 +503,7 @@ class PhantomEnPanne(RuntimeError):
 SN_ECHECS_MAX = 2          # lots Sales Navigator d'affilée en erreur et sans aucun profil avant d'arrêter
 SCRAPER_LOT = int(os.getenv("SCRAPER_LOT", "20"))   # Company Scraper : sociétés par lancement (125 d'un coup = plus d'une heure)
 SCRAPER_ECHECS_MAX = 2     # lots Company Scraper d'affilée sans aucune page lue avant d'arrêter
+ATTENTE_PHANTOM_OCCUPE = int(os.getenv("ATTENTE_PHANTOM_OCCUPE", "2700"))   # phantom occupé ailleurs : 45 min d'attente au plus
 
 
 # ───────────────────────── Kaspr ─────────────────────────
@@ -841,6 +856,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                                               valeurs=[r["linkedin"] for r in lot], colonne="linkedinUrl")
                 except Exception as e:
                     journal(f"Company Scraper lot {n_sc} en échec : {e}")
+                    pb.derniere_sortie = str(e)          # pour l'alerte : la vraie raison, pas « finished »
                     l_lot = []
                 job["li_utilise"] = job.get("li_utilise", 0) + len(lot)   # passées par LinkedIn (compteur 150/jour)
                 lignes += l_lot
@@ -957,6 +973,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                                                resultats_par_recherche=PLAFOND_SN)
                 except Exception as e:
                     journal(f"Sales Navigator lot {n_lot} en échec : {e}")
+                    pb.derniere_sortie = str(e)
                     lignes = None
                 # phantom en panne : erreur et zéro profil, plusieurs lots de suite, sans un seul profil depuis le début
                 if not lignes and (lignes is None or getattr(pb, "dernier_statut", "") in ("error", "launch error")):
