@@ -225,3 +225,14 @@ def test_phantom_occupe_on_attend(monkeypatch):
     with pytest.raises(RuntimeError) as e:
         asyncio.run(pb.lancer(C(), "ag", "n", valeurs=["a"], colonne="linkedinUrl"))
     assert "occupé" in str(e.value)
+
+
+def test_texte_alerte(monkeypatch):
+    import v3_suivi as SUIVI
+    mails = []
+    monkeypatch.setattr(SUIVI, "SMTP_USER", "x"); monkeypatch.setattr(SUIVI, "SMTP_PASS", "y")
+    monkeypatch.setattr(SUIVI, "COPIE_COMPLETE", ["m@x.fr"])
+    monkeypatch.setattr(SUIVI, "_envoyer", lambda dest, sujet, corps, *a: mails.append(corps))
+    asyncio.run(SUIVI.alerte_phantom({"nom": "L", "origine": "outils", "phantom_en_panne": "phantom occupé depuis plus de 45 min"}, 5))
+    asyncio.run(SUIVI.alerte_phantom({"nom": "L", "origine": "outils", "phantom_en_panne": "Sales Navigator account not set up"}, 0))
+    assert "Stop" in mails[0] and "cookie" not in mails[0] and "cookie" in mails[1] and "5 liste" in mails[0]
