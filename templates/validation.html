@@ -346,6 +346,10 @@ function ecranSociete() {
       <div class="fait"><span>INSEE</span><b style="font-size:17px">${esc(d.raison_sociale || "—")}</b>
         <p>Siège : ${esc(d.siege_insee || "—")}<br>${d.naf ? "<b style=\"font-size:14px\">" + esc(d.activite || d.secteur || "") + " (" + esc(d.naf) + ")</b>" : ""}${d.activite && d.secteur ? "<br><small>Section : " + esc(d.secteur) + "</small>" : ""}</p></div>
       <div class="fait" id="carteQuali"><span>Base quali</span><p class="msg">Lecture du CRM…</p></div>
+      <div class="fait"><span>Début de bail</span>
+        <div style="margin:6px 0"><input type="date" id="valBail" value="${esc(info.debut_bail || "")}" aria-label="Date de début de bail"></div>
+        <button class="btn ghost" id="okBail" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
+        <p class="msg" id="msgBail">${info.debut_bail ? "" : "à remplir quand vous avez l'info"}</p></div>
       <div class="fait" id="carteSiren"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
         <p>${esc(d.action || "")}</p>
         <p><button class="lien" id="corrSiren" type="button">${info.siren ? "Corriger le SIREN" : "Ajouter le SIREN"}</button></p>
@@ -376,6 +380,15 @@ function ecranSociete() {
       <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
     </div>`;
   chargerQuali(courant);
+  $("#okBail").onclick = async () => {
+    const page = courant; $("#okBail").disabled = true;
+    try {
+      const r = await api("/v3/validation/api/debut-bail/" + page, {date: $("#valBail").value});
+      info.debut_bail = r.debut_bail;
+      $("#msgBail").className = "msg"; $("#msgBail").textContent = r.debut_bail ? "enregistrée" : "effacée";
+    } catch (e) { $("#msgBail").className = "msg err"; $("#msgBail").textContent = e.message; }
+    $("#okBail").disabled = false;
+  };
   // Correction du SIREN : l'outil contrôle la clé, relit la fiche INSEE du nouveau SIREN et garde l'ancien
   $("#corrSiren").onclick = () => { $("#panSiren").hidden = false; $("#corrSiren").hidden = true; $("#nouveauSiren").focus(); };
   $("#annSiren").onclick = () => { $("#panSiren").hidden = true; $("#corrSiren").hidden = false; };

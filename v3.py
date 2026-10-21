@@ -1520,6 +1520,31 @@ async def base_quali_ecrire(page_id: str, req: Request):
     return {"ok": True, "retenue": valeur}
 
 
+@router.post("/v3/validation/api/debut-bail/{page_id}")
+async def debut_bail_ecrire(page_id: str, req: Request):
+    """Admin : date de début du bail des bureaux, saisie à la main quand on la connaît.
+    Corps : {"date": "2024-03-01"} ; date vide = on efface."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    b = await req.json()
+    d = str(b.get("date") or "").strip()
+    if d:
+        try:
+            jour = date.fromisoformat(d)
+        except ValueError:
+            return JSONResponse({"erreur": "date invalide"}, 400)
+        if not (1950 <= jour.year <= date.today().year + 5):
+            return JSONResponse({"erreur": f"année {jour.year} improbable, faute de frappe ?"}, 400)
+    if not await VALID.assurer_colonne("Début de bail", "date"):
+        return JSONResponse({"erreur": "Notion refuse de créer la colonne « Début de bail »"}, 502)
+    maj = await VALID._maj(page_id, {"Début de bail": {"date": {"start": d} if d else None}})
+    if isinstance(maj, JSONResponse):
+        return maj
+    return {"ok": True, "debut_bail": d}
+
+
 @router.post("/v3/validation/api/siren/{page_id}")
 async def corriger_siren(page_id: str, req: Request):
     """Admin : remplace un SIREN faux. Le nouveau est contrôlé (9 chiffres, clé) et sa fiche INSEE est relue.
