@@ -28,6 +28,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import v3_memoire as MEM
+import v3_naf as NAF
 import v3_linkedin as LI
 import v3_equipe as EQ
 
@@ -384,12 +385,26 @@ async def admin_societe(page_id: str, req: Request):
     return avec_attribution(info, await EQ.membres())
 
 
+def activite_de(d: dict) -> str:
+    """Libellé exact du code NAF ; recalculé pour les fiches enregistrées avant qu'on le garde."""
+    return (d or {}).get("activite") or NAF.libelle((d or {}).get("naf", ""))
+
+
 def appliquer_correction_siren(info: dict):
-    """SIREN corrigé à la main : la fiche INSEE du bon SIREN remplace celle trouvée par l'outil (bloc JSON intact)."""
+    """SIREN corrigé à la main : la fiche INSEE du bon SIREN remplace celle trouvée par l'outil (bloc JSON intact),
+    et le verdict de domiciliation est recalculé avec le nouveau siège (il avait été fait avec l'ancien SIREN)."""
     c = _json(info.get("siren_corrige"), {})
     if c.get("insee"):
-        info["data"] = {**(info.get("data") or {}), **c["insee"]}
+        data = {**(info.get("data") or {}), **c["insee"]}
+        bureaux = info.get("adresse_retenue") or ""          # adresse validée à la main : elle prime
+        dec = {"adresse_proposee": bureaux or data.get("adresse_proposee", ""),
+               "confiance_adresse": "haute" if bureaux else data.get("confiance_adresse", ""),
+               "sources_adresse": (info.get("source_retenue") or "validée") if bureaux else data.get("sources_adresse", "")}
+        data.update(LI.verdict_domiciliation(data, dec))
+        info["data"] = data
         info["siren_avant"] = c.get("avant", "")
+    if info.get("data"):
+        info["data"]["activite"] = activite_de(info["data"])
 
 
 _COLONNES_TEXTE = set()

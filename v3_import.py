@@ -24,7 +24,7 @@ COLONNES = {
     "Site trouvé via": "source_site", "Contrôle du nom": "controle_nom", "Site joignable": "site_joignable",
     "SIREN CRM": "siren_crm", "État SIREN CRM": "etat_crm", "SIREN site": "siren_site", "État SIREN site": "etat_site",
     "Page où le SIREN a été trouvé": "page_siren", "SIREN par le nom (SIRENE)": "siren_nom", "Raison sociale INSEE": "raison_sociale",
-    "Date fermeture": "date_fermeture", "Siège légal INSEE": "siege_insee", "Code NAF": "naf", "Secteur": "secteur",
+    "Date fermeture": "date_fermeture", "Siège légal INSEE": "siege_insee", "Code NAF": "naf", "Activité (NAF)": "activite", "Secteur": "secteur",
     "LinkedIn (site)": "linkedin_site", "Statut proposé": "statut", "Action": "action", "Confiance": "confiance", "Note": "note_site",
     "Adresse CRM": "adresse_crm", "Adresse site": "adresse_site", "Page de l'adresse site": "page_adresse_site",
     "Page LinkedIn retenue": "linkedin", "Trouvée via": "source_linkedin", "Contrôle LinkedIn": "controle_linkedin",

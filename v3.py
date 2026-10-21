@@ -19,6 +19,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 import v3_linkedin as LI
+import v3_naf as NAF
 import v3_suivi as SUIVI
 import v3_memoire as MEM
 import v3_planning as PLAN
@@ -443,7 +444,7 @@ async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
 
 # ───────────────────────── étape 2 : INSEE ─────────────────────────
 async def insee(client: httpx.AsyncClient, siren: str) -> dict:
-    vide = {"raison_sociale": "", "etat": "", "date_fermeture": "", "siege": "", "tranche_insee": "", "naf": "", "secteur": ""}
+    vide = {"raison_sociale": "", "etat": "", "date_fermeture": "", "siege": "", "tranche_insee": "", "naf": "", "activite": "", "secteur": ""}
     if not siren:
         return vide
     for essai in range(3):
@@ -459,13 +460,15 @@ async def insee(client: httpx.AsyncClient, siren: str) -> dict:
             x = res[0]
             sg = x.get("siege") or {}
             etat = x.get("etat_administratif") or sg.get("etat_administratif") or ""
+            naf = x.get("activite_principale") or sg.get("activite_principale") or ""
             return {
                 "raison_sociale": x.get("nom_raison_sociale") or x.get("nom_complet") or "",
                 "etat": {"A": "active", "C": "fermée"}.get(etat, etat),
                 "date_fermeture": x.get("date_fermeture") or "",
                 "siege": sg.get("adresse") or "",
                 "tranche_insee": x.get("tranche_effectif_salarie") or "",
-                "naf": x.get("activite_principale") or sg.get("activite_principale") or "",
+                "naf": naf,
+                "activite": NAF.libelle(naf),       # libellé exact du code (69.10Z → Activités juridiques)
                 "secteur": SECTIONS_NAF.get(x.get("section_activite_principale") or "", ""),
             }
         except Exception:
@@ -888,7 +891,7 @@ async def _traiter(job_id: str, orgs: list):
                 ref = i_site or i_crm or i_nom
                 row.update({"raison_sociale": ref.get("raison_sociale", ""), "date_fermeture": ref.get("date_fermeture", ""),
                             "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", ""),
-                            "naf": ref.get("naf", ""), "secteur": ref.get("secteur", "")})
+                            "naf": ref.get("naf", ""), "activite": ref.get("activite", ""), "secteur": ref.get("secteur", "")})
                 # le site est-il bien celui de cette société ? (vaut aussi pour les sites du CRM, souvent faux)
                 if dom and s["site_joignable"] == "oui" and not adresse_seule:
                     compact = norm_nom(o["nom"]).replace(" ", "")
@@ -1099,7 +1102,7 @@ def excel(job) -> bytes:
             ("SIREN CRM", "siren_crm"), ("État SIREN CRM", "etat_crm"), ("SIREN site", "siren_site"),
             ("État SIREN site", "etat_site"), ("Page où le SIREN a été trouvé", "page_siren"),
             ("SIREN par le nom (SIRENE)", "siren_nom"), ("Raison sociale INSEE", "raison_sociale"), ("Date fermeture", "date_fermeture"),
-            ("Siège légal INSEE", "siege_insee"), ("Code NAF", "naf"), ("Secteur", "secteur"), ("LinkedIn (site)", "linkedin_site"),
+            ("Siège légal INSEE", "siege_insee"), ("Code NAF", "naf"), ("Activité (NAF)", "activite"), ("Secteur", "secteur"), ("LinkedIn (site)", "linkedin_site"),
             ("Statut proposé", "statut"), ("Action", "action"), ("Confiance", "confiance"), ("Note", "note_site")]
     li_ = bool(job.get("linkedin"))
     if any(r.get("adresse_notion") for r in job.get("resultats", [])):
@@ -1118,14 +1121,14 @@ def excel(job) -> bytes:
 
     hub = [r for r in res if r["statut"] == "Active" and r["confiance"] == "haute" and r["domaine"]]
     ent = ["Company Domain Name", "Name", "SIREN", "LinkedIn Company Page", "STATUT ACTIVITÉ", "Raison sociale", "ID Pipedrive", "Date relevé",
-           "CODE NAF", "SECTEUR", "DOMICILIATION", "Street Address", "Postal Code", "City"]
+           "CODE NAF", "ACTIVITÉ", "SECTEUR", "DOMICILIATION", "Street Address", "Postal Code", "City"]
     if li_:
         ent += ["EFFECTIF LINKEDIN", "DATE EFFECTIF", "CROISSANCE EFFECTIF (%)"]
 
     def ligne_hub(r):
         l = [r["domaine"], r["nom"], r["siren_site"] or r["siren_crm"] or r["siren_nom"], r.get("linkedin") or r["linkedin_site"],
              r.get("statut_activite") or "Active", r["raison_sociale"], r["id"], auj,
-             r.get("naf", ""), r.get("secteur", ""), re.sub(r"^\W+", "", r.get("verdict_domiciliation", "")).strip()]
+             r.get("naf", ""), r.get("activite", ""), r.get("secteur", ""), re.sub(r"^\W+", "", r.get("verdict_domiciliation", "")).strip()]
         rue = cp = ville = ""
         if r.get("confiance_adresse") == "haute" and r.get("adresse_proposee"):
             rue, cp, ville = decouper_adresse(r["adresse_proposee"])
@@ -1147,9 +1150,9 @@ def excel(job) -> bytes:
              + ([r.get("effectif_linkedin", "")] if li_ else []) + [""] for r in adr])
     dom_ = [r for r in res if str(r.get("verdict_domiciliation", "")).startswith(("🎯", "📍"))]
     feuille(wb, "Domiciliations", ["ID Pipedrive", "Société", "Verdict", "Pourquoi", "Siège légal INSEE", "Adresse des bureaux",
-                                   "Confiance adresse", "Code NAF", "Secteur"] + (["Effectif LinkedIn"] if li_ else []),
+                                   "Confiance adresse", "Code NAF", "Activité (NAF)", "Secteur"] + (["Effectif LinkedIn"] if li_ else []),
             [[r["id"], r["nom"], r.get("verdict_domiciliation", ""), r.get("raison_domiciliation", ""), r.get("siege_insee", ""),
-              r.get("adresse_proposee", ""), r.get("confiance_adresse", ""), r.get("naf", ""), r.get("secteur", "")]
+              r.get("adresse_proposee", ""), r.get("confiance_adresse", ""), r.get("naf", ""), r.get("activite", ""), r.get("secteur", "")]
              + ([r.get("effectif_linkedin", "")] if li_ else []) for r in dom_])
     corr = [r for r in res if str(r.get("action_adresse", "")).startswith(("🔄", "➕"))]
     feuille(wb, "Adresses à corriger", ["ID Pipedrive", "Société", "Ancienne adresse (CRM)", "Nouvelle adresse", "Sources", "Action"],
@@ -1545,7 +1548,7 @@ async def corriger_siren(page_id: str, req: Request):
     avant = (VALID._json(info.get("siren_corrige"), {}).get("avant") or info["siren"])   # le tout premier SIREN
     quand = datetime.now(SUIVI.PARIS)
     fiche = {"raison_sociale": i["raison_sociale"], "siege_insee": i["siege"], "tranche_insee": i["tranche_insee"],
-             "naf": i["naf"], "secteur": i["secteur"], "date_fermeture": i["date_fermeture"],
+             "naf": i["naf"], "activite": i.get("activite") or NAF.libelle(i["naf"]), "secteur": i["secteur"], "date_fermeture": i["date_fermeture"],
              "statut": "Active" if i["etat"] == "active" else "Radiée, à vérifier",
              "action": f"✏️ SIREN corrigé à la main le {quand:%d/%m} (l'outil avait trouvé {avant})"}
     corr = {"avant": avant, "le": quand.isoformat(timespec="seconds"), "par": VALID.utilisateur(req) or "admin", "insee": fiche}
