@@ -1456,6 +1456,76 @@ async def relancer_vides(req: Request, lancement: str = "", confirmer: int = 0, 
     return rep | {"lance": jid, "relancees": len(orgs), "suivi": f"/v3/status/{jid}"}
 
 
+@router.post("/v3/validation/api/nom/{page_id}")
+async def corriger_nom(page_id: str, req: Request):
+    """Admin : corrige le nom d'une société mal saisi en prospection (« Godim » pour « Godin Associés »).
+    Change le titre et le nom normalisé de la fiche ; une relance cherchera ensuite sous ce nom. Corps : {"nom": "…"}."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    b = await req.json()
+    nom = re.sub(r"\s+", " ", str(b.get("nom") or "")).strip()[:100]
+    if len(nom) < 2:
+        return JSONResponse({"erreur": "nom trop court"}, 400)
+    maj = await VALID._maj(page_id, {"Société": {"title": [{"text": {"content": nom}}]}, "Nom normalisé": MEM._txt(norm_nom(nom))})
+    if isinstance(maj, JSONResponse):
+        return maj
+    return {"ok": True, "nom": nom}
+
+
+async def _orgs_a_relancer(pages: list) -> list:
+    """Reconstruit chaque société comme dans un fichier, avec le nom de la fiche (corrigé à la main le cas échéant)
+    et le SIREN corrigé à la main s'il y en a un."""
+    sem = asyncio.Semaphore(3)
+    async def une(p):
+        async with sem:
+            info, d = await asyncio.gather(VALID._une(p), MEM.lire(p))
+        if not info:
+            return {}
+        o = {k: str(d.get(k) or "") for k in ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville")}
+        o["nom"] = info.get("nom") or o["nom"]
+        if info.get("siren_corrige") and luhn_ok(info.get("siren") or ""):
+            o["siren_crm"] = info["siren"]
+        return o | {k: d[k] for k in CHAMPS_ORG[7:] if d.get(k) not in (None, "", {})}
+    return [o for o in await asyncio.gather(*(une(p) for p in pages)) if o.get("nom")]
+
+
+async def _relancer(req: Request, pages: list, confirmer: bool, origine: str):
+    pages = [p.strip() for p in pages if VALID.RE_PAGE.fullmatch(p.strip())][:50]
+    if not pages:
+        return JSONResponse({"erreur": "aucune fiche valide"}, 400)
+    if origine not in (PLAN.OUTILS, PLAN.NEGOS):
+        return JSONResponse({"erreur": "origine : outils ou negos"}, 400)
+    if any(j.get("etat") == "en cours" for j in JOBS.values()):
+        return JSONResponse({"erreur": "un enrichissement tourne déjà : relancez quand il sera fini"}, 409)
+    orgs = await _orgs_a_relancer(pages)
+    rep = {"essai_a_blanc": not confirmer, "a_relancer": len(orgs), "compte_linkedin": PLAN.NOM_COMPTE[PLAN.compte(origine)],
+           "societes": [{"nom": o["nom"], "siren": o.get("siren_crm", "")} for o in orgs]}
+    if not confirmer or not orgs:
+        return rep
+    nom = f"Relance manuelle {datetime.now(SUIVI.PARIS):%d/%m %Hh%M}" + (f" : {orgs[0]['nom']}" if len(orgs) == 1 else "")
+    jid = nouveau_job(nom, [VALID.utilisateur(req)] if VALID.utilisateur(req) else [], "tout", orgs, forcer=True, origine=origine)
+    jlog(JOBS[jid], f"relance manuelle de {len(orgs)} société(s) depuis l'écran de validation")
+    return rep | {"lance": jid, "suivi": f"/v3/status/{jid}"}
+
+
+@router.post("/v3/validation/api/relancer/{page_id}")
+async def relancer_une(page_id: str, req: Request):
+    """Admin : bouton « Relancer cette société » (après correction du nom ou du SIREN). Compte LinkedIn « outils »."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    return await _relancer(req, [page_id], True, PLAN.OUTILS)
+
+
+@router.get("/v3/validation/api/relancer-societes")
+async def relancer_plusieurs(req: Request, pages: str = "", confirmer: int = 0, origine: str = PLAN.OUTILS):
+    """Admin : relance plusieurs fiches (?pages=id1,id2). Sans &confirmer=1 : essai à blanc."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    return await _relancer(req, pages.split(","), bool(confirmer), origine)
+
+
 # ───────────────────────── contacts « partis » : nouvelle société, poste, e-mail ─────────────────────────
 @router.get("/v3/validation/api/partis")
 async def partis_liste(req: Request):

@@ -325,6 +325,9 @@ async def _maj(page_id: str, props: dict):
     async with httpx.AsyncClient(timeout=30) as c:
         r = await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{page_id}", json={"properties": props})
     if r.status_code != 200:
+        if "archived" in r.text:                       # un run plus récent a remplacé cette fiche (même SIREN, même site…)
+            return JSONResponse({"erreur": "Cette fiche a été remplacée par un traitement plus récent de la même société : "
+                                           "rechargez la liste et ouvrez la nouvelle fiche.", "remplacee": True}, 409)
         return JSONResponse({"erreur": f"Notion a refusé la mise à jour ({r.status_code})"}, 502)
     return _props(r.json())
 
