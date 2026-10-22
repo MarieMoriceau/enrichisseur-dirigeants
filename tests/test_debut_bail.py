@@ -35,3 +35,17 @@ def test_refus(monkeypatch):
     assert c.post(f"/v3/validation/api/debut-bail/{PAGE}", json={"date": "01/03/2024"}).status_code == 400
     assert c.post(f"/v3/validation/api/debut-bail/{PAGE}", json={"date": "1024-03-01"}).status_code == 400
     assert not ecrit
+
+
+def test_flexoffice(monkeypatch):
+    c, ecrit, colonnes = _client(monkeypatch)
+    assert c.post(f"/v3/validation/api/flexoffice/{PAGE}", json={"coche": True}).json()["flexoffice"] is True
+    assert ecrit["Flexoffice"] == {"checkbox": True} and ("Flexoffice", "checkbox") in colonnes
+    c.post(f"/v3/validation/api/flexoffice/{PAGE}", json={"coche": False})
+    assert ecrit["Flexoffice"] == {"checkbox": False}
+
+
+def test_lecture_case():
+    import v3_memoire as MEM
+    assert MEM._val({"F": {"type": "checkbox", "checkbox": True}}, "F") == "oui"
+    assert MEM._val({"F": {"type": "checkbox", "checkbox": False}}, "F") == ""

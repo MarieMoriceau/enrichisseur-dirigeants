@@ -368,6 +368,10 @@ function ecranSociete() {
           <button class="btn ghost" id="annSiren" type="button" style="padding:6px 10px;font-size:13px">Annuler</button></div>
           <p class="msg" id="msgSiren"></p>
         </div></div>
+      <div class="fait"><span>Flexoffice</span>
+        <label style="display:flex;gap:8px;align-items:center;margin:8px 0;font-size:15px;cursor:pointer">
+          <input type="checkbox" id="valFlex" ${info.flexoffice ? "checked" : ""} style="width:18px;height:18px"> en bureau flexible</label>
+        <p class="msg" id="msgFlex"></p></div>
     </div>
     ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}
     <div class="actions">
@@ -390,6 +394,14 @@ function ecranSociete() {
       <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
     </div>`;
   chargerQuali(courant);
+  $("#valFlex").onchange = async () => {
+    const page = courant, c = $("#valFlex").checked; $("#valFlex").disabled = true;
+    try {
+      const r = await api("/v3/validation/api/flexoffice/" + page, {coche: c});
+      info.flexoffice = r.flexoffice; $("#msgFlex").className = "msg"; $("#msgFlex").textContent = "enregistré";
+    } catch (e) { $("#valFlex").checked = !c; $("#msgFlex").className = "msg err"; $("#msgFlex").textContent = e.message; }
+    $("#valFlex").disabled = false;
+  };
   $("#okBail").onclick = async () => {
     const page = courant; $("#okBail").disabled = true;
     try {
