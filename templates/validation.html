@@ -554,8 +554,11 @@ function finAdmin(x, i) {
        <button class="btn ghost" data-s="${i}" data-etat="écarté">Écarter</button>
        <button class="btn ghost" data-s="${i}" data-etat="">Enregistrer</button></div>`
     : `<span class="pill ${e === "prêt pour HubSpot" ? "ok" : e === "écarté" ? "ko" : ""}">${esc(e === "prêt pour HubSpot" && ailleurs ? "à ajouter" : e)}${x.le ? " le " + esc(x.le.slice(0,10)) : ""}</span>
-       <div class="boutons"><button class="btn ghost" data-s="${i}" data-etat="">Enregistrer</button>
-       <button class="btn ghost" data-s="${i}" data-etat="à traiter">Annuler</button></div>`;
+       <div class="boutons">${e === "écarté"
+         ? `<button class="btn primary" data-s="${i}" data-etat="prêt pour HubSpot">${ailleurs ? "Finalement, l'ajouter" : "Finalement, valider pour HubSpot"}</button>`
+         : `<button class="btn ghost" data-s="${i}" data-etat="écarté">Finalement, écarter</button>`}
+       <button class="btn ghost" data-s="${i}" data-etat="à traiter">Remettre à traiter</button>
+       <button class="btn ghost" data-s="${i}" data-etat="">Enregistrer</button></div>`;
 }
 function ecranContacts() {
   const d = info.data || {};

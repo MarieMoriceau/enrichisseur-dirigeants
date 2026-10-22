@@ -298,8 +298,11 @@ function finNegos(x, i) {
        <button class="btn ghost" data-a="écarté" data-i="${i}">Écarter</button>
        <button class="btn ghost" data-a="" data-i="${i}">Enregistrer</button></div>`
     : `<span class="pill ${x.etat === "écarté" ? "ko" : "ok"}">${esc(x.etat === "prêt pour HubSpot" && ailleurs ? "à ajouter" : x.etat)}${x.le ? " le " + esc(x.le.slice(0,10)) : ""}</span>
-       <div class="boutons"><button class="btn ghost" data-a="" data-i="${i}">Enregistrer</button>
-       <button class="btn ghost" data-a="à traiter" data-i="${i}">Annuler</button></div>`;
+       <div class="boutons">${x.etat === "écarté"
+         ? `<button class="btn primary" data-a="prêt pour HubSpot" data-i="${i}">${ailleurs ? "Finalement, l'ajouter" : "Finalement, valider pour HubSpot"}</button>`
+         : `<button class="btn ghost" data-a="écarté" data-i="${i}">Finalement, écarter</button>`}
+       <button class="btn ghost" data-a="à traiter" data-i="${i}">Remettre à traiter</button>
+       <button class="btn ghost" data-a="" data-i="${i}">Enregistrer</button></div>`;
 }
 function brancher() {
   document.querySelectorAll("#nouveaux [data-a]").forEach(b => b.onclick = () =>
