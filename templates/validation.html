@@ -210,14 +210,15 @@ async function charger() {
   try { j = await api("/v3/validation/api/societes"); SOC = j.societes; }
   catch (e) { $("#items").innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
   if (j.equipe_erreur) $("#items").insertAdjacentHTML("beforebegin", `<p class="note">${esc(j.equipe_erreur)}</p>`);
-  dessinerQui(j.negos || []); dessinerFiltres(); dessinerListe();
+  NEGOS = j.negos || []; dessinerFiltres(); dessinerListe();
 }
 
 // Filtre par négo : chaque société porte « attribue_a » (prénoms) et « non_attribue »
 function dessinerQui(negos) {
   const noms = [...new Set([...negos, ...SOC.flatMap(s => s.attribue_a || [])])].sort((a, b) => a.localeCompare(b));
-  const garde = $("#qui").value, nb = f => SOC.filter(s => quiOk(s, f)).length;
-  $("#qui").innerHTML = `<option value="">Tous les négos · ${SOC.length}</option><option value="non">Non attribuées · ${nb("non")}</option>`
+  // compteur : sociétés encore à valider seulement (les validées et écartées ne comptent plus)
+  const garde = $("#qui").value, nb = f => SOC.filter(s => s.validation === "À valider" && quiOk(s, f)).length;
+  $("#qui").innerHTML = `<option value="">Tous les négos · ${nb("")} à valider</option><option value="non">Non attribuées · ${nb("non")}</option>`
     + noms.map(x => `<option value="p:${esc(x)}">${esc(x)} · ${nb("p:" + x)}</option>`).join("");
   $("#qui").value = [...$("#qui").options].some(o => o.value === garde) ? garde : "";
 }
@@ -231,7 +232,9 @@ function etiquetteNego(s) {
   return (s.non_attribue ? `<span class="pill ko">non attribué</span>` : `<span class="pill">${esc((s.attribue_a || []).join(" · "))}</span>`) + inc;
 }
 
+let NEGOS = [];
 function dessinerFiltres() {
+  dessinerQui(NEGOS);                          // compteurs par négo à jour après chaque validation
   const n = e => SOC.filter(s => quiOk(s) && (e === "Toutes" || s.validation === e)).length;
   $("#filtres").innerHTML = [...ETAPES, "Toutes"].map(e =>
     `<button aria-pressed="${e === filtre}" data-f="${esc(e)}"${e === "À valider" || e === "Société validée" ? ' class="file"' : ""}>${esc(lib(e))} · ${n(e)}</button>`).join("");
