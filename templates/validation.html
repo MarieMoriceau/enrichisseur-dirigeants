@@ -272,6 +272,11 @@ function dessinerDetail() {
   $("#detail").innerHTML = `
     <div class="tete">
       <h2>${esc(info.nom)}</h2>
+      <button class="lien" id="corrNom" type="button" style="font-size:13px">Corriger le nom</button>
+      <span id="panNom" hidden style="display:inline-flex;gap:6px;align-items:center">
+        <input type="text" id="nouveauNom" value="${esc(info.nom)}" aria-label="Nom corrigé" style="min-width:240px">
+        <button class="btn primary" id="okNom" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
+        <button class="btn ghost" id="annNom" type="button" style="padding:6px 10px;font-size:13px">Annuler</button></span>
       <span class="pill ${PILL[info.validation]}">${esc(lib(info.validation))}</span>
       <span class="meta">${[d.domaine ? `<a href="https://${esc(d.domaine)}" target="_blank" rel="noopener">${esc(d.domaine)}</a>` : "",
         "SIREN " + esc(info.siren || "—"), esc(d.statut || ""), `lancement « ${esc(info.lancement)} » du ${esc(info.traitee)}`,
@@ -365,6 +370,7 @@ function ecranSociete() {
       <button class="btn primary" id="okSoc">Valider la société</button>
       <button class="btn ghost" id="koSoc">Écarter…</button>
       ${info.validation !== "À valider" ? `<button class="btn ghost" id="raz">Remettre à valider</button>` : ""}
+      <button class="btn ghost" id="relance" title="Après une correction du nom ou du SIREN : nouvelle recherche du site, de LinkedIn, des dirigeants et des e-mails (compte LinkedIn de Marie)">Relancer cette société</button>
       <span class="msg" id="msg"></span>
     </div>
     <div class="ecart" id="panEcart" hidden>
@@ -390,6 +396,25 @@ function ecranSociete() {
     $("#okBail").disabled = false;
   };
   // Correction du SIREN : l'outil contrôle la clé, relit la fiche INSEE du nouveau SIREN et garde l'ancien
+  $("#corrNom").onclick = () => { $("#panNom").hidden = false; $("#corrNom").hidden = true; $("#nouveauNom").select(); };
+  $("#annNom").onclick = () => { $("#panNom").hidden = true; $("#corrNom").hidden = false; };
+  $("#okNom").onclick = async () => {
+    $("#okNom").disabled = true;
+    try {
+      const r = await api("/v3/validation/api/nom/" + courant, {nom: $("#nouveauNom").value});
+      const p = SOC.find(s => s.page === courant); if (p) p.nom = r.nom;
+      await ouvrir(courant);
+      message(`Nom corrigé : ${r.nom}. Pensez à « Relancer cette société » pour chercher ses dirigeants sous ce nom.`);
+    } catch (e) { $("#okNom").disabled = false; message(e.message, true); }
+  };
+  $("#relance").onclick = async () => {
+    if (!confirm(`Relancer « ${info.nom} » ? L'enrichisseur refait toute la recherche sous ce nom${info.siren ? " et ce SIREN" : ""}. Comptez 10 à 20 minutes.`)) return;
+    $("#relance").disabled = true; message("Lancement…");
+    try {
+      const r = await api("/v3/validation/api/relancer/" + courant, {});
+      message(`Relance lancée (${r.a_relancer} société). Vous recevrez le mail de fin ; la fiche sera alors remplacée par la nouvelle : rechargez la liste.`);
+    } catch (e) { $("#relance").disabled = false; message(e.message, true); }
+  };
   $("#corrSiren").onclick = () => { $("#panSiren").hidden = false; $("#corrSiren").hidden = true; $("#nouveauSiren").focus(); };
   $("#annSiren").onclick = () => { $("#panSiren").hidden = true; $("#corrSiren").hidden = false; };
   $("#okSiren").onclick = async () => {
