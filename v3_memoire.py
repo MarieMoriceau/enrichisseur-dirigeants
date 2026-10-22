@@ -45,6 +45,8 @@ def _val(p, nom):
         return (x["select"] or {}).get("name", "")
     if t == "date":
         return (x["date"] or {}).get("start", "")
+    if t == "checkbox":
+        return "oui" if x["checkbox"] else ""
     return ""
 
 
@@ -86,7 +88,8 @@ async def index(journal, tout: bool = False) -> list:
                             "lance_par": _val(p, "Lancé par"), "lancement": _val(p, "Lancement"),
                             "negos": _val(p, "Négos"), "nb_dir": (p.get("Nb dirigeants") or {}).get("number"),
                             "validee": _val(p, "Validée le"), "siren_corrige": _val(p, "SIREN corrigé"),
-                            "base_quali": _val(p, "Base quali"), "debut_bail": _val(p, "Début de bail")})
+                            "base_quali": _val(p, "Base quali"), "debut_bail": _val(p, "Début de bail"),
+                            "flexoffice": _val(p, "Flexoffice") == "oui"})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -344,6 +347,8 @@ async def enregistrer(job: dict, norm_nom, journal):
             bail = next((e["debut_bail"] for e in meme if e.get("debut_bail")), "")
             if bail:                                        # date saisie à la main : on la garde
                 props["Début de bail"] = {"date": {"start": bail}}
+            if any(e.get("flexoffice") for e in meme):      # case cochée à la main : on la garde
+                props["Flexoffice"] = {"checkbox": True}
             if next((e for e in meme if e.get("siren_corrige")), None):
                 props["SIREN"] = _txt(next(e for e in meme if e.get("siren_corrige"))["siren"])   # le SIREN corrigé à la main prime
             ancienne = next((e for e in meme if e.get("adresse_retenue")), None)

@@ -1615,6 +1615,22 @@ async def debut_bail_ecrire(page_id: str, req: Request):
     return {"ok": True, "debut_bail": d}
 
 
+@router.post("/v3/validation/api/flexoffice/{page_id}")
+async def flexoffice_ecrire(page_id: str, req: Request):
+    """Admin : case « Flexoffice » (la société est en bureau flexible). Corps : {"coche": true}."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    coche = bool((await req.json()).get("coche"))
+    if not await VALID.assurer_colonne("Flexoffice", "checkbox"):
+        return JSONResponse({"erreur": "Notion refuse de créer la colonne « Flexoffice »"}, 502)
+    maj = await VALID._maj(page_id, {"Flexoffice": {"checkbox": coche}})
+    if isinstance(maj, JSONResponse):
+        return maj
+    return {"ok": True, "flexoffice": coche}
+
+
 @router.post("/v3/validation/api/siren/{page_id}")
 async def corriger_siren(page_id: str, req: Request):
     """Admin : remplace un SIREN faux. Le nouveau est contrôlé (9 chiffres, clé) et sa fiche INSEE est relue.

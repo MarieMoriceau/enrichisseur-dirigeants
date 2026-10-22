@@ -295,7 +295,8 @@ def _props(pg: dict) -> dict:
             "negos": MEM._val(p, "Négos"),
             "decision_ecart": MEM._val(p, "Écartée pour"), "motif_ecart": MEM._val(p, "Motif écart"),
             "partis": MEM._val(p, "Partis suivis"), "siren_corrige": MEM._val(p, "SIREN corrigé"),
-            "base_quali": MEM._val(p, "Base quali"), "debut_bail": MEM._val(p, "Début de bail")}
+            "base_quali": MEM._val(p, "Base quali"), "debut_bail": MEM._val(p, "Début de bail"),
+            "flexoffice": MEM._val(p, "Flexoffice") == "oui"}
 
 
 async def _toutes() -> list:
