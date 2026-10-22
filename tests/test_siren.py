@@ -60,11 +60,15 @@ def test_deuxieme_correction_garde_le_premier(monkeypatch):
 
 def test_relire_fiche_insee_meme_siren(monkeypatch):
     c, ecrit = _client(monkeypatch, siren_actuel="443061841")
+    import v3_memoire as MEM
+    async def lire(p):
+        return {"action": "🔎 SIREN trouvé par le nom dans SIRENE (2 correspondance(s)) : à vérifier"}
+    monkeypatch.setattr(MEM, "lire", lire)
     r = c.post(f"/v3/validation/api/siren/{PAGE}", json={"siren": "443061841", "relire": True})
     assert r.status_code == 200, r.text
     corr = json.loads(ecrit["SIREN corrigé"]["rich_text"][0]["text"]["content"])
     assert corr["avant"] == "443061841" and corr["insee"]["raison_sociale"] == "POISCAILLE"
-    assert corr["insee"]["action"].startswith("🔄 Fiche INSEE relue")
+    assert corr["insee"]["action"].startswith("🔄 Fiche INSEE relue") and "trouvé par le nom" in corr["insee"]["action"]
 
 
 def test_insee_sature_puis_repond(monkeypatch):

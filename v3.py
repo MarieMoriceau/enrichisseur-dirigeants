@@ -1693,10 +1693,15 @@ async def _ecrire_fiche_insee(page_id: str, info: dict, siren: str, relire: bool
         return JSONResponse({"erreur": "Notion refuse de créer la colonne « SIREN corrigé »"}, 502)
     avant = (VALID._json(info.get("siren_corrige"), {}).get("avant") or info["siren"])   # le tout premier SIREN
     quand = datetime.now(SUIVI.PARIS)
+    garde = ""                                         # relecture : on garde une mise en garde utile (« SIREN trouvé par le nom… »)
+    if relire:
+        ancienne = str((await MEM.lire(page_id) or {}).get("action") or "")
+        if ancienne and not re.search(r"introuvable|injoignable", ancienne):
+            garde = " · " + ancienne
     fiche = {"raison_sociale": i["raison_sociale"], "siege_insee": i["siege"], "tranche_insee": i["tranche_insee"],
              "naf": i["naf"], "activite": i.get("activite") or NAF.libelle(i["naf"]), "secteur": i["secteur"], "date_fermeture": i["date_fermeture"],
              "statut": "Active" if i["etat"] == "active" else "Radiée, à vérifier",
-             "action": f"🔄 Fiche INSEE relue le {quand:%d/%m}" if relire and avant == siren
+             "action": f"🔄 Fiche INSEE relue le {quand:%d/%m}{garde}" if relire and avant == siren
                        else f"✏️ SIREN corrigé à la main le {quand:%d/%m} (l'outil avait trouvé {avant})"}
     corr = {"avant": avant, "le": quand.isoformat(timespec="seconds"), "par": par, "insee": fiche}
     maj = await VALID._maj(page_id, {"SIREN": MEM._txt(siren), "SIREN corrigé": MEM._txt(json.dumps(corr, ensure_ascii=False))})
