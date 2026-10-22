@@ -363,7 +363,7 @@ function ecranSociete() {
         <p class="msg" id="msgBail">${info.debut_bail ? "" : "à remplir quand vous avez l'info"}</p></div>
       <div class="fait" id="carteSiren"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
         <p>${esc(d.action || "")}</p>
-        <p><button class="lien" id="corrSiren" type="button">${info.siren ? "Corriger le SIREN" : "Ajouter le SIREN"}</button></p>
+        <p>${info.siren && !d.raison_sociale ? `<button class="lien" id="relireSiren" type="button">Relire la fiche INSEE</button><br>` : ""}<button class="lien" id="corrSiren" type="button">${info.siren ? "Corriger le SIREN" : "Ajouter le SIREN"}</button></p>
         <div id="panSiren" hidden>
           <input type="text" id="nouveauSiren" inputmode="numeric" maxlength="11" placeholder="9 chiffres" aria-label="Nouveau SIREN" style="margin:6px 0">
           <div style="display:flex;gap:6px"><button class="btn primary" id="okSiren" type="button" style="padding:6px 10px;font-size:13px">Vérifier et enregistrer</button>
@@ -432,6 +432,14 @@ function ecranSociete() {
       const r = await api("/v3/validation/api/relancer/" + courant, {});
       message(`Relance lancée (${r.a_relancer} société). Vous recevrez le mail de fin ; la fiche sera alors remplacée par la nouvelle : rechargez la liste.`);
     } catch (e) { $("#relance").disabled = false; message(e.message, true); }
+  };
+  if ($("#relireSiren")) $("#relireSiren").onclick = async () => {
+    $("#relireSiren").disabled = true; $("#msgSiren").className = "msg"; $("#msgSiren").textContent = "Lecture à l'INSEE…";
+    try {
+      const r = await api("/v3/validation/api/siren/" + courant, {siren: info.siren, relire: true});
+      await ouvrir(courant);
+      message(`Fiche INSEE relue : ${r.raison_sociale || "raison sociale inconnue"}${r.statut ? " (" + r.statut + ")" : ""}.`);
+    } catch (e) { $("#relireSiren").disabled = false; $("#msgSiren").className = "msg err"; $("#msgSiren").textContent = e.message; }
   };
   $("#corrSiren").onclick = () => { $("#panSiren").hidden = false; $("#corrSiren").hidden = true; $("#nouveauSiren").focus(); };
   $("#annSiren").onclick = () => { $("#panSiren").hidden = true; $("#corrSiren").hidden = false; };

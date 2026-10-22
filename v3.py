@@ -443,16 +443,43 @@ async def scanner_site(client: httpx.AsyncClient, dom: str) -> dict:
 
 
 # ───────────────────────── étape 2 : INSEE ─────────────────────────
+# L'API recherche-entreprises limite à ~7 requêtes/s PAR SERVEUR. Deux runs en parallèle (22/10 : compte de Marie +
+# compte des négos) dépassaient la limite : des SIREN valides finissaient « introuvables à l'INSEE ». Toutes les
+# requêtes passent donc par un seul guichet, espacées de INSEE_INTERVALLE, avec des reprises plus patientes.
+INSEE_INTERVALLE = float(os.getenv("INSEE_INTERVALLE", "0.25"))
+_INSEE_VERROU = asyncio.Lock()
+_INSEE_DERNIER = [0.0]
+
+
+async def _insee_get(client: httpx.AsyncClient, params: dict):
+    """GET sur l'API INSEE, cadencé pour tout le serveur. None si toujours en échec après 6 essais (~1 min)."""
+    for essai in range(6):
+        async with _INSEE_VERROU:
+            attente = _INSEE_DERNIER[0] + INSEE_INTERVALLE - time.monotonic()
+            if attente > 0:
+                await asyncio.sleep(attente)
+            _INSEE_DERNIER[0] = time.monotonic()
+        try:
+            r = await client.get(INSEE_API, params=params)
+        except Exception:
+            await asyncio.sleep(1 + essai * 2)
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            await asyncio.sleep(2 + essai * 3)
+            continue
+        return r
+    return None
+
+
 async def insee(client: httpx.AsyncClient, siren: str) -> dict:
     vide = {"raison_sociale": "", "etat": "", "date_fermeture": "", "siege": "", "tranche_insee": "", "naf": "", "activite": "", "secteur": ""}
     if not siren:
         return vide
-    for essai in range(3):
+    for essai in range(2):
+        resp = await _insee_get(client, {"q": siren, "per_page": 1})
+        if resp is None:
+            break
         try:
-            resp = await client.get(INSEE_API, params={"q": siren, "per_page": 1})
-            if resp.status_code == 429:
-                await asyncio.sleep(2 + essai * 3)
-                continue
             res = resp.json().get("results", [])
             res = [x for x in res if x.get("siren") == siren]
             if not res:
@@ -532,8 +559,8 @@ async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
             p = {"q": nom, "per_page": 5}
             if code:
                 p["code_postal"] = code
-            r = await api.get(INSEE_API, params=p)
-            res = r.json().get("results", []) if r.status_code == 200 else []
+            r = await _insee_get(api, p)
+            res = r.json().get("results", []) if r is not None and r.status_code == 200 else []
             bons = [x for x in res if ressemblance(nom, x.get("nom_raison_sociale") or x.get("nom_complet") or "") >= 0.85]
             if bons:
                 break
@@ -566,6 +593,8 @@ def _statut(row: dict) -> tuple:
             return "Active", "📍 SIREN déjà connu (actif) : recherche de l'adresse uniquement", "haute"
         if e == "fermée":
             return "Radiée, à vérifier", "⚠️ SIREN du CRM fermé : la société a peut-être changé de SIREN", "moyenne"
+        if e == "erreur API":
+            return "", "📍 SIREN déjà connu, INSEE injoignable pendant le traitement : « Relire la fiche INSEE »", "moyenne"
         return "", "📍 SIREN déjà connu, introuvable à l'INSEE : à vérifier", "moyenne"
     if not ss and not sp and row.get("siren_nom"):
         e = row.get("etat_nom", "")
@@ -1634,7 +1663,8 @@ async def flexoffice_ecrire(page_id: str, req: Request):
 @router.post("/v3/validation/api/siren/{page_id}")
 async def corriger_siren(page_id: str, req: Request):
     """Admin : remplace un SIREN faux. Le nouveau est contrôlé (9 chiffres, clé) et sa fiche INSEE est relue.
-    Corps : {"siren": "123456789"}. L'ancien SIREN est gardé dans « SIREN corrigé » (JSON) pour l'historique."""
+    Corps : {"siren": "123456789"} ; {"siren": <le même>, "relire": true} relit seulement la fiche INSEE.
+    L'ancien SIREN est gardé dans « SIREN corrigé » (JSON) pour l'historique."""
     if (x := VALID._refus(req, "admin")):
         return x
     if not VALID.RE_PAGE.fullmatch(page_id):
@@ -1646,8 +1676,13 @@ async def corriger_siren(page_id: str, req: Request):
     info = await VALID._une(page_id)
     if not info:
         return JSONResponse({"erreur": "société introuvable"}, 404)
-    if siren == info["siren"]:
+    relire = siren == info["siren"] and bool(b.get("relire"))   # même SIREN : on relit seulement sa fiche INSEE
+    if siren == info["siren"] and not relire:
         return JSONResponse({"erreur": "c'est déjà ce SIREN"}, 400)
+    return await _ecrire_fiche_insee(page_id, info, siren, relire, VALID.utilisateur(req) or "admin")
+
+
+async def _ecrire_fiche_insee(page_id: str, info: dict, siren: str, relire: bool, par: str):
     async with httpx.AsyncClient(timeout=20) as c:
         i = await insee(c, siren)
     if i["etat"] == "introuvable":
@@ -1661,12 +1696,63 @@ async def corriger_siren(page_id: str, req: Request):
     fiche = {"raison_sociale": i["raison_sociale"], "siege_insee": i["siege"], "tranche_insee": i["tranche_insee"],
              "naf": i["naf"], "activite": i.get("activite") or NAF.libelle(i["naf"]), "secteur": i["secteur"], "date_fermeture": i["date_fermeture"],
              "statut": "Active" if i["etat"] == "active" else "Radiée, à vérifier",
-             "action": f"✏️ SIREN corrigé à la main le {quand:%d/%m} (l'outil avait trouvé {avant})"}
-    corr = {"avant": avant, "le": quand.isoformat(timespec="seconds"), "par": VALID.utilisateur(req) or "admin", "insee": fiche}
+             "action": f"🔄 Fiche INSEE relue le {quand:%d/%m}" if relire and avant == siren
+                       else f"✏️ SIREN corrigé à la main le {quand:%d/%m} (l'outil avait trouvé {avant})"}
+    corr = {"avant": avant, "le": quand.isoformat(timespec="seconds"), "par": par, "insee": fiche}
     maj = await VALID._maj(page_id, {"SIREN": MEM._txt(siren), "SIREN corrigé": MEM._txt(json.dumps(corr, ensure_ascii=False))})
     if isinstance(maj, JSONResponse):
         return maj
     return {"ok": True, "siren": siren, "avant": avant, **fiche}
+
+
+# Rattrapage : fiches dont la lecture INSEE a échoué pendant le run (SIREN connu, pas de raison sociale)
+RELIRE = {"actif": False, "phase": "", "total": 0, "fait": 0, "ok": 0, "echecs": [], "candidats": None}
+
+
+async def _candidats_relire() -> list:
+    socs = [s for s in await VALID._toutes() if s["validation"] in ("À valider", "Société validée") and luhn_ok(s.get("siren") or "")]
+    sem = asyncio.Semaphore(4)
+    async def voir(s):
+        if VALID._json(s.get("siren_corrige"), {}).get("insee"):
+            return None                                    # déjà corrigée ou relue à la main
+        async with sem:
+            d = await MEM.lire(s["page"])
+        return s if d and not d.get("raison_sociale") else None
+    return [s for s in await asyncio.gather(*(voir(s) for s in socs)) if s]
+
+
+async def _relire_tout(cibles: list):
+    RELIRE.update(actif=True, total=len(cibles), fait=0, ok=0, echecs=[], phase="relecture INSEE")
+    try:
+        for s in cibles:
+            r = await _ecrire_fiche_insee(s["page"], s, s["siren"], True, "rattrapage INSEE")
+            RELIRE["fait"] += 1
+            if isinstance(r, JSONResponse):
+                RELIRE["echecs"].append(f"{s['nom']} : {json.loads(r.body).get('erreur', '')}")
+            else:
+                RELIRE["ok"] += 1
+    finally:
+        RELIRE.update(actif=False, phase="terminé", candidats=None)
+
+
+@router.get("/v3/validation/api/relire-insee")
+async def relire_insee(req: Request, confirmer: int = 0):
+    """Admin. Sans &confirmer=1 : liste les fiches à valider dont le SIREN est connu mais la fiche INSEE vide
+    (API saturée pendant le run). Avec : relit leur fiche INSEE, une par une, en tâche de fond. Rappeler l'adresse
+    pour suivre l'avancement."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if RELIRE["actif"]:
+        return {k: RELIRE[k] for k in ("actif", "phase", "total", "fait", "ok", "echecs")}
+    if any(j.get("etat") == "en cours" for j in JOBS.values()):
+        return JSONResponse({"erreur": "un enrichissement tourne : relancez quand il sera fini"}, 409)
+    cibles = await _candidats_relire()
+    rep = {"essai_a_blanc": not confirmer, "a_relire": len(cibles), "exemples": [f"{s['nom']} ({s['siren']})" for s in cibles[:40]],
+           "dernier_passage": {k: RELIRE[k] for k in ("phase", "total", "ok", "echecs")} if RELIRE["phase"] else None}
+    if confirmer and cibles:
+        asyncio.create_task(_relire_tout(cibles))
+        rep["lance"] = True
+    return rep
 
 
 @router.post("/v3/validation/api/partis/{page_id}/{pid}")
