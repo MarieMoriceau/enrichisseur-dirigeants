@@ -102,6 +102,7 @@ table.saisie td:first-child{min-width:230px}
 .edit{width:100%;font:inherit;font-size:13.5px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
 select.edit{padding:6px 6px;min-width:150px}
 .edit.modif{border-color:var(--warn);background:var(--warn-soft)}
+textarea.edit{resize:vertical;min-width:220px;line-height:1.35;field-sizing:content}
 .edit:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .lien-li{font-size:12px;margin-left:4px}
 tr.pret td{background:var(--ok-soft)}
@@ -486,10 +487,13 @@ async function envoyerSociete(corps, suite) {
 
 /* ─────────── tableau de saisie des nouveaux contacts (commun admin / négos) ─────────── */
 const CHAMPS = ["linkedin", "fonction", "role", "email", "telephone"];
+const lignesFonction = t => Math.max(2, Math.ceil(String(t || "").length / 26));   // poste affiché en entier
 function champ(x, k, extra = "") {
   const m = (x.modifie || []).includes(k) ? " modif" : "";
   const ph = {linkedin: "https://www.linkedin.com/in/…", fonction: "Fonction", email: "prenom.nom@societe.fr", telephone: "06 12 34 56 78"}[k];
   const type = {email: "email", telephone: "tel", linkedin: "url"}[k] || "text";
+  if (k === "fonction")
+    return `<textarea class="edit${m}" data-k="${k}" rows="${lignesFonction(x[k])}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}" ${extra}>${esc(x[k] || "")}</textarea>`;
   return `<input class="edit${m}" data-k="${k}" type="${type}" value="${esc(x[k] || "")}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}" ${extra}>`;
 }
 function selectRole(x, roles) {
@@ -565,7 +569,9 @@ function ecranContacts() {
   const defC = x => (avant[String(x.id)] || {}).action || ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
   const val = (x, k) => { const a = avant[String(x.id)]; return a && a[k] ? a[k] : (x[k] || ""); };
   const modifC = (x, k) => { const a = avant[String(x.id)]; return a && a[k] && a[k] !== (x[k] || "") ? " modif" : ""; };
-  const inp = (x, i, k, ph, type) => `<input class="edit${modifC(x, k)}" data-c${k}="${i}" type="${type}" value="${esc(val(x, k))}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}">`;
+  const inp = (x, i, k, ph, type) => k === "fonction"
+    ? `<textarea class="edit${modifC(x, k)}" data-c${k}="${i}" rows="${lignesFonction(val(x, k))}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}">${esc(val(x, k))}</textarea>`
+    : `<input class="edit${modifC(x, k)}" data-c${k}="${i}" type="${type}" value="${esc(val(x, k))}" placeholder="${ph}" aria-label="${k} de ${esc(x.nom_complet)}">`;
   const roleC = (x, i) => { const v = val(x, "role"); const opts = [...(info.roles || [])]; if (v && !opts.includes(v)) opts.unshift(v);
     return `<select class="edit${modifC(x, "role")}" data-crole="${i}" aria-label="Rôle de ${esc(x.nom_complet)}"><option value="">—</option>${opts.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("")}</select>`; };
   const pillC = s => `<span class="pill ${s === "probablement parti" ? "ko" : s === "à vérifier" ? "warn" : "ok"}">${esc(s || "non contrôlé")}</span>`;
