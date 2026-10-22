@@ -107,6 +107,8 @@ textarea.edit{resize:vertical;min-width:220px;line-height:1.35;field-sizing:cont
 .lien-li{font-size:12px;margin-left:4px}
 tr.pret td{background:var(--ok-soft)}
 tr.ecarte td{opacity:.55}
+.lot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 8px}.lot label{display:flex;gap:6px;align-items:center;font-size:14px;cursor:pointer}
+input.sel{width:17px;height:17px;margin:0 8px 0 0;vertical-align:-3px;cursor:pointer}
 .boutons{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .boutons .btn{padding:6px 10px;font-size:13px}
 .legende{font-size:12.5px;color:var(--muted);margin:4px 0 8px}
@@ -257,7 +259,7 @@ function lienLi(url, nom, societe) {
 function ligneSaisie(x, i, roles, finDeLigne, societe) {
   const cls = x.etat === "prêt pour HubSpot" ? "pret" : x.etat === "écarté" ? "ecarte" : "";
   return `<tr id="l${i}" class="${cls}">
-    <td><b>${esc(x.nom_complet)}</b>${lienLi(x.linkedin, x.nom_complet, (INFO && INFO.nom) || "")}
+    <td><input type="checkbox" class="sel" data-sel="${i}" aria-label="Sélectionner ${esc(x.nom_complet)}"><b>${esc(x.nom_complet)}</b>${lienLi(x.linkedin, x.nom_complet, (INFO && INFO.nom) || "")}
       <div style="margin-top:4px">${champ(x, "linkedin")}</div>
       ${x.ailleurs && x.ailleurs.id ? `<small>Déjà dans Pipedrive chez <b>${esc(x.ailleurs.org_nom)}</b> (fiche ${esc(x.ailleurs.id)})</small>` : ""}
       ${x.autres_societes && x.autres_societes.length ? `<small>Aussi dirigeant de : ${esc(x.autres_societes.join(", "))}</small>` : ""}
@@ -271,8 +273,33 @@ function ligneSaisie(x, i, roles, finDeLigne, societe) {
 }
 function tableSaisie(liste, roles, finDeLigne, titreFin) {
   return `<p class="legende"><i></i>case modifiée à la main (remplace la valeur trouvée par l'enrichisseur)</p>
+    ${liste.length > 1 ? `<div class="lot"><label><input type="checkbox" class="selTout"> Tout cocher</label>
+      <button class="btn ghost" type="button" data-lot="écarté">Écarter la sélection</button>
+      <button class="btn ghost" type="button" data-lot="prêt pour HubSpot">Valider la sélection pour HubSpot</button>
+      <span class="msg lotMsg"></span></div>` : ""}
     <div class="tab-wrap"><table class="saisie"><thead><tr><th>Contact et LinkedIn</th><th>Fonction</th><th>Rôle</th><th>E-mail</th><th>Téléphone</th><th>${titreFin}</th></tr></thead>
     <tbody>${liste.map((x, i) => ligneSaisie(x, i, roles, finDeLigne)).join("")}</tbody></table></div>`;
+}
+// Plusieurs contacts d'un coup : cases à cocher + « Écarter / Valider la sélection » (enregistrés un par un, dans l'ordre)
+function brancherLot(liste, roles, finDeLigne, apres) {
+  const z = document.querySelector("#nouveaux"); if (!z || !z.querySelector(".selTout")) return;
+  const m = z.querySelector(".lotMsg");
+  z.querySelector(".selTout").onchange = e => z.querySelectorAll(".sel").forEach(c => c.checked = e.target.checked);
+  z.querySelectorAll("[data-lot]").forEach(b => b.onclick = async () => {
+    const ids = [...z.querySelectorAll(".sel:checked")].map(c => +c.dataset.sel);
+    if (!ids.length) { m.className = "msg err lotMsg"; m.textContent = "Cochez au moins un contact."; return; }
+    z.querySelectorAll("[data-lot]").forEach(x => x.disabled = true);
+    m.className = "msg lotMsg";
+    for (const [n, i] of ids.entries()) {
+      m.textContent = `Enregistrement ${n + 1}/${ids.length}…`;
+      await sauverContact(liste, i, b.dataset.lot, roles, finDeLigne, apres);
+    }
+    const ko = ids.filter(i => liste[i].etat !== b.dataset.lot).length;
+    m.className = "msg lotMsg" + (ko ? " err" : "");
+    m.textContent = `${ids.length - ko} contact(s) ${b.dataset.lot === "écarté" ? "écarté(s)" : "validé(s) pour HubSpot"}` + (ko ? `, ${ko} en erreur (voir la ligne)` : "") + ".";
+    z.querySelector(".selTout").checked = false;
+    z.querySelectorAll("[data-lot]").forEach(x => x.disabled = false);
+  });
 }
 function champsLigne(i) {
   const o = {}; document.querySelectorAll(`#l${i} [data-k]`).forEach(e => o[e.dataset.k] = e.value.trim()); return o;
@@ -304,13 +331,14 @@ function finNegos(x, i) {
        <button class="btn ghost" data-a="à traiter" data-i="${i}">Remettre à traiter</button>
        <button class="btn ghost" data-a="" data-i="${i}">Enregistrer</button></div>`;
 }
+function apresNegos(r) {
+  const s = SOC.find(s => s.page === courant);
+  if (s) { s.nb_prets = r.nb_prets; s.nb_traites = INFO.nouveaux.filter(n => n.etat !== "à traiter").length; }
+  dessinerFiltres(); dessinerListe(); brancher();
+}
 function brancher() {
   document.querySelectorAll("#nouveaux [data-a]").forEach(b => b.onclick = () =>
-    sauverContact(INFO.nouveaux, +b.dataset.i, b.dataset.a || null, INFO.roles, finNegos, r => {
-      const s = SOC.find(s => s.page === courant);
-      if (s) { s.nb_prets = r.nb_prets; s.nb_traites = INFO.nouveaux.filter(n => n.etat !== "à traiter").length; }
-      dessinerFiltres(); dessinerListe(); brancher();
-    }));
+    sauverContact(INFO.nouveaux, +b.dataset.i, b.dataset.a || null, INFO.roles, finNegos, apresNegos));
 }
 function dessiner() {
   const s = INFO;
@@ -330,7 +358,7 @@ function dessiner() {
         <td>${esc(x.statut || "non contrôlé")}<small>${esc(x.detail)}</small></td></tr>`).join("")}
       </tbody></table></div><p class="note">Lecture seule : les contacts déjà au CRM sont gérés par Marie et Michel.</p>` : `<p class="msg">Aucun contact rattaché à cette société dans le CRM.</p>`}
     <p class="note">« Valider pour HubSpot » met le contact en attente d'envoi. L'envoi réel se fera après la migration HubSpot.</p>`;
-  brancher();
+  brancher(); brancherLot(INFO.nouveaux, INFO.roles, finNegos, apresNegos);
 }
 charger();
 </script>
