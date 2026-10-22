@@ -171,3 +171,14 @@ def test_filet_nom_avocats():
         assert LI.plafonner_dirigeants({"nom": nom, "naf": "", "dirigeants": neuf()}) == 0, nom
     # NAF connu et différent : le nom ne compte pas
     assert LI.plafonner_dirigeants({"nom": "Law Consulting", "naf": "70.22Z", "dirigeants": neuf()}) == 0
+
+
+def test_url_finder_et_google_maps_par_compte(monkeypatch):
+    import v3_linkedin as LI
+    monkeypatch.setattr(LI, "PB_URL_FINDER", "uf"); monkeypatch.setattr(LI, "PB_GMAPS", "gm")
+    monkeypatch.setattr(LI, "PB_URL_FINDER_NEGOS", ""); monkeypatch.setattr(LI, "PB_GMAPS_NEGOS", "")
+    _deux(monkeypatch)
+    assert LI.phantoms_sans_cookie_du_job({"origine": "negos"}) == ("uf", "gm")        # pas de copie : phantoms communs
+    monkeypatch.setattr(LI, "PB_URL_FINDER_NEGOS", "uf_n"); monkeypatch.setattr(LI, "PB_GMAPS_NEGOS", "gm_n")
+    assert LI.phantoms_sans_cookie_du_job({"origine": "negos"}) == ("uf_n", "gm_n")
+    assert LI.phantoms_sans_cookie_du_job({"origine": "outils"}) == ("uf", "gm")

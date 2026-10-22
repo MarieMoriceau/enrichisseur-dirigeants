@@ -1743,7 +1743,8 @@ async def config():
     return {"linkedin": LI.pb_configure(), "url_finder": bool(LI.PB_URL_FINDER), "salesnav": bool(LI.PB_SALESNAV),
             "kaspr": bool(LI.KASPR_KEY), "fullenrich": bool(LI.FULLENRICH_KEY), "gmaps": bool(LI.PB_GMAPS), "max": LI.MAX_LINKEDIN,
             "deux_comptes": PLAN.deux_comptes(), "compte_negos": {"scraper": bool(LI.PB_SCRAPER_NEGOS),
-            "salesnav": bool(LI.PB_SALESNAV_NEGOS), "profils": bool(LI.PB_PROFILS_NEGOS)}}
+            "salesnav": bool(LI.PB_SALESNAV_NEGOS), "profils": bool(LI.PB_PROFILS_NEGOS),
+            "url_finder": bool(LI.PB_URL_FINDER_NEGOS), "gmaps": bool(LI.PB_GMAPS_NEGOS)}}
 
 
 @router.post("/v3/stop/{jid}")

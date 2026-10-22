@@ -21,7 +21,10 @@ PB_GMAPS = os.getenv("PB_GMAPS_ID", "")
 PB_PROFILS = os.getenv("PB_PROFILE_SCRAPER_ID", "")      # LinkedIn Profile Scraper : où travaillent les contacts du CRM
 # 2e compte Sales Navigator (« négos ») : mêmes phantoms dupliqués chez PhantomBuster avec le cookie du 2e compte.
 # Les phantoms ci-dessus restent ceux du compte « automatisations » (listes outils, veille, adresse pivot).
-# URL Finder et Google Maps n'utilisent pas de cookie LinkedIn : partagés.
+# URL Finder et Google Maps n'utilisent pas de cookie LinkedIn : partagés, sauf si une copie existe pour les négos
+# (sinon, deux listes lancées à la même heure se les disputent : « Maximum number of parallel executions reached »).
+PB_URL_FINDER_NEGOS = os.getenv("PB_URL_FINDER_ID_NEGOS", "")
+PB_GMAPS_NEGOS = os.getenv("PB_GMAPS_ID_NEGOS", "")
 PB_SCRAPER_NEGOS = os.getenv("PB_COMPANY_SCRAPER_ID_NEGOS", "")
 PB_SALESNAV_NEGOS = os.getenv("PB_SALESNAV_ID_NEGOS", "")
 PB_PROFILS_NEGOS = os.getenv("PB_PROFILE_SCRAPER_ID_NEGOS", "")
@@ -69,6 +72,14 @@ def phantoms_du_job(job: dict) -> tuple:
     if PLAN.compte(job.get("origine", "")) == PLAN.NEGOS:
         return PB_SCRAPER_NEGOS, PB_SALESNAV_NEGOS, PB_PROFILS_NEGOS
     return PB_SCRAPER, PB_SALESNAV, PB_PROFILS
+
+
+def phantoms_sans_cookie_du_job(job: dict) -> tuple:
+    """(URL Finder, Google Maps) du run : la copie des négos si elle est dans Render, sinon les phantoms communs."""
+    import v3_planning as PLAN
+    if PLAN.compte(job.get("origine", "")) == PLAN.NEGOS:
+        return PB_URL_FINDER_NEGOS or PB_URL_FINDER, PB_GMAPS_NEGOS or PB_GMAPS
+    return PB_URL_FINDER, PB_GMAPS
 
 
 # ───────────────────────── petits utilitaires ─────────────────────────
@@ -812,6 +823,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
     stop = lambda: job["stop"]
     jid = job["id"]
     PB_SCRAPER, PB_SALESNAV, _ = phantoms_du_job(job)       # phantoms du compte LinkedIn de ce run
+    PB_URL_FINDER, PB_GMAPS = phantoms_sans_cookie_du_job(job)
 
     def journal(msg):
         job.setdefault("journal", []).append(f"{time.strftime('%H:%M:%S')} {msg}")
