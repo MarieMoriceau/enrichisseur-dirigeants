@@ -144,6 +144,87 @@ async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
     return rep
 
 
+# ───────────────────────── écriture dans la fiche ─────────────────────────
+async def appliquer(api, page_id: str, info: dict, adresse: str) -> dict:
+    """Remplit ce qui est vide : « Début de bail » (+ sa source) et « Opérateur flex » ; coche « Flexoffice » quand
+    l'opérateur est cité dans l'adresse SIRENE de la société (sûr). Centre à la même adresse : « … (probable) », à confirmer.
+    Ne remplace jamais une saisie à la main ni une valeur venue du fichier CRM."""
+    r = await analyser(api, info.get("siren", ""), info.get("nom", ""), adresse)
+    props = {}
+    if r["date"] and not info.get("debut_bail") and await VALID.assurer_colonne("Début de bail", "date"):
+        props["Début de bail"] = {"date": {"start": r["date"]}}
+        if await VALID.assurer_colonne("Source début de bail"):
+            props["Source début de bail"] = MEM._txt(f"SIRENE : établissement ({'siège' if r['siege'] == 'oui' else 'secondaire'}) "
+                                                     f"créé à cette adresse le {r['date'][8:10]}/{r['date'][5:7]}/{r['date'][:4]}")
+    if r["operateur"] and not (info.get("operateur_flex") or "").replace("(probable)", "").strip() \
+            and await VALID.assurer_colonne("Opérateur flex"):
+        sur = r["indice"].startswith("adresse SIRENE")
+        props["Opérateur flex"] = MEM._txt(r["operateur"] if sur else f"{r['operateur']} (probable)")
+        if sur and not info.get("flexoffice") and await VALID.assurer_colonne("Flexoffice", "checkbox"):
+            props["Flexoffice"] = {"checkbox": True}
+    if props:
+        await VALID._maj(page_id, props)
+    return r | {"ecrit": sorted(props)}
+
+
+async def appliquer_en_fond(page_id: str):
+    """Appelé à la validation d'une société (adresse retenue connue)."""
+    try:
+        info = await VALID._une(page_id)
+        if info and info.get("adresse_retenue"):
+            async with httpx.AsyncClient(timeout=20) as api:
+                await appliquer(api, page_id, info, info["adresse_retenue"])
+    except Exception as e:
+        print(f"[V3 SIRENE] {page_id} : {e}")
+
+
+# ───────────────────────── rattrapage des sociétés déjà validées ─────────────────────────
+RATTRAPAGE = {"actif": False, "phase": "", "fait": 0, "total": 0, "dates": 0, "flex_surs": 0, "flex_probables": 0, "echecs": []}
+
+
+async def _rattraper():
+    RATTRAPAGE.update(actif=True, phase="lecture SIRENE et écriture", fait=0, dates=0, flex_surs=0, flex_probables=0, echecs=[])
+    try:
+        socs = [s for s in await VALID._toutes() if s["validation"] in ("Société validée", "Contacts validés")
+                and s.get("adresse_retenue") and re.fullmatch(r"\d{9}", s.get("siren") or "")
+                and (not s.get("debut_bail") or not s.get("operateur_flex"))]
+        RATTRAPAGE["total"] = len(socs)
+        async with httpx.AsyncClient(timeout=20) as api:
+            for s in socs:
+                try:
+                    r = await appliquer(api, s["page"], s, s["adresse_retenue"])
+                    RATTRAPAGE["dates"] += "Début de bail" in r["ecrit"]
+                    if "Opérateur flex" in r["ecrit"]:
+                        RATTRAPAGE["flex_surs" if "Flexoffice" in r["ecrit"] else "flex_probables"] += 1
+                except Exception as e:
+                    RATTRAPAGE["echecs"].append(f"{s['nom']} : {e}")
+                RATTRAPAGE["fait"] += 1
+        RATTRAPAGE["phase"] = "terminé"
+    except Exception as e:
+        RATTRAPAGE["phase"] = f"arrêt sur erreur : {e}"
+    finally:
+        RATTRAPAGE["actif"] = False
+
+
+@router.get("/v3/validation/api/sirene-rattrapage")
+async def sirene_rattrapage(req: Request, confirmer: int = 0):
+    """Admin. Sociétés validées : remplit « Début de bail » et « Opérateur flex » vides d'après SIRENE.
+    Sans &confirmer=1 : nombre de sociétés concernées. Avec : lance en tâche de fond ; rappeler l'adresse pour suivre."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if RATTRAPAGE["actif"] or (RATTRAPAGE["phase"] and not confirmer):
+        return dict(RATTRAPAGE)
+    if confirmer:
+        asyncio.create_task(_rattraper())
+        return {"lance": True, "conseil": "rouvrez cette adresse (sans confirmer) pour suivre"}
+    socs = [s for s in await VALID._toutes() if s["validation"] in ("Société validée", "Contacts validés")
+            and s.get("adresse_retenue") and re.fullmatch(r"\d{9}", s.get("siren") or "")]
+    return {"essai_a_blanc": True, "societes_validees": len(socs),
+            "sans_date_de_bail": sum(1 for s in socs if not s.get("debut_bail")),
+            "sans_operateur_flex": sum(1 for s in socs if not s.get("operateur_flex")),
+            "conseil": "ajoutez ?confirmer=1 pour remplir (cases vides seulement)"}
+
+
 # ───────────────────────── essai à blanc ─────────────────────────
 ESSAI = {"actif": False, "phase": "", "fait": 0, "total": 0, "lignes": [], "fini": ""}
 

@@ -296,7 +296,8 @@ def _props(pg: dict) -> dict:
             "decision_ecart": MEM._val(p, "Écartée pour"), "motif_ecart": MEM._val(p, "Motif écart"),
             "partis": MEM._val(p, "Partis suivis"), "siren_corrige": MEM._val(p, "SIREN corrigé"),
             "base_quali": MEM._val(p, "Base quali"), "debut_bail": MEM._val(p, "Début de bail"),
-            "flexoffice": MEM._val(p, "Flexoffice") == "oui"}
+            "flexoffice": MEM._val(p, "Flexoffice") == "oui", "operateur_flex": MEM._val(p, "Opérateur flex"),
+            "source_bail": MEM._val(p, "Source début de bail")}
 
 
 async def _toutes() -> list:
@@ -479,7 +480,11 @@ async def valider_societe(page_id: str, req: Request):
     if statut == "Société validée":
         props["Adresse retenue"] = MEM._txt(adresse)
         props["Source adresse retenue"] = {"select": {"name": source}} if source else {"select": None}
-    return await _maj(page_id, props)
+    maj = await _maj(page_id, props)
+    if statut == "Société validée" and not isinstance(maj, JSONResponse):
+        import v3_sirene as SIRENE                     # début de bail et opérateur de flex d'après SIRENE (cases vides seulement)
+        asyncio.create_task(SIRENE.appliquer_en_fond(page_id))
+    return maj
 
 
 @router.post("/v3/validation/api/contacts/{page_id}")
