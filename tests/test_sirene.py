@@ -78,7 +78,7 @@ def test_siege_domicilie_chez_operateur(monkeypatch):
         return []
     monkeypatch.setattr(S, "_chercher", chercher)
     r = asyncio.run(S.analyser(None, "927528471", "H Company", "8 rue Sainte-Cécile 75009"))
-    assert r["operateur"] == "Patchwork" and r["sur"] and r["date"] == "2025-11-25"
+    assert r["operateur"] == "Patchwork" and r["sur"] and r["date"] == ""      # date vide : pas d'établissement au 8
     r = asyncio.run(S.analyser(None, "927528471", "H Company", "5 rue de Provence 75009"))
     assert r["operateur"] == "Patchwork" and not r["sur"] and r["date"] == ""
 
