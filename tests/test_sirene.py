@@ -86,3 +86,26 @@ def test_siege_domicilie_chez_operateur(monkeypatch):
 def test_texte_etab():
     assert S.operateur_cite(S._texte_etab({"adresse": "12 RUE X 75009", "complement_adresse": "C/O WOJO"})) == "Wojo"
     assert S.operateur_cite(S._texte_etab({"adresse": "12 RUE X 75009", "liste_enseignes": ["KWERK"]})) == "Kwerk"
+
+
+def test_route_sirene_flex(monkeypatch):
+    import v3_validation as VALID
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI(); app.include_router(S.router)
+    ecrit = {}
+    async def une(p):
+        return {"siren": "927528471", "nom": "H Company", "flexoffice": True, "operateur_flex": "", "adresse_retenue": "8 rue Sainte-Cécile 75009"}
+    async def analyse(api, siren, nom, adr):
+        return {"date": "", "etab": "", "siege": "", "operateur": "Patchwork", "indice": "centre Patchwork à la même adresse", "sur": False}
+    async def maj(p, props):
+        ecrit.update(props); return {}
+    async def col(nom, genre="rich_text"):
+        return True
+    monkeypatch.setattr(VALID, "_refus", lambda req, b: None); monkeypatch.setattr(VALID, "role", lambda req: "admin")
+    monkeypatch.setattr(VALID, "_une", une); monkeypatch.setattr(S, "analyser", analyse)
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col)
+    page = "0" * 32
+    j = TestClient(app).get(f"/v3/validation/api/sirene-flex/{page}").json()
+    assert j["operateur"] == "Patchwork" and j["enregistre"]
+    assert ecrit["Opérateur flex"]["rich_text"][0]["text"]["content"] == "Patchwork"

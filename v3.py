@@ -1705,7 +1705,8 @@ async def flexoffice_ecrire(page_id: str, req: Request):
         return x
     if not VALID.RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
-    coche = bool((await req.json()).get("coche"))
+    corps = await req.json()
+    coche = bool(corps.get("coche"))
     if not await VALID.assurer_colonne("Flexoffice", "checkbox"):
         return JSONResponse({"erreur": "Notion refuse de créer la colonne « Flexoffice »"}, 502)
     props = {"Flexoffice": {"checkbox": coche}}
@@ -1713,6 +1714,9 @@ async def flexoffice_ecrire(page_id: str, req: Request):
     op = (info or {}).get("operateur_flex", "")
     if coche and op.endswith("(probable)"):           # flex confirmé : l'opérateur probable devient sûr
         props["Opérateur flex"] = MEM._txt(op.replace("(probable)", "").strip())
+    elif coche and not op.strip() and (o := str(corps.get("operateur") or "").strip()[:60]) \
+            and await VALID.assurer_colonne("Opérateur flex"):   # opérateur lu dans SIRENE à l'affichage de la fiche
+        props["Opérateur flex"] = MEM._txt(o)
     maj = await VALID._maj(page_id, props)
     if isinstance(maj, JSONResponse):
         return maj

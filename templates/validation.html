@@ -394,7 +394,7 @@ function ecranSociete() {
       <div class="fait"><span>Flexoffice</span>
         <label style="display:flex;gap:8px;align-items:center;margin:8px 0;font-size:15px;cursor:pointer">
           <input type="checkbox" id="valFlex" ${info.flexoffice ? "checked" : ""} style="width:18px;height:18px"> en bureau flexible</label>
-        ${info.operateur_flex ? `<p style="margin:0"><b>${esc(info.operateur_flex.replace("(probable)", ""))}</b>${info.operateur_flex.includes("(probable)") && !info.flexoffice ? `<br><small>centre de l'opérateur à la même adresse (SIRENE) : cochez pour confirmer</small>` : ""}</p>` : ""}
+        <div id="flexOp">${info.operateur_flex ? `<p style="margin:0"><b>${esc(info.operateur_flex.replace("(probable)", ""))}</b>${info.operateur_flex.includes("(probable)") && !info.flexoffice ? `<br><small>centre de l'opérateur à la même adresse (SIRENE) : cochez pour confirmer</small>` : ""}</p>` : `<p style="margin:0"><small>opérateur : lecture SIRENE…</small></p>`}</div>
         <p class="msg" id="msgFlex"></p></div>
     </div>
     ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}
@@ -413,10 +413,35 @@ function ecranSociete() {
       <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
     </div>`;
   chargerQuali(courant);
+  // Opérateur de flex lu dans SIRENE pour l'adresse cochée (centre déclaré à cette adresse)
+  let opSirene = "";
+  const adresseCochee = () => {
+    const r = document.querySelector('input[name=adr]:checked');
+    return !r ? "" : r.value === "Saisie" ? ($("#saisie").value || "") : (r.dataset.a || "");
+  };
+  const lireFlex = async () => {
+    if (info.operateur_flex) return;
+    const page = courant, adr = adresseCochee();
+    if (!adr) { $("#flexOp").innerHTML = `<p style="margin:0"><small>opérateur : choisissez une adresse</small></p>`; return; }
+    $("#flexOp").innerHTML = `<p style="margin:0"><small>opérateur : lecture SIRENE…</small></p>`;
+    try {
+      const r = await api(`/v3/validation/api/sirene-flex/${page}?adresse=${encodeURIComponent(adr)}`);
+      if (page !== courant) return;
+      opSirene = r.operateur || "";
+      if (r.enregistre) info.operateur_flex = opSirene;
+      $("#flexOp").innerHTML = opSirene
+        ? `<p style="margin:0"><b>${esc(opSirene)}</b><br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
+        : `<p style="margin:0"><small>aucun opérateur déclaré à cette adresse (SIRENE)</small></p>`;
+    } catch (e) { $("#flexOp").innerHTML = `<p style="margin:0"><small>SIRENE injoignable</small></p>`; }
+  };
+  document.querySelectorAll('input[name=adr]').forEach(x => x.addEventListener("change", lireFlex));
+  $("#saisie").addEventListener("change", lireFlex);
+  lireFlex();
   $("#valFlex").onchange = async () => {
     const page = courant, c = $("#valFlex").checked; $("#valFlex").disabled = true;
     try {
-      const r = await api("/v3/validation/api/flexoffice/" + page, {coche: c});
+      const r = await api("/v3/validation/api/flexoffice/" + page, {coche: c, operateur: opSirene});
+      if (r.operateur_flex) info.operateur_flex = r.operateur_flex;
       info.flexoffice = r.flexoffice; $("#msgFlex").className = "msg"; $("#msgFlex").textContent = "enregistré";
     } catch (e) { $("#valFlex").checked = !c; $("#msgFlex").className = "msg err"; $("#msgFlex").textContent = e.message; }
     $("#valFlex").disabled = false;
