@@ -41,6 +41,32 @@ def operateur_cite(adresse: str) -> str:
     return next((o for o in OPERATEURS_FLEX if f" {_norm(o)} " in a), "")
 
 
+def _numeros(a: str) -> set:
+    """Numéros de rue d'une adresse, plages comprises : « 2-4 », « 17-21 », « 26 AU 28 », « 43- 45 » (SIRENE écrit
+    souvent « 2-4 2 RUE JULES LEFEBVRE » quand les bureaux sont au « 4 rue Jules Lefebvre »)."""
+    t = LI._sans_accents(a or "")
+    t = t[:m.start()] if (m := re.search(r"\b\d{5}\b", t)) else t
+    out = set()
+    for d, f in re.findall(r"\b(\d{1,4})\s*(?:-|a|au|et)\s*(\d{1,4})\b", t):
+        if 0 < int(f) - int(d) <= 12:
+            out |= set(range(int(d), int(f) + 1))
+    out |= {int(n) for n in re.findall(r"\b(\d{1,4})(?:bis|ter|b)?\b", t)}
+    return out
+
+
+def meme_lieu(a: str, b: str) -> bool:
+    """Même adresse, en tolérant les plages de numéros (« 2-4 » contient « 4 »)."""
+    if LI.meme_adresse(a, b):
+        return True
+    ka, kb = LI.cle_adresse(a), LI.cle_adresse(b)
+    if not (ka and kb) or ka[2] != kb[2] or not (ka[1] and kb[1]):
+        return False
+    x, y = ka[1], kb[1]
+    if not (x in y or y in x or x.split()[0] == y.split()[0]):
+        return False
+    return bool(_numeros(a) & _numeros(b))
+
+
 def _cp(a: str) -> str:
     m = re.search(r"\b(75\d{3}|77\d{3}|78\d{3}|91\d{3}|92\d{3}|93\d{3}|94\d{3}|95\d{3}|\d{5})\b", a or "")
     return m.group(1) if m else ""
@@ -102,7 +128,7 @@ async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
         rep["indice"] = "adresse des bureaux incomplète (numéro, rue, code postal)" if siren else "pas de SIREN"
         return rep
     etabs = await etablissements(api, siren, nom, cp)
-    ici = sorted([e for e in etabs if LI.meme_adresse(e["adresse"], bureaux)], key=lambda e: (not e["ouvert"], e["date_creation"]))
+    ici = sorted([e for e in etabs if meme_lieu(e["adresse"], bureaux)], key=lambda e: (not e["ouvert"], e["date_creation"]))
     if ici:
         e = ici[0]
         rep.update(date=e["date_creation"], etab=e["adresse"], siege="oui" if e["est_siege"] else "non (établissement secondaire)")
@@ -112,7 +138,7 @@ async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
         rep["indice"] = "aucun établissement de la société à l'adresse des bureaux"
     if not rep["operateur"] and cp:
         for o, a, n in await centres_flex(api, cp):
-            if LI.meme_adresse(a, bureaux):
+            if meme_lieu(a, bureaux):
                 rep.update(operateur=o, indice=f"centre {o} à la même adresse ({n} : {a})")
                 break
     return rep
@@ -147,10 +173,12 @@ async def _essai(limite: int):
 @router.get("/v3/validation/api/sirene-essai")
 async def sirene_essai(req: Request, lancer: int = 0, limite: int = 50):
     """Admin. ?lancer=1 : essai à blanc sur `limite` sociétés validées (rien n'est écrit). Sans : état + résumé.
+    Un essai terminé depuis moins d'une heure n'est pas écrasé par lancer=1 (lancer=2 pour forcer).
     Le détail : /v3/validation/api/sirene-essai/excel"""
     if (x := VALID._refus(req, "admin")):
         return x
-    if lancer and not ESSAI["actif"]:
+    recent = ESSAI["fini"] and (datetime.now(timezone.utc) - datetime.fromisoformat(ESSAI["fini"])).total_seconds() < 3600
+    if lancer and not ESSAI["actif"] and not (recent and lancer != 2):
         asyncio.create_task(_essai(max(1, min(limite, 300))))
         return {"lance": True, "conseil": "rouvrez cette adresse (sans lancer=1) dans 2 à 3 minutes"}
     l = ESSAI["lignes"]
