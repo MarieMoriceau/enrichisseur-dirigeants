@@ -38,3 +38,22 @@ def test_plages_de_numeros():
     assert S.meme_lieu("43-45 RUE DE SAINT-PETERSBOURG 75008 PARIS", "43- 45 Rue de Saint-Pétersbourg, 75008 Paris")
     assert not S.meme_lieu("2-4 2 RUE JULES LEFEBVRE 75009 PARIS", "8 rue Jules Lefebvre 75009")
     assert not S.meme_lieu("4 RUE DE LONDRES 75009 PARIS", "4 rue Jules Lefebvre 75009")
+
+
+def test_appliquer(monkeypatch):
+    import v3_validation as VALID
+    ecrit = {}
+    async def maj(p, props):
+        ecrit.update(props); return {}
+    async def col(nom, genre="rich_text"):
+        return True
+    async def analyse(api, siren, nom, adr):
+        return {"date": "2023-09-01", "etab": "x", "siege": "oui", "operateur": "WeWork", "indice": "centre WeWork à la même adresse"}
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col); monkeypatch.setattr(S, "analyser", analyse)
+    r = asyncio.run(S.appliquer(None, "p", {"siren": "1", "nom": "A", "debut_bail": "", "operateur_flex": ""}, "x"))
+    assert ecrit["Début de bail"] == {"date": {"start": "2023-09-01"}} and "Flexoffice" not in ecrit
+    assert ecrit["Opérateur flex"]["rich_text"][0]["text"]["content"] == "WeWork (probable)"
+    assert "01/09/2023" in ecrit["Source début de bail"]["rich_text"][0]["text"]["content"]
+    ecrit.clear()
+    asyncio.run(S.appliquer(None, "p", {"siren": "1", "nom": "A", "debut_bail": "2020-01-01", "operateur_flex": "Morning"}, "x"))
+    assert ecrit == {}                                  # rien d'écrasé

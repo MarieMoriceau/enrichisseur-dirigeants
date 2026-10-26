@@ -380,7 +380,7 @@ function ecranSociete() {
       <div class="fait"><span>Début de bail</span>
         <div style="margin:6px 0"><input type="date" id="valBail" value="${esc(info.debut_bail || "")}" aria-label="Date de début de bail"></div>
         <button class="btn ghost" id="okBail" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
-        <p class="msg" id="msgBail">${info.debut_bail ? "" : "à remplir quand vous avez l'info"}</p></div>
+        <p class="msg" id="msgBail">${info.debut_bail ? esc(info.source_bail || "") : "à remplir quand vous avez l'info"}</p></div>
       <div class="fait" id="carteSiren"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
         ${/^\d{9}$/.test(info.siren || "") ? `<p style="margin:4px 0"><a href="https://www.pappers.fr/entreprise/${info.siren}" target="_blank" rel="noopener">Voir sur Pappers ↗</a></p>` : ""}
         <p>${esc(d.action || "")}</p>
@@ -394,6 +394,7 @@ function ecranSociete() {
       <div class="fait"><span>Flexoffice</span>
         <label style="display:flex;gap:8px;align-items:center;margin:8px 0;font-size:15px;cursor:pointer">
           <input type="checkbox" id="valFlex" ${info.flexoffice ? "checked" : ""} style="width:18px;height:18px"> en bureau flexible</label>
+        ${info.operateur_flex ? `<p style="margin:0"><b>${esc(info.operateur_flex.replace("(probable)", ""))}</b>${info.operateur_flex.includes("(probable)") && !info.flexoffice ? `<br><small>centre de l'opérateur à la même adresse (SIRENE) : cochez pour confirmer</small>` : ""}</p>` : ""}
         <p class="msg" id="msgFlex"></p></div>
     </div>
     ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}

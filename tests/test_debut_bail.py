@@ -15,7 +15,9 @@ def _client(monkeypatch):
         ecrit.update(props); return {"ok": True}
     async def colonne(nom, genre="rich_text"):
         colonnes.append((nom, genre)); return True
-    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", colonne)
+    async def une(p):
+        return {"page": p, "operateur_flex": "WeWork (probable)"}
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", colonne); monkeypatch.setattr(VALID, "_une", une)
     monkeypatch.setattr(VALID, "_refus", lambda req, besoin: None)
     app = FastAPI(); app.include_router(v3.router)
     return TestClient(app), ecrit, colonnes
@@ -25,7 +27,7 @@ def test_enregistrer_et_effacer(monkeypatch):
     c, ecrit, colonnes = _client(monkeypatch)
     r = c.post(f"/v3/validation/api/debut-bail/{PAGE}", json={"date": "2024-03-01"})
     assert r.json()["debut_bail"] == "2024-03-01" and ecrit["Début de bail"] == {"date": {"start": "2024-03-01"}}
-    assert colonnes == [("Début de bail", "date")]
+    assert ("Début de bail", "date") in colonnes and ecrit["Source début de bail"]["rich_text"][0]["text"]["content"] == "saisie à la main"
     c.post(f"/v3/validation/api/debut-bail/{PAGE}", json={"date": ""})
     assert ecrit["Début de bail"] == {"date": None}
 
@@ -41,6 +43,7 @@ def test_flexoffice(monkeypatch):
     c, ecrit, colonnes = _client(monkeypatch)
     assert c.post(f"/v3/validation/api/flexoffice/{PAGE}", json={"coche": True}).json()["flexoffice"] is True
     assert ecrit["Flexoffice"] == {"checkbox": True} and ("Flexoffice", "checkbox") in colonnes
+    assert ecrit["Opérateur flex"]["rich_text"][0]["text"]["content"] == "WeWork"      # probable → confirmé
     c.post(f"/v3/validation/api/flexoffice/{PAGE}", json={"coche": False})
     assert ecrit["Flexoffice"] == {"checkbox": False}
 

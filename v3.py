@@ -1661,7 +1661,9 @@ async def debut_bail_ecrire(page_id: str, req: Request):
             return JSONResponse({"erreur": f"année {jour.year} improbable, faute de frappe ?"}, 400)
     if not await VALID.assurer_colonne("Début de bail", "date"):
         return JSONResponse({"erreur": "Notion refuse de créer la colonne « Début de bail »"}, 502)
-    maj = await VALID._maj(page_id, {"Début de bail": {"date": {"start": d} if d else None}})
+    source = await VALID.assurer_colonne("Source début de bail")
+    maj = await VALID._maj(page_id, {"Début de bail": {"date": {"start": d} if d else None},
+                                     **({"Source début de bail": MEM._txt("saisie à la main" if d else "")} if source else {})})
     if isinstance(maj, JSONResponse):
         return maj
     return {"ok": True, "debut_bail": d}
@@ -1706,10 +1708,15 @@ async def flexoffice_ecrire(page_id: str, req: Request):
     coche = bool((await req.json()).get("coche"))
     if not await VALID.assurer_colonne("Flexoffice", "checkbox"):
         return JSONResponse({"erreur": "Notion refuse de créer la colonne « Flexoffice »"}, 502)
-    maj = await VALID._maj(page_id, {"Flexoffice": {"checkbox": coche}})
+    props = {"Flexoffice": {"checkbox": coche}}
+    info = await VALID._une(page_id)
+    op = (info or {}).get("operateur_flex", "")
+    if coche and op.endswith("(probable)"):           # flex confirmé : l'opérateur probable devient sûr
+        props["Opérateur flex"] = MEM._txt(op.replace("(probable)", "").strip())
+    maj = await VALID._maj(page_id, props)
     if isinstance(maj, JSONResponse):
         return maj
-    return {"ok": True, "flexoffice": coche}
+    return {"ok": True, "flexoffice": coche, "operateur_flex": maj.get("operateur_flex", "") if isinstance(maj, dict) else ""}
 
 
 @router.post("/v3/validation/api/siren/{page_id}")

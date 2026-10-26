@@ -69,7 +69,8 @@ def construire(socs: list) -> tuple:
                       rue, cp, ville, s["source_retenue"], eff, _date(s["traitee"]) if eff != "" else "", d.get("croissance_effectif", ""),
                       d.get("statut_activite") or d.get("statut", ""), d.get("raison_sociale", ""), d.get("naf", ""), VALID.activite_de(d), d.get("secteur", ""),
                       re.sub(r"^\W+", "", d.get("verdict_domiciliation", "")).strip(), s.get("base_quali") or d.get("base_quali_crm", ""),
-                      s.get("debut_bail", ""), "oui" if s.get("flexoffice") else "", d.get("id", ""), _date(s["validee"])])
+                      s.get("debut_bail", ""), "oui" if s.get("flexoffice") else "",
+                      (s.get("operateur_flex") or "").replace("(probable)", "(à confirmer)"), d.get("id", ""), _date(s["validee"])])
 
     # ── contacts (nouveaux validés par les négos)
     l_new, l_exist = [], []
@@ -138,7 +139,7 @@ def construire(socs: list) -> tuple:
     ws.column_dimensions["A"].width = 120
     feuille(wb, "Sociétés", ["Company Domain Name", "Name", "SIREN", "LinkedIn Company Page", "Street Address", "Postal Code", "City",
                              "Source de l'adresse", "Effectif LinkedIn", "Date relevé effectif", "Croissance effectif (%)", "STATUT ACTIVITÉ",
-                             "Raison sociale", "CODE NAF", "ACTIVITÉ", "SECTEUR", "DOMICILIATION", "Base quali", "Début de bail", "Flexoffice", "ID Pipedrive", "Date validation société"], l_soc)
+                             "Raison sociale", "CODE NAF", "ACTIVITÉ", "SECTEUR", "DOMICILIATION", "Base quali", "Début de bail", "Flexoffice", "Opérateur flex", "ID Pipedrive", "Date validation société"], l_soc)
     feuille(wb, "Contacts à créer", ["First Name", "Last Name", "Email", "Phone Number", "Job Title", "Rôle", "LinkedIn URL",
                                      "Company Domain Name", "Société", "ID Pipedrive société", "Date validation contact", "Société validée ?",
                                      "Champs saisis à la main", "Saisi par"], l_new)

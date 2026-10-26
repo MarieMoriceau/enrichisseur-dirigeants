@@ -90,7 +90,8 @@ async def index(journal, tout: bool = False) -> list:
                             "negos": _val(p, "Négos"), "nb_dir": (p.get("Nb dirigeants") or {}).get("number"),
                             "validee": _val(p, "Validée le"), "siren_corrige": _val(p, "SIREN corrigé"),
                             "base_quali": _val(p, "Base quali"), "debut_bail": _val(p, "Début de bail"),
-                            "flexoffice": _val(p, "Flexoffice") == "oui"})
+                            "flexoffice": _val(p, "Flexoffice") == "oui", "operateur_flex": _val(p, "Opérateur flex"),
+                            "source_bail": _val(p, "Source début de bail")})
             if not j.get("has_more"):
                 return out
             curseur = j.get("next_cursor")
@@ -355,7 +356,8 @@ async def enregistrer(job: dict, norm_nom, journal):
                 props["Validation"] = {"select": {"name": "Société validée"}}
                 if validee.get("validee"):
                     props["Validée le"] = {"date": {"start": validee["validee"]}}
-            for cle, col in (("siren_corrige", "SIREN corrigé"), ("base_quali", "Base quali")):
+            for cle, col in (("siren_corrige", "SIREN corrigé"), ("base_quali", "Base quali"), ("operateur_flex", "Opérateur flex"),
+                             ("source_bail", "Source début de bail")):
                 v = next((e[cle] for e in meme if e.get(cle)), "")
                 if v:                                       # la colonne existe forcément : une ancienne ligne l'a remplie
                     props[col] = _txts(v)
