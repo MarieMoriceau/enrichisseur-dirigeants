@@ -49,3 +49,19 @@ def test_lecture_case():
     import v3_memoire as MEM
     assert MEM._val({"F": {"type": "checkbox", "checkbox": True}}, "F") == "oui"
     assert MEM._val({"F": {"type": "checkbox", "checkbox": False}}, "F") == ""
+
+
+def test_flexoffice_fichier(monkeypatch):
+    c, ecrit, _ = _client(monkeypatch)
+    pages = []
+    async def toutes():
+        return [{"page": "a", "nom": "A", "lancement": "locataires_flex_paris (suite 1/2)", "flexoffice": False},
+                {"page": "b", "nom": "B", "lancement": "autre ; locataires_flex_paris (suite 2/2)", "flexoffice": True},
+                {"page": "c", "nom": "C", "lancement": "locataires_flex_paris_bis", "flexoffice": False}]
+    async def maj(p, props):
+        pages.append(p); return {"ok": True}
+    monkeypatch.setattr(VALID, "_toutes", toutes); monkeypatch.setattr(VALID, "_maj", maj)
+    j = c.get("/v3/validation/api/flexoffice-fichier", params={"lancement": "locataires_flex_paris"}).json()
+    assert j["societes"] == 2 and j["a_cocher"] == 1 and not pages
+    j = c.get("/v3/validation/api/flexoffice-fichier", params={"lancement": "locataires_flex_paris (suite 1/2)", "confirmer": 1}).json()
+    assert j["cochees"] == 1 and pages == ["a"]

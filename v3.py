@@ -1665,6 +1665,35 @@ async def debut_bail_ecrire(page_id: str, req: Request):
     return {"ok": True, "debut_bail": d}
 
 
+@router.get("/v3/validation/api/flexoffice-fichier")
+async def flexoffice_fichier(req: Request, lancement: str = "", confirmer: int = 0):
+    """Admin : coche « Flexoffice » pour toutes les sociétés d'un fichier lancé (toutes ses suites).
+    ?lancement=locataires_flex_paris : essai à blanc ; &confirmer=1 : écrit dans Notion."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    base = re.sub(r"( \((suite \d+/\d+|relance[^)]*)\))+$", "", lancement.strip())
+    if len(base) < 3:
+        return JSONResponse({"erreur": "précisez le fichier (?lancement=…)"}, 400)
+    def du_fichier(s):
+        return any(re.sub(r"( \((suite \d+/\d+|relance[^)]*)\))+$", "", l.strip()) == base for l in (s.get("lancement") or "").split(";"))
+    socs = [s for s in await VALID._toutes() if du_fichier(s)]
+    a_cocher = [s for s in socs if not s.get("flexoffice")]
+    rep = {"essai_a_blanc": not confirmer, "fichier": base, "societes": len(socs), "deja_cochees": len(socs) - len(a_cocher),
+           "a_cocher": len(a_cocher), "exemples": [s["nom"] for s in a_cocher[:30]]}
+    if not confirmer or not a_cocher:
+        return rep
+    if not await VALID.assurer_colonne("Flexoffice", "checkbox"):
+        return JSONResponse({"erreur": "Notion refuse de créer la colonne « Flexoffice »"}, 502)
+    sem, erreurs = asyncio.Semaphore(3), []
+    async def une(s):
+        async with sem:
+            r = await VALID._maj(s["page"], {"Flexoffice": {"checkbox": True}})
+        if isinstance(r, JSONResponse):
+            erreurs.append(s["nom"])
+    await asyncio.gather(*(une(s) for s in a_cocher))
+    return rep | {"cochees": len(a_cocher) - len(erreurs), "erreurs": erreurs}
+
+
 @router.post("/v3/validation/api/flexoffice/{page_id}")
 async def flexoffice_ecrire(page_id: str, req: Request):
     """Admin : case « Flexoffice » (la société est en bureau flexible). Corps : {"coche": true}."""
