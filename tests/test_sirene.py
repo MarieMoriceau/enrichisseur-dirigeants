@@ -130,3 +130,19 @@ def test_operateur_retire(monkeypatch):
     monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col); monkeypatch.setattr(S, "analyser", analyse)
     asyncio.run(S.appliquer(None, "p", {"siren": "1", "debut_bail": "x", "operateur_flex": "(aucun)", "flexoffice": True}, "x"))
     assert "Opérateur flex" not in ecrit
+
+
+def test_route_sirene_flex_date(monkeypatch):
+    """AB Tasty : siège au 8 rue Sainte-Cécile créé le 01/01/2026, opérateur déjà enregistré : la date est proposée."""
+    import v3_validation as VALID
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI(); app.include_router(S.router)
+    async def une(p):
+        return {"siren": "518685540", "nom": "AB Tasty", "flexoffice": True, "operateur_flex": "Patchwork", "debut_bail": ""}
+    async def analyse(api, siren, nom, adr):
+        return {"date": "2026-01-01", "etab": "8 RUE SAINTE-CECILE", "siege": "oui", "operateur": "Patchwork", "indice": "", "sur": False}
+    monkeypatch.setattr(VALID, "_refus", lambda req, b: None); monkeypatch.setattr(VALID, "role", lambda req: "admin")
+    monkeypatch.setattr(VALID, "_une", une); monkeypatch.setattr(S, "analyser", analyse)
+    j = TestClient(app).get("/v3/validation/api/sirene-flex/" + "0" * 32, params={"adresse": "8 rue Sainte-Cécile 75009"}).json()
+    assert j["date"] == "2026-01-01" and "siège créé à cette adresse le 01/01/2026" in j["source_date"] and j["operateur"] == "Patchwork"
