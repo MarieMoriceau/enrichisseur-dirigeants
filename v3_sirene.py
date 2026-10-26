@@ -166,14 +166,13 @@ async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
         rep["indice"] = "aucun établissement de la société à l'adresse des bureaux"
     if not rep["operateur"]:
         # siège ouvert domicilié chez un opérateur (« Domiciliation : PATCHWORK ») : dans la même rue que les bureaux,
-        # c'est le centre où ils travaillent ; ailleurs, simple domiciliation possible → probable
+        # c'est le centre où ils travaillent ; ailleurs, simple domiciliation possible → probable.
+        # Pas de date de bail tirée de ce siège : seulement un établissement déclaré à l'adresse exacte des bureaux.
         for e in sorted([e for e in etabs if e["est_siege"] and e["ouvert"]], key=lambda e: e["date_creation"], reverse=True):
             if (o := operateur_cite(e.get("texte") or "")):
                 proche = meme_rue(e["adresse"], bureaux)
                 rep.update(operateur=o, sur=proche, indice=f"siège domicilié chez {o} (SIRENE : {e['adresse']})"
                                                             + ("" if proche else ", rue différente des bureaux"))
-                if proche and not rep["date"]:
-                    rep.update(date=e["date_creation"], etab=e["adresse"], siege="oui (domicilié chez l'opérateur)")
                 break
     if not rep["operateur"] and cp:
         for o, a, n in await centres_flex(api, cp):
