@@ -698,6 +698,23 @@ async def personne_ailleurs(c: httpx.AsyncClient, d: dict, r: dict, ressemblance
     return {}
 
 
+def fiches_pipedrive(r: dict) -> list:
+    """ID Pipedrive de la société + ceux de ses doublons (« Pipedrive (3 fiches, doublons : 15395, 68743) ») :
+    les contacts sont souvent rattachés à un doublon."""
+    ids = [str(r.get("id") or "")] + re.findall(r"\d+", (re.search(r"doublons : ([\d, ]+)", str(r.get("dans_crm") or "")) or ["", ""])[1])
+    return list(dict.fromkeys(i for i in ids if i.isdigit()))
+
+
+async def personnes_fiches(c: httpx.AsyncClient, r: dict) -> list:
+    out, vus = [], set()
+    for oid in fiches_pipedrive(r):
+        for p in await personnes_societe(c, oid):
+            if p["id"] not in vus:
+                vus.add(p["id"])
+                out.append(p | ({"fiche_doublon": oid} if oid != str(r.get("id")) else {}))
+    return out
+
+
 async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, journal, stop):
     PB_PROFILS = phantoms_du_job(job)[2]                     # Profile Scraper du compte LinkedIn de ce run
     """Pour chaque société : les contacts Pipedrive sont-ils toujours là ?
@@ -708,7 +725,7 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
         if stop():
             return
         job["phase"] = f"Pipedrive : contacts déjà connus {i}/{len(avec_crm)}…"
-        r["contacts_crm"] = await personnes_societe(c, r["id"])
+        r["contacts_crm"] = await personnes_fiches(c, r)
         for p in r["contacts_crm"]:                  # URL LinkedIn ajoutée à la main dans l'écran admin (absente de Pipedrive)
             if not p["linkedin"] and (r.get("_corrections_li") or {}).get(p["id"]):
                 p["linkedin"] = r["_corrections_li"][p["id"]]
@@ -719,6 +736,8 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
                 d["dans_pipedrive"] = d.get("dans_pipedrive") or f"oui (fiche {p['id']})"
                 if p["email"] and not d.get("email"):
                     d["email"], d["source_email"] = p["email"], "Pipedrive"
+            elif not r.get("linkedin_id"):           # pas de page LinkedIn : pas de dirigeants auxquels comparer
+                p["statut"], p["detail"] = "", "non contrôlé : page LinkedIn de la société introuvable"
             else:
                 p["statut"], p["detail"] = "à vérifier", "absent des dirigeants Sales Navigator"
         for d in r.get("dirigeants", []):            # pas chez nous dans Pipedrive : peut-être fiché chez une autre société
@@ -1046,8 +1065,10 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                     d["autres_societes"] = autres
 
         # 4b. contacts déjà dans Pipedrive : toujours dans la société ?
-        if PIPEDRIVE_KEY and cibles and not stop():
-            await controler_contacts_crm(job, cibles, pb, c, ressemblance, journal, stop)
+        # toutes les sociétés avec une fiche Pipedrive, même sans page LinkedIn (sinon « aucun contact » à tort, 26/10)
+        avec_fiche = cibles + [r for r in res if r not in cibles and str(r.get("id") or "").isdigit()]
+        if PIPEDRIVE_KEY and avec_fiche and not stop():
+            await controler_contacts_crm(job, avec_fiche, pb, c, ressemblance, journal, stop)
         if stop():
             return
         if perim == "dirigeants":

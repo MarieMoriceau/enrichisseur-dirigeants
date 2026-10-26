@@ -464,7 +464,7 @@ async def valider_societe(page_id: str, req: Request):
         return JSONResponse({"erreur": "source inconnue"}, 400)
     decision, motif = "", ""
     if statut == "Écartée":
-        decision = b.get("decision") or "Hors cible HubSpot"
+        decision = b.get("decision") or "À supprimer de la base"     # depuis le 26/10 : écarter = à supprimer de la base
         if decision not in DECISIONS_ECART:
             return JSONResponse({"erreur": "décision inconnue"}, 400)
         motifs = [m for m in (b.get("motifs") or []) if m in MOTIFS_ECART]

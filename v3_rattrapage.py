@@ -197,3 +197,54 @@ async def excel(req: Request):
     nom = f"rattrapage_contacts_crm_{'essai' if ETAT['mode'] == 'essai à blanc' else 'reel'}_{datetime.now(timezone.utc):%Y%m%d_%H%M}.xlsx"
     return StreamingResponse(io.BytesIO(b.getvalue()), headers={"Content-Disposition": f'attachment; filename="{nom}"'},
                              media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ───────── contacts Pipedrive jamais lus (société sans page LinkedIn, avant le 26/10) ─────────
+MANQUANTS = {"actif": False, "phase": "", "total": 0, "fait": 0, "ok": 0, "contacts": 0, "echecs": []}
+
+
+async def _candidats_manquants() -> list:
+    socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée" and s["perimetre"] in ("dirigeants", "tout")]
+    sem = asyncio.Semaphore(4)
+    async def voir(s):
+        async with sem:
+            d = await MEM.lire(s["page"])
+        return (s, d) if d and str(d.get("id") or "").isdigit() and "contacts_crm" not in d else None
+    return [x for x in await asyncio.gather(*(voir(s) for s in socs)) if x]
+
+
+async def _lire_manquants(cibles: list):
+    MANQUANTS.update(actif=True, total=len(cibles), fait=0, ok=0, contacts=0, echecs=[], phase="lecture Pipedrive")
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            for s, data in cibles:
+                try:
+                    data["contacts_crm"] = await LI.personnes_fiches(c, data)
+                    for p in data["contacts_crm"]:
+                        p["statut"], p["detail"] = "", "non contrôlé : page LinkedIn de la société introuvable"
+                    await _reecrire(c, s["page"], data)
+                    MANQUANTS["ok"] += 1
+                    MANQUANTS["contacts"] += len(data["contacts_crm"])
+                except Exception as e:
+                    MANQUANTS["echecs"].append(f"{s['nom']} : {e}")
+                MANQUANTS["fait"] += 1
+    finally:
+        MANQUANTS.update(actif=False, phase="terminé")
+
+
+@router.get("/v3/validation/api/contacts-crm-manquants")
+async def contacts_crm_manquants(req: Request, confirmer: int = 0):
+    """Admin. Sociétés avec une fiche Pipedrive dont les contacts n'ont jamais été lus (pas de page LinkedIn trouvée).
+    Sans &confirmer=1 : essai à blanc. Avec : lit leurs contacts dans Pipedrive (doublons compris) et les enregistre.
+    Pipedrive seulement : aucun phantom, aucun crédit LinkedIn."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if MANQUANTS["actif"]:
+        return {k: MANQUANTS[k] for k in ("actif", "phase", "total", "fait", "ok", "contacts", "echecs")}
+    cibles = await _candidats_manquants()
+    rep = {"essai_a_blanc": not confirmer, "a_lire": len(cibles), "exemples": [s["nom"] for s, _ in cibles[:40]],
+           "dernier_passage": {k: MANQUANTS[k] for k in ("phase", "total", "ok", "contacts", "echecs")} if MANQUANTS["phase"] else None}
+    if confirmer and cibles:
+        asyncio.create_task(_lire_manquants(cibles))
+        rep["lance"] = True
+    return rep

@@ -134,6 +134,7 @@ input.sel{width:17px;height:17px;margin:0 8px 0 0;vertical-align:-3px;cursor:poi
     <div class="filtres" id="filtres" role="group" aria-label="Filtrer"></div>
     <select id="qui" aria-label="Négociateur" hidden style="margin-bottom:8px"></select>
     <select id="fichier" aria-label="Fichier lancé"><option value="">Tous mes fichiers</option></select>
+    <a class="btn ghost" id="phoning" hidden style="display:block;text-align:center;margin:0 0 8px;font-size:13px">📞 Liste de phoning de ce fichier (Excel)</a>
     <input type="search" id="cherche" placeholder="Chercher une société…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement…</div></div>
   </aside>
@@ -222,7 +223,11 @@ function dessinerListe() {
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
 $("#cherche").oninput = dessinerListe;
-$("#fichier").onchange = () => { dessinerFiltres(); dessinerListe(); };
+function lienPhoning() {
+  const f = $("#fichier").value, a = $("#phoning");
+  a.hidden = !f; if (f) a.href = "/v3/contacts/api/phoning?lancement=" + encodeURIComponent(f);
+}
+$("#fichier").onchange = () => { lienPhoning(); dessinerFiltres(); dessinerListe(); };
 $("#qui").onchange = () => { dessinerFiltres(); dessinerListe(); };
 
 let INFO = null;
