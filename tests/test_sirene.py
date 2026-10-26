@@ -30,3 +30,11 @@ def test_analyser(monkeypatch):
     assert r["date"] == "2007-01-27" and r["siege"] == "oui" and r["operateur"] == ""
     r = asyncio.run(S.analyser(None, "111111111", "Autre", "7 rue de Madrid, 75008 Paris"))
     assert r["date"] == "" and r["operateur"] == "Morning" and "centre Morning" in r["indice"]
+
+
+def test_plages_de_numeros():
+    assert S.meme_lieu("2-4 2 RUE JULES LEFEBVRE 75009 PARIS", "4 rue Jules Lefebvre 75009")
+    assert S.meme_lieu("26 AU 28 26 RUE DE LONDRES 75009 PARIS", "28 rue de Londres, 75009 Paris")
+    assert S.meme_lieu("43-45 RUE DE SAINT-PETERSBOURG 75008 PARIS", "43- 45 Rue de Saint-Pétersbourg, 75008 Paris")
+    assert not S.meme_lieu("2-4 2 RUE JULES LEFEBVRE 75009 PARIS", "8 rue Jules Lefebvre 75009")
+    assert not S.meme_lieu("4 RUE DE LONDRES 75009 PARIS", "4 rue Jules Lefebvre 75009")
