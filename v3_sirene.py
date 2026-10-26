@@ -335,25 +335,34 @@ async def sirene_une(req: Request, siren: str, adresse: str, nom: str = ""):
 
 @router.get("/v3/validation/api/sirene-flex/{page_id}")
 async def sirene_flex(page_id: str, req: Request, adresse: str = ""):
-    """Fiche de validation : opérateur de flex lu dans SIRENE pour l'adresse des bureaux affichée.
-    Lecture seule, sauf si Flexoffice est déjà coché et l'opérateur vide : il est alors enregistré (sûr)."""
+    """Fiche de validation : ce que SIRENE dit pour l'adresse des bureaux affichée.
+    - opérateur de flex (centre déclaré à cette adresse) ; enregistré seulement si Flexoffice est déjà coché ;
+    - début de bail = date de création de l'établissement de la société à cette adresse exacte (siège ou
+      secondaire) ; proposé, pas écrit : il l'est à la validation (même règle)."""
     if (x := VALID._refus(req, "negos")):
         return x
     if not VALID.RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     info = await VALID._une(page_id) or {}
-    if (info.get("operateur_flex") or "").strip() == "(aucun)":
-        return {"operateur": "", "indice": "retiré à la main", "retire": True}
-    if (info.get("operateur_flex") or "").strip():
-        return {"operateur": info["operateur_flex"].replace("(probable)", "").strip(), "indice": "", "enregistre": True}
+    op = (info.get("operateur_flex") or "").strip()
+    rep = {"operateur": "", "indice": "", "enregistre": False, "retire": op == "(aucun)", "date": "", "source_date": ""}
+    if op and op != "(aucun)":
+        rep.update(operateur=op.replace("(probable)", "").strip(), enregistre=True)
     adresse = adresse.strip() or info.get("adresse_retenue", "")
     if not (re.fullmatch(r"\d{9}", info.get("siren") or "") and adresse):
-        return {"operateur": "", "indice": "pas de SIREN ou pas d'adresse"}
+        return rep | {"indice": rep["indice"] or "pas de SIREN ou pas d'adresse"}
+    if op and info.get("debut_bail"):
+        return rep                                    # rien à chercher
     async with httpx.AsyncClient(timeout=20) as api:
         r = await analyser(api, info["siren"], info.get("nom", ""), adresse)
-    enregistre = False
-    if r["operateur"] and info.get("flexoffice") and VALID.role(req) == "admin" \
-            and await VALID.assurer_colonne("Opérateur flex"):
-        await VALID._maj(page_id, {"Opérateur flex": MEM._txt(r["operateur"])})
-        enregistre = True
-    return {"operateur": r["operateur"], "indice": r["indice"], "enregistre": enregistre}
+    if r["date"] and not info.get("debut_bail"):
+        j = r["date"]
+        rep.update(date=j, source_date=f"SIRENE : {'siège' if r['siege'].startswith('oui') else 'établissement secondaire'} "
+                                       f"créé à cette adresse le {j[8:10]}/{j[5:7]}/{j[:4]}")
+    if not op:
+        rep.update(operateur=r["operateur"], indice=r["indice"])
+        if r["operateur"] and info.get("flexoffice") and VALID.role(req) == "admin" \
+                and await VALID.assurer_colonne("Opérateur flex"):
+            await VALID._maj(page_id, {"Opérateur flex": MEM._txt(r["operateur"])})
+            rep["enregistre"] = True
+    return rep
