@@ -214,3 +214,54 @@ async def envoyer(req: Request):
     except Exception as e:
         return JSONResponse({"erreur": f"envoi impossible : {e}"}, 502)
     return r | {"envoye_a": SUIVI.COPIE_COMPLETE}
+
+
+# ───────────────────────── liste de phoning d'un fichier lancé ─────────────────────────
+@router.get("/v3/contacts/api/phoning")
+async def phoning(req: Request, lancement: str = ""):
+    """Excel des nouveaux contacts validés (« prêt pour HubSpot ») des sociétés d'un fichier lancé, pour appeler.
+    Admin : tout ; négo : ses sociétés seulement (même règle que son écran)."""
+    if (x := VALID._refus(req, "negos")):
+        return x
+    lancement = lancement.strip()
+    if len(lancement) < 3:
+        return JSONResponse({"erreur": "précisez le fichier (?lancement=…)"}, 400)
+    qui = await VALID.moi(req)
+    if not qui.get("role"):
+        return JSONResponse({"erreur": "accès refusé : reconnectez-vous"}, 403)
+    socs = [s for s in await VALID._toutes()
+            if lancement in [l.strip() for l in (s.get("lancement") or "").split(";")] and s["validation"] != "Écartée"
+            and VALID.visible_par(qui, s) and "HubSpot" in (s.get("nouveaux") or "")]
+
+    async def lire(s):
+        async with _SEM:
+            s["data"] = await MEM.lire(s["page"])
+        s["nouveaux"] = VALID._json(s["nouveaux"], {})
+        return s
+    socs = await asyncio.gather(*(lire(s) for s in socs))
+    lignes = []
+    for s in sorted(socs, key=lambda s: (s["nom"] or "").lower()):
+        d0 = s["data"] or {}
+        dirs = {VALID.cle_contact(x): x for x in VALID.nouveaux_dirigeants(d0)}
+        adresse = s.get("adresse_retenue") or d0.get("adresse_proposee") or d0.get("adresse_crm") or ""
+        for cle, e in s["nouveaux"].items():
+            if e.get("etat") != "prêt pour HubSpot":
+                continue
+            d = dirs.get(cle, {})
+            f = VALID.fiche_nouveau(d, e) if d else {k: e.get("final_" + k, e.get(k, "")) for k in VALID.CHAMPS_MODIFIABLES}
+            prenom, nom = _prenom_nom(e.get("nom_complet") or d.get("nom_complet", ""), e.get("prenom") or d.get("prenom", ""),
+                                      e.get("nom") or d.get("nom", ""))
+            lignes.append([s["nom"], s.get("domaine") or d0.get("domaine", ""), adresse, d0.get("effectif_linkedin", ""),
+                           prenom, nom, f.get("fonction", ""), f.get("role", ""), f.get("email", ""), f.get("telephone", ""),
+                           f.get("linkedin", ""), (d.get("ailleurs_crm") or {}).get("org_nom", ""),
+                           s.get("negos", ""), _date(e.get("le")), "", ""])
+    from v3 import feuille
+    wb = Workbook()
+    wb.remove(wb.active)
+    feuille(wb, "Phoning", ["Société", "Site", "Adresse des bureaux", "Effectif LinkedIn", "Prénom", "Nom", "Fonction", "Rôle",
+                            "E-mail", "Téléphone", "LinkedIn", "Déjà dans Pipedrive chez", "Négo", "Validé le",
+                            "Date d'appel", "Résultat / notes"], lignes)
+    buf = io.BytesIO(); wb.save(buf)
+    nom = re.sub(r"[^A-Za-z0-9_-]+", "_", lancement)[:50].strip("_") or "fichier"
+    return StreamingResponse(io.BytesIO(buf.getvalue()), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="phoning_{nom}_{datetime.now():%Y-%m-%d}.xlsx"'})
