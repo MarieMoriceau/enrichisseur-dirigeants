@@ -217,33 +217,46 @@ async def envoyer(req: Request):
 
 
 # ───────────────────────── liste de phoning d'un fichier lancé ─────────────────────────
+_SUITE = re.compile(r"( \((suite \d+/\d+|relance[^)]*)\))+$")
+
+
 @router.get("/v3/contacts/api/phoning")
 async def phoning(req: Request, lancement: str = ""):
-    """Excel des nouveaux contacts validés (« prêt pour HubSpot ») des sociétés d'un fichier lancé, pour appeler.
+    """Excel de phoning d'un fichier lancé (toutes ses suites) : nouveaux contacts validés (« prêt pour HubSpot »)
+    + contacts déjà dans Pipedrive (sauf ceux marqués partis / à supprimer).
     Admin : tout ; négo : ses sociétés seulement (même règle que son écran)."""
     if (x := VALID._refus(req, "negos")):
         return x
-    lancement = lancement.strip()
-    if len(lancement) < 3:
+    base = _SUITE.sub("", lancement.strip())
+    if len(base) < 3:
         return JSONResponse({"erreur": "précisez le fichier (?lancement=…)"}, 400)
     qui = await VALID.moi(req)
     if not qui.get("role"):
         return JSONResponse({"erreur": "accès refusé : reconnectez-vous"}, 403)
     socs = [s for s in await VALID._toutes()
-            if lancement in [l.strip() for l in (s.get("lancement") or "").split(";")] and s["validation"] != "Écartée"
-            and VALID.visible_par(qui, s) and "HubSpot" in (s.get("nouveaux") or "")]
+            if any(_SUITE.sub("", l.strip()) == base for l in (s.get("lancement") or "").split(";"))
+            and s["validation"] != "Écartée" and VALID.visible_par(qui, s)]
 
     async def lire(s):
-        async with _SEM:
-            s["data"] = await MEM.lire(s["page"])
+        for essai in range(3):
+            try:
+                async with _SEM:
+                    s["data"] = await MEM.lire(s["page"])
+                break
+            except Exception:
+                s["data"] = {}
+                await asyncio.sleep(2 + 2 * essai)
         s["nouveaux"] = VALID._json(s["nouveaux"], {})
+        s["decisions"] = VALID._json(s["decisions"], [])
         return s
     socs = await asyncio.gather(*(lire(s) for s in socs))
     lignes = []
     for s in sorted(socs, key=lambda s: (s["nom"] or "").lower()):
         d0 = s["data"] or {}
-        dirs = {VALID.cle_contact(x): x for x in VALID.nouveaux_dirigeants(d0)}
         adresse = s.get("adresse_retenue") or d0.get("adresse_proposee") or d0.get("adresse_crm") or ""
+        soc = [s["nom"], s.get("domaine") or d0.get("domaine", ""), adresse, d0.get("effectif_linkedin", "")]
+        # nouveaux contacts validés
+        dirs = {VALID.cle_contact(x): x for x in VALID.nouveaux_dirigeants(d0)}
         for cle, e in s["nouveaux"].items():
             if e.get("etat") != "prêt pour HubSpot":
                 continue
@@ -251,17 +264,29 @@ async def phoning(req: Request, lancement: str = ""):
             f = VALID.fiche_nouveau(d, e) if d else {k: e.get("final_" + k, e.get(k, "")) for k in VALID.CHAMPS_MODIFIABLES}
             prenom, nom = _prenom_nom(e.get("nom_complet") or d.get("nom_complet", ""), e.get("prenom") or d.get("prenom", ""),
                                       e.get("nom") or d.get("nom", ""))
-            lignes.append([s["nom"], s.get("domaine") or d0.get("domaine", ""), adresse, d0.get("effectif_linkedin", ""),
-                           prenom, nom, f.get("fonction", ""), f.get("role", ""), f.get("email", ""), f.get("telephone", ""),
-                           f.get("linkedin", ""), (d.get("ailleurs_crm") or {}).get("org_nom", ""),
-                           s.get("negos", ""), _date(e.get("le")), "", ""])
+            autre = (d.get("ailleurs_crm") or {}).get("org_nom", "")
+            lignes.append(soc + ["Nouveau contact", prenom, nom, f.get("fonction", ""), f.get("role", ""), f.get("email", ""),
+                                 f.get("telephone", ""), f.get("linkedin", ""),
+                                 f"validé le {_date(e.get('le'))}" + (f" · déjà dans Pipedrive chez {autre}" if autre else ""),
+                                 s.get("negos", ""), "", ""])
+        # contacts déjà dans Pipedrive (corrections de l'écran admin comprises)
+        dec = {str(x.get("id")): x for x in s["decisions"] if (x.get("type") or "crm") == "crm"}
+        for p in d0.get("contacts_crm", []):
+            x = dec.get(str(p.get("id")), {})
+            if x.get("action") in ("marquer parti", "à supprimer") or p.get("statut") == "probablement parti" and not x:
+                continue
+            v = lambda k: (x.get(k) or "").strip() or p.get(k, "")
+            prenom, nom = _prenom_nom(p.get("nom_complet", ""))
+            etat = x.get("action") or p.get("statut") or "non contrôlé"
+            lignes.append(soc + ["Pipedrive", prenom, nom, v("fonction"), v("role"), v("email"), v("telephone"), v("linkedin"),
+                                 f"{etat} · fiche Pipedrive {p.get('id', '')}" + (f" (doublon {p['fiche_doublon']})" if p.get("fiche_doublon") else ""),
+                                 s.get("negos", ""), "", ""])
     from v3 import feuille
     wb = Workbook()
     wb.remove(wb.active)
-    feuille(wb, "Phoning", ["Société", "Site", "Adresse des bureaux", "Effectif LinkedIn", "Prénom", "Nom", "Fonction", "Rôle",
-                            "E-mail", "Téléphone", "LinkedIn", "Déjà dans Pipedrive chez", "Négo", "Validé le",
-                            "Date d'appel", "Résultat / notes"], lignes)
+    feuille(wb, "Phoning", ["Société", "Site", "Adresse des bureaux", "Effectif LinkedIn", "Source", "Prénom", "Nom", "Fonction",
+                            "Rôle", "E-mail", "Téléphone", "LinkedIn", "Statut", "Négo", "Date d'appel", "Résultat / notes"], lignes)
     buf = io.BytesIO(); wb.save(buf)
-    nom = re.sub(r"[^A-Za-z0-9_-]+", "_", lancement)[:50].strip("_") or "fichier"
+    nom = re.sub(r"[^A-Za-z0-9_-]+", "_", base)[:50].strip("_") or "fichier"
     return StreamingResponse(io.BytesIO(buf.getvalue()), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="phoning_{nom}_{datetime.now():%Y-%m-%d}.xlsx"'})
