@@ -15,7 +15,8 @@ NOTION_KEY = os.getenv("NOTION_API_KEY", "")
 MEMOIRE_DB = os.getenv("NOTION_MEMOIRE_DB", "0447dcf54a344a3883be1d4170aaa692")
 DUREE_JOURS = int(os.getenv("MEMOIRE_JOURS", "183"))          # 6 mois
 RANG = {"siren": 0, "societes": 1, "dirigeants": 2, "tout": 3}
-A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par", "_lancement", "_negos", "_nego_nouveau"}   # brut du scan du site, inutile à garder
+A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par", "_lancement", "_negos", "_nego_nouveau",
+           "_bail_memoire", "_flex_memoire"}   # brut du scan du site, inutile à garder
 _SEM = asyncio.Semaphore(3)                                    # Notion : environ 3 requêtes par seconde
 
 
@@ -189,6 +190,10 @@ async def reprendre(job: dict, orgs: list, norm_nom, domaines, journal) -> tuple
         row["memoire"] = f"oui, traitée le {e['date'][:10]}"
         row["_page_memoire"], row["_lance_par"], row["_lancement"] = e["page"], e.get("lance_par", ""), e.get("lancement", "")
         row["_negos"], row["_nego_nouveau"] = e.get("negos", ""), nego_de(o)   # le négo de CET envoi, pas celui de l'ancien
+        row["_bail_memoire"], row["_flex_memoire"] = e.get("debut_bail", ""), bool(e.get("flexoffice"))
+        for k in ("debut_bail_crm", "flex_crm"):        # infos du fichier du jour (date de bail, opérateur flex)
+            if o.get(k):
+                row[k] = o[k]
         row["id"] = o.get("id") or row.get("id", "")  # l'ID Pipedrive du fichier du jour prime
         reprises.append(row)
     if reprises:
@@ -266,7 +271,7 @@ async def ajouter_lanceurs(job: dict, journal):
     et le nom de son fichier est ajouté à « Lancement » pour qu'il la retrouve en filtrant par fichier."""
     if not NOTION_KEY:
         return
-    import v3_equipe as EQ
+    import v3_equipe as EQ, v3_validation as VALID
     negos_ok = await assurer_colonne_negos()
     a_faire = []
     for r in job["resultats"]:
@@ -282,6 +287,10 @@ async def ajouter_lanceurs(job: dict, journal):
         l = fusion_lancements(r.get("_lancement", ""), job.get("nom", ""))
         if l != (r.get("_lancement") or "").strip():
             props["Lancement"] = _txt(l)
+        if r.get("debut_bail_crm") and not r.get("_bail_memoire") and await VALID.assurer_colonne("Début de bail", "date"):
+            props["Début de bail"] = {"date": {"start": r["debut_bail_crm"]}}      # une date saisie à la main n'est jamais écrasée
+        if r.get("flex_crm") and not r.get("_flex_memoire") and await VALID.assurer_colonne("Flexoffice", "checkbox"):
+            props["Flexoffice"] = {"checkbox": True}
         if props:
             a_faire.append((r["_page_memoire"], props))
     if not a_faire:
@@ -304,6 +313,12 @@ async def enregistrer(job: dict, norm_nom, journal):
     import v3_equipe as EQ
     idx = job.get("_idx_tout") or await index(lambda *_: None, tout=True)
     negos_ok = await assurer_colonne_negos()
+    import v3_validation as VALID                     # colonnes créées au premier usage (écran de validation ou fichier CRM)
+    rs = job.get("resultats", [])
+    colonnes = {"bail": any(e.get("debut_bail") for e in idx) or (any(r.get("debut_bail_crm") for r in rs)
+                                                                  and await VALID.assurer_colonne("Début de bail", "date")),
+                "flex": any(e.get("flexoffice") for e in idx) or (any(r.get("flex_crm") for r in rs)
+                                                                  and await VALID.assurer_colonne("Flexoffice", "checkbox"))}
     maintenant = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ok = 0
     async with httpx.AsyncClient(timeout=30) as c:
@@ -344,11 +359,11 @@ async def enregistrer(job: dict, norm_nom, journal):
                 v = next((e[cle] for e in meme if e.get(cle)), "")
                 if v:                                       # la colonne existe forcément : une ancienne ligne l'a remplie
                     props[col] = _txts(v)
-            bail = next((e["debut_bail"] for e in meme if e.get("debut_bail")), "")
-            if bail:                                        # date saisie à la main : on la garde
+            bail = next((e["debut_bail"] for e in meme if e.get("debut_bail")), "") or r.get("debut_bail_crm", "")
+            if bail and colonnes.get("bail"):               # saisie à la main d'abord, sinon celle du fichier CRM
                 props["Début de bail"] = {"date": {"start": bail}}
-            if any(e.get("flexoffice") for e in meme):      # case cochée à la main : on la garde
-                props["Flexoffice"] = {"checkbox": True}
+            if (any(e.get("flexoffice") for e in meme) or r.get("flex_crm")) and colonnes.get("flex"):
+                props["Flexoffice"] = {"checkbox": True}     # cochée à la main, ou opérateur flex dans le fichier CRM
             if next((e for e in meme if e.get("siren_corrige")), None):
                 props["SIREN"] = _txt(next(e for e in meme if e.get("siren_corrige"))["siren"])   # le SIREN corrigé à la main prime
             ancienne = next((e for e in meme if e.get("adresse_retenue")), None)

@@ -688,6 +688,9 @@ def lire_fichier(nom: str, data: bytes) -> list:
     c_siren = col("siren")
     c_notion = col("adresse notion") or col("adresse des locaux") or col("adresse locaux")
     c_quali = col("base quali")
+    c_bail = col("date debut de bail") or col("date début de bail") or col("debut de bail", exclure=("annee", "année")) \
+        or col("début de bail", exclure=("annee", "année"))
+    c_flex = col("operateur flex") or col("opérateur flex") or col("flexoffice")
     c_adr = col("adresse", exclure=("verifi", "vérifi", "notion", "locaux")) or col("address")
     out = []
     for l in lignes:
@@ -701,8 +704,25 @@ def lire_fichier(nom: str, data: bytes) -> list:
                     "adresse_crm": (l.get(c_adr) or "").strip() if c_adr else "",
                     "cp": _cp(l, c_cp, c_adr), "ville": (l.get(c_ville) or "").strip() if c_ville else "",
                     **({"adresse_notion": v} if c_notion and (v := (l.get(c_notion) or "").strip()) else {}),
-                    **({"base_quali_crm": q} if c_quali and (q := str(l.get(c_quali) or "").strip()) else {})})
+                    **({"base_quali_crm": q} if c_quali and (q := str(l.get(c_quali) or "").strip()) else {}),
+                    **({"debut_bail_crm": b} if c_bail and (b := date_bail(l.get(c_bail))) else {}),
+                    **({"flex_crm": x} if c_flex and (x := str(l.get(c_flex) or "").strip()) else {})})
     return out
+
+
+def date_bail(v) -> str:
+    """Date de début de bail d'un export CRM : « 2010-07-27 », « 2010-07-27 00:00:00 » ou « 27/07/2010 » → 2010-07-27."""
+    t = str(v or "").strip()
+    if m := re.match(r"(\d{4})-(\d{2})-(\d{2})", t):
+        y, mo, d = m.groups()
+    elif m := re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})$", t):
+        d, mo, y = m.groups()
+    else:
+        return ""
+    try:
+        return date(int(y), int(mo), int(d)).isoformat()
+    except ValueError:
+        return ""
 
 
 # ───────────────────────── traitement ─────────────────────────
@@ -1439,7 +1459,8 @@ async def attribuer_anciens(req: Request, mail: str = "mmoriceau@equation-sie.co
 
 
 # ───────────────────────── relance des sociétés traitées sans dirigeants (phantom en panne) ─────────────────────────
-CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "infos_source", "base_quali_crm")
+CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "infos_source", "base_quali_crm",
+              "debut_bail_crm", "flex_crm")
 
 
 @router.get("/v3/validation/api/relancer-vides")
