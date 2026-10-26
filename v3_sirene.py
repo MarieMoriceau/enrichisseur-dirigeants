@@ -41,6 +41,32 @@ def operateur_cite(adresse: str) -> str:
     return next((o for o in OPERATEURS_FLEX if f" {_norm(o)} " in a), "")
 
 
+# champs SIRENE autres que l'adresse où le nom d'un opérateur peut figurer (domiciliataire, complément, enseigne…)
+def _texte_etab(e: dict) -> str:
+    """Adresse + tous les textes de l'établissement dont le nom évoque une domiciliation, un complément d'adresse,
+    une enseigne ou un nom commercial (le nom exact du champ « domiciliation » varie selon les sources)."""
+    morceaux = [e.get("adresse") or ""]
+    for k, v in e.items():
+        if not re.search(r"domicil|complement|enseigne|commercial|denomination_usuelle", k):
+            continue
+        if isinstance(v, str):
+            morceaux.append(v)
+        elif isinstance(v, list):
+            morceaux += [x for x in v if isinstance(x, str)]
+        elif isinstance(v, dict):
+            morceaux += [x for x in v.values() if isinstance(x, str)]
+    return " ".join(morceaux)
+
+
+def meme_rue(a: str, b: str) -> bool:
+    """Même rue et même code postal, numéros différents tolérés (siège au 12, bureaux au 8 de la même rue)."""
+    ka, kb = LI.cle_adresse(a), LI.cle_adresse(b)
+    if not (ka and kb) or ka[2] != kb[2] or not (ka[1] and kb[1]):
+        return False
+    x, y = ka[1], kb[1]
+    return x in y or y in x or x.split()[0] == y.split()[0]
+
+
 def _numeros(a: str) -> set:
     """Numéros de rue d'une adresse, plages comprises : « 2-4 », « 17-21 », « 26 AU 28 », « 43- 45 » (SIRENE écrit
     souvent « 2-4 2 RUE JULES LEFEBVRE » quand les bureaux sont au « 4 rue Jules Lefebvre »)."""
@@ -91,7 +117,8 @@ async def etablissements(api, siren: str, nom: str, cp: str) -> list:
             for e in [x.get("siege") or {}] + (x.get("matching_etablissements") or []):
                 if e.get("adresse") and not any(o["siret"] == e.get("siret") for o in out):
                     out.append({"siret": e.get("siret", ""), "adresse": e["adresse"], "date_creation": e.get("date_creation") or "",
-                                "est_siege": bool(e.get("est_siege")), "ouvert": e.get("etat_administratif") == "A"})
+                                "est_siege": bool(e.get("est_siege")), "ouvert": e.get("etat_administratif") == "A",
+                                "texte": _texte_etab(e)})
         if out:
             break
     return out
@@ -121,8 +148,9 @@ async def centres_flex(api, cp: str) -> list:
 
 
 async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
-    """{date, etab, siege, operateur, indice} pour l'adresse des bureaux."""
-    rep = {"date": "", "etab": "", "siege": "", "operateur": "", "indice": ""}
+    """{date, etab, siege, operateur, indice, sur} pour l'adresse des bureaux. `sur` : l'opérateur est écrit dans la
+    fiche SIRENE de la société elle-même (pas seulement un centre voisin), Flexoffice peut être coché."""
+    rep = {"date": "", "etab": "", "siege": "", "operateur": "", "indice": "", "sur": False}
     cp = _cp(bureaux)
     if not (siren and LI.cle_adresse(bureaux)):
         rep["indice"] = "adresse des bureaux incomplète (numéro, rue, code postal)" if siren else "pas de SIREN"
@@ -132,10 +160,21 @@ async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
     if ici:
         e = ici[0]
         rep.update(date=e["date_creation"], etab=e["adresse"], siege="oui" if e["est_siege"] else "non (établissement secondaire)")
-        if (o := operateur_cite(e["adresse"])):
-            rep.update(operateur=o, indice=f"adresse SIRENE de la société : « {e['adresse']} »")
+        if (o := operateur_cite(e.get("texte") or e["adresse"])):
+            rep.update(operateur=o, sur=True, indice=f"fiche SIRENE de la société : « {e.get('texte') or e['adresse']} »")
     else:
         rep["indice"] = "aucun établissement de la société à l'adresse des bureaux"
+    if not rep["operateur"]:
+        # siège ouvert domicilié chez un opérateur (« Domiciliation : PATCHWORK ») : dans la même rue que les bureaux,
+        # c'est le centre où ils travaillent ; ailleurs, simple domiciliation possible → probable
+        for e in sorted([e for e in etabs if e["est_siege"] and e["ouvert"]], key=lambda e: e["date_creation"], reverse=True):
+            if (o := operateur_cite(e.get("texte") or "")):
+                proche = meme_rue(e["adresse"], bureaux)
+                rep.update(operateur=o, sur=proche, indice=f"siège domicilié chez {o} (SIRENE : {e['adresse']})"
+                                                            + ("" if proche else ", rue différente des bureaux"))
+                if proche and not rep["date"]:
+                    rep.update(date=e["date_creation"], etab=e["adresse"], siege="oui (domicilié chez l'opérateur)")
+                break
     if not rep["operateur"] and cp:
         for o, a, n in await centres_flex(api, cp):
             if meme_lieu(a, bureaux):
@@ -147,18 +186,18 @@ async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
 # ───────────────────────── écriture dans la fiche ─────────────────────────
 async def appliquer(api, page_id: str, info: dict, adresse: str) -> dict:
     """Remplit ce qui est vide : « Début de bail » (+ sa source) et « Opérateur flex » ; coche « Flexoffice » quand
-    l'opérateur est cité dans l'adresse SIRENE de la société (sûr). Centre à la même adresse : « … (probable) », à confirmer.
+    l'opérateur figure dans la fiche SIRENE de la société (adresse, domiciliation, enseigne : sûr). Centre à la même adresse : « … (probable) », à confirmer.
     Ne remplace jamais une saisie à la main ni une valeur venue du fichier CRM."""
     r = await analyser(api, info.get("siren", ""), info.get("nom", ""), adresse)
     props = {}
     if r["date"] and not info.get("debut_bail") and await VALID.assurer_colonne("Début de bail", "date"):
         props["Début de bail"] = {"date": {"start": r["date"]}}
         if await VALID.assurer_colonne("Source début de bail"):
-            props["Source début de bail"] = MEM._txt(f"SIRENE : établissement ({'siège' if r['siege'] == 'oui' else 'secondaire'}) "
+            props["Source début de bail"] = MEM._txt(f"SIRENE : établissement ({'siège' if r['siege'].startswith('oui') else 'secondaire'}) "
                                                      f"créé à cette adresse le {r['date'][8:10]}/{r['date'][5:7]}/{r['date'][:4]}")
     if r["operateur"] and not (info.get("operateur_flex") or "").replace("(probable)", "").strip() \
             and await VALID.assurer_colonne("Opérateur flex"):
-        sur = r["indice"].startswith("adresse SIRENE") or bool(info.get("flexoffice"))   # déjà coché : l'opérateur n'est plus « probable »
+        sur = bool(r.get("sur")) or bool(info.get("flexoffice"))   # déjà coché : l'opérateur n'est plus « probable »
         props["Opérateur flex"] = MEM._txt(r["operateur"] if sur else f"{r['operateur']} (probable)")
         if sur and not info.get("flexoffice") and await VALID.assurer_colonne("Flexoffice", "checkbox"):
             props["Flexoffice"] = {"checkbox": True}
@@ -281,3 +320,15 @@ async def sirene_essai_excel(req: Request):
     buf = io.BytesIO(); wb.save(buf)
     return StreamingResponse(io.BytesIO(buf.getvalue()), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="essai_sirene_bail_flex_{datetime.now():%Y-%m-%d}.xlsx"'})
+
+
+@router.get("/v3/validation/api/sirene-une")
+async def sirene_une(req: Request, siren: str, adresse: str, nom: str = ""):
+    """Admin. Essai à blanc pour une société : ce que SIRENE donne pour ces bureaux, rien n'est écrit.
+    Montre aussi les champs bruts du siège pour vérifier où figure la domiciliation."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    async with httpx.AsyncClient(timeout=20) as api:
+        r = await analyser(api, siren.strip(), nom, adresse)
+        brut = [x.get("siege") for x in await _chercher(api, {"q": siren.strip()}) if x.get("siren") == siren.strip()]
+    return {"essai_a_blanc": True, "resultat": r, "siege_brut": brut[:1]}

@@ -63,3 +63,26 @@ def test_plage_meme_cote():
     assert S.meme_lieu("17-21 17 RUE SAINT-FIACRE 75002 PARIS", "19 rue Saint-Fiacre, 75002 Paris")
     assert not S.meme_lieu("17-21 17 RUE SAINT-FIACRE 75002 PARIS", "20 Rue Saint-Fiacre, 75002 Paris")
     assert not S.meme_lieu("17-21 17 RUE SAINT-FIACRE 75002 PARIS", "18 Rue Saint-Fiacre, 75002 Paris")
+
+
+def test_siege_domicilie_chez_operateur(monkeypatch):
+    """H Company : siège au 12 rue Sainte-Cécile « Domiciliation : PATCHWORK », bureaux au 8 de la même rue."""
+    S._CENTRES.clear()
+    async def chercher(api, p):
+        if p["q"] in ("H Company", "927528471"):
+            return [{"siren": "927528471", "siege": {"siret": "92752847100026", "adresse": "12 RUE SAINTE-CECILE 75009 PARIS",
+                                                     "date_creation": "2025-11-25", "est_siege": True, "etat_administratif": "A",
+                                                     "domiciliation": {"nom": "PATCHWORK"}},
+                     "matching_etablissements": [{"siret": "92752847100018", "adresse": "22 RUE DROUOT 75009 PARIS",
+                                                  "date_creation": "2024-04-09", "est_siege": False, "etat_administratif": "F"}]}]
+        return []
+    monkeypatch.setattr(S, "_chercher", chercher)
+    r = asyncio.run(S.analyser(None, "927528471", "H Company", "8 rue Sainte-Cécile 75009"))
+    assert r["operateur"] == "Patchwork" and r["sur"] and r["date"] == "2025-11-25"
+    r = asyncio.run(S.analyser(None, "927528471", "H Company", "5 rue de Provence 75009"))
+    assert r["operateur"] == "Patchwork" and not r["sur"] and r["date"] == ""
+
+
+def test_texte_etab():
+    assert S.operateur_cite(S._texte_etab({"adresse": "12 RUE X 75009", "complement_adresse": "C/O WOJO"})) == "Wojo"
+    assert S.operateur_cite(S._texte_etab({"adresse": "12 RUE X 75009", "liste_enseignes": ["KWERK"]})) == "Kwerk"
