@@ -394,7 +394,7 @@ function ecranSociete() {
       <div class="fait"><span>Flexoffice</span>
         <label style="display:flex;gap:8px;align-items:center;margin:8px 0;font-size:15px;cursor:pointer">
           <input type="checkbox" id="valFlex" ${info.flexoffice ? "checked" : ""} style="width:18px;height:18px"> en bureau flexible</label>
-        <div id="flexOp">${info.operateur_flex ? `<p style="margin:0"><b>${esc(info.operateur_flex.replace("(probable)", ""))}</b>${info.operateur_flex.includes("(probable)") && !info.flexoffice ? `<br><small>centre de l'opérateur à la même adresse (SIRENE) : cochez pour confirmer</small>` : ""}</p>` : `<p style="margin:0"><small>opérateur : lecture SIRENE…</small></p>`}</div>
+        <div id="flexOp">${info.operateur_flex && info.operateur_flex !== "(aucun)" ? `<p style="margin:0"><b>${esc(info.operateur_flex.replace("(probable)", ""))}</b>${info.operateur_flex.includes("(probable)") && !info.flexoffice ? `<br><small>centre de l'opérateur à la même adresse (SIRENE) : cochez pour confirmer</small>` : ""}</p>` : `<p style="margin:0"><small>opérateur : lecture SIRENE…</small></p>`}</div>
         <p class="msg" id="msgFlex"></p></div>
     </div>
     ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}
@@ -419,8 +419,30 @@ function ecranSociete() {
     const r = document.querySelector('input[name=adr]:checked');
     return !r ? "" : r.value === "Saisie" ? ($("#saisie").value || "") : (r.dataset.a || "");
   };
+  const lienFlex = (txt, id) => ` · <button class="lien" id="${id}" type="button" style="font-size:12px">${txt}</button>`;
+  const brancherFlex = () => {
+    if ($("#retirerOp")) $("#retirerOp").onclick = () => decisionFlex(true);
+    if ($("#retablirOp")) $("#retablirOp").onclick = () => decisionFlex(false);
+  };
+  const decisionFlex = async retirer => {
+    const page = courant;
+    try {
+      const r = await api("/v3/validation/api/operateur-flex/" + page, {retirer});
+      if (page !== courant) return;
+      info.operateur_flex = r.operateur_flex; opSirene = "";
+      if (retirer) { $("#flexOp").innerHTML = `<p style="margin:0"><small>aucun opérateur (retiré à la main)</small>${lienFlex("rétablir", "retablirOp")}</p>`; brancherFlex(); }
+      else lireFlex();
+    } catch (e) { $("#msgFlex").className = "msg err"; $("#msgFlex").textContent = e.message; }
+  };
   const lireFlex = async () => {
-    if (info.operateur_flex) return;
+    if (info.operateur_flex === "(aucun)") {
+      $("#flexOp").innerHTML = `<p style="margin:0"><small>aucun opérateur (retiré à la main)</small>${lienFlex("rétablir", "retablirOp")}</p>`;
+      return brancherFlex();
+    }
+    if (info.operateur_flex) {
+      $("#flexOp").innerHTML = `<p style="margin:0"><b>${esc(info.operateur_flex.replace("(probable)", ""))}</b>${lienFlex("retirer", "retirerOp")}${info.operateur_flex.includes("(probable)") && !info.flexoffice ? `<br><small>centre de l'opérateur à la même adresse (SIRENE) : cochez pour confirmer</small>` : ""}</p>`;
+      return brancherFlex();
+    }
     const page = courant, adr = adresseCochee();
     if (!adr) { $("#flexOp").innerHTML = `<p style="margin:0"><small>opérateur : choisissez une adresse</small></p>`; return; }
     $("#flexOp").innerHTML = `<p style="margin:0"><small>opérateur : lecture SIRENE…</small></p>`;
@@ -430,8 +452,9 @@ function ecranSociete() {
       opSirene = r.operateur || "";
       if (r.enregistre) info.operateur_flex = opSirene;
       $("#flexOp").innerHTML = opSirene
-        ? `<p style="margin:0"><b>${esc(opSirene)}</b><br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
+        ? `<p style="margin:0"><b>${esc(opSirene)}</b>${lienFlex("retirer", "retirerOp")}<br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
         : `<p style="margin:0"><small>aucun opérateur déclaré à cette adresse (SIRENE)</small></p>`;
+      brancherFlex();
     } catch (e) { $("#flexOp").innerHTML = `<p style="margin:0"><small>SIRENE injoignable</small></p>`; }
   };
   document.querySelectorAll('input[name=adr]').forEach(x => x.addEventListener("change", lireFlex));
@@ -441,7 +464,7 @@ function ecranSociete() {
     const page = courant, c = $("#valFlex").checked; $("#valFlex").disabled = true;
     try {
       const r = await api("/v3/validation/api/flexoffice/" + page, {coche: c, operateur: opSirene});
-      if (r.operateur_flex) info.operateur_flex = r.operateur_flex;
+      if (r.operateur_flex) { info.operateur_flex = r.operateur_flex; lireFlex(); }
       info.flexoffice = r.flexoffice; $("#msgFlex").className = "msg"; $("#msgFlex").textContent = "enregistré";
     } catch (e) { $("#valFlex").checked = !c; $("#msgFlex").className = "msg err"; $("#msgFlex").textContent = e.message; }
     $("#valFlex").disabled = false;
