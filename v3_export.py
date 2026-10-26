@@ -70,7 +70,9 @@ def construire(socs: list) -> tuple:
                       d.get("statut_activite") or d.get("statut", ""), d.get("raison_sociale", ""), d.get("naf", ""), VALID.activite_de(d), d.get("secteur", ""),
                       re.sub(r"^\W+", "", d.get("verdict_domiciliation", "")).strip(), s.get("base_quali") or d.get("base_quali_crm", ""),
                       s.get("debut_bail", ""), "oui" if s.get("flexoffice") else "",
-                      (s.get("operateur_flex") or "").replace("(probable)", "(à confirmer)"), d.get("id", ""), _date(s["validee"])])
+                      (s.get("operateur_flex") or "").replace(" (probable)" if s.get("flexoffice") else "(probable)",
+                                                              "" if s.get("flexoffice") else "(à confirmer)").strip(),
+                      d.get("id", ""), _date(s["validee"])])
 
     # ── contacts (nouveaux validés par les négos)
     l_new, l_exist = [], []
