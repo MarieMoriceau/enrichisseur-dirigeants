@@ -171,7 +171,7 @@ def construire(socs: list) -> tuple:
     feuille(wb, "Sociétés écartées", ["Société", "Domaine", "SIREN", "ID Pipedrive", "Décision", "Motif", "Écartée le"],
             [[s["nom"], domaine_de[s["page"]], s["siren"], (s["data"] or {}).get("id", ""), s.get("decision_ecart") or "Hors cible HubSpot",
               s.get("motif_ecart", ""), _date(s["validee"])] for s in ecartees])
-    feuille(wb, "À supprimer de Pipedrive", ["Société", "ID Pipedrive", "SIREN", "Domaine", "Motif", "Décidé le"],
+    feuille(wb, "À supprimer (Pipedrive, HubSpot)", ["Société", "ID Pipedrive", "SIREN", "Domaine", "Motif", "Décidé le"],
             [[s["nom"], (s["data"] or {}).get("id", ""), s["siren"], domaine_de[s["page"]], s.get("motif_ecart", ""), _date(s["validee"])]
              for s in a_suppr])
     b = io.BytesIO()

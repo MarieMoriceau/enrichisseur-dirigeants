@@ -271,7 +271,7 @@ function dessinerListe() {
       <small>${esc(s.domaine || s.siren || "—")} · ${s.effectif ?? "?"} sal. LinkedIn · ${esc(s.traitee)}</small>
       ${filtre === "Toutes" ? `<span class="pill ${PILL[s.validation]}">${esc(lib(s.validation))}</span>` : ""}
       ${etiquetteNego(s)}
-      ${s.validation === "Écartée" ? `<span class="pill ko">${s.decision_ecart === "À supprimer de la base" ? "à supprimer" : "hors HubSpot"}</span>` : ""}
+      ${s.validation === "Écartée" ? `<span class="pill ko">à supprimer</span>` : ""}
     </button>`).join("") : `<div class="vide">Rien ici.</div>`;
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
@@ -350,7 +350,7 @@ function ecranSociete() {
   if (/radi|ferm/i.test(d.statut || "")) alertes.push(["Société fermée", "Société fermée à l'INSEE"]);
   $("#ecran").innerHTML = `
     ${alertes.length ? `<div class="alerte"><b>À regarder :</b> ${alertes.map(a => esc(a[1])).join(" · ")}. Elle n'entre peut-être pas dans HubSpot.</div>` : ""}
-    ${info.validation === "Écartée" ? `<div class="alerte ko"><b>${esc(info.decision_ecart || "Hors cible HubSpot")}</b>${info.motif_ecart ? " · " + esc(info.motif_ecart) : ""}${info.validee ? ` · le ${esc(info.validee)}` : ""}</div>` : ""}
+    ${info.validation === "Écartée" ? `<div class="alerte ko"><b>${esc(info.decision_ecart || "À supprimer de la base")}</b>${info.motif_ecart ? " · " + esc(info.motif_ecart) : ""}${info.validee ? ` · le ${esc(info.validee)}` : ""}</div>` : ""}
     <div class="reco"><b>Recommandation de l'outil :</b> ${esc(physique(d.action_adresse) || "aucune")}
       ${d.adresse_proposee ? `<br><b>Adresse proposée :</b> ${esc(d.adresse_proposee)}` : ""}
       ${d.confiance_adresse ? `<br><small>Confiance ${esc(d.confiance_adresse)}${d.sources_adresse ? " · sources : " + esc(physique(d.sources_adresse)) : ""}</small>` : ""}
@@ -401,12 +401,7 @@ function ecranSociete() {
     </div>
     <div class="ecart" id="panEcart" hidden>
       <h3>Écarter cette société</h3>
-      <div class="choix-ecart">
-        <label><input type="radio" name="dec" value="Hors cible HubSpot" ${info.decision_ecart !== "À supprimer de la base" ? "checked" : ""}>
-          <span><b>N'entre pas dans HubSpot</b><small>Elle reste dans Pipedrive, on ne l'importe pas.</small></span></label>
-        <label><input type="radio" name="dec" value="À supprimer de la base" ${info.decision_ecart === "À supprimer de la base" ? "checked" : ""}>
-          <span><b>À supprimer de la base</b><small>Listée dans l'onglet « À supprimer de Pipedrive » de l'export.</small></span></label>
-      </div>
+      <p class="note">La société sera <b>à supprimer de la base</b> : listée dans l'onglet « À supprimer » de l'export (Pipedrive aujourd'hui, HubSpot demain). Pour un nom ou un SIREN faux, ne l'écartez pas : corrigez-le puis « Relancer cette société ».</p>
       <div class="motifs">${MOTIFS.map(m => `<label><input type="checkbox" value="${esc(m)}" ${alertes.some(a => a[0] === m) || (info.motif_ecart || "").includes(m) ? "checked" : ""}> ${esc(m)}</label>`).join("")}</div>
       <input type="text" id="motifLibre" placeholder="Autre précision (facultatif)" aria-label="Autre précision">
       <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
@@ -478,7 +473,7 @@ function ecranSociete() {
   $("#koSoc").onclick = () => { $("#panEcart").hidden = false; $("#panEcart").scrollIntoView({behavior: "smooth", block: "nearest"}); };
   $("#annEcart").onclick = () => { $("#panEcart").hidden = true; };
   $("#okEcart").onclick = () => envoyerSociete({statut: "Écartée",
-    decision: (document.querySelector("input[name=dec]:checked") || {}).value,
+    decision: "À supprimer de la base",
     motifs: [...document.querySelectorAll("#panEcart .motifs input:checked")].map(x => x.value),
     motif_libre: $("#motifLibre").value.trim()});
   $("#raz") && ($("#raz").onclick = () => envoyerSociete({statut: "À valider"}, "societe"));
