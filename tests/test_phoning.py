@@ -12,12 +12,14 @@ def test_phoning(monkeypatch):
                                 "final_email": "jd@x.fr", "final_fonction": "CEO", "final_role": "1 CEO", "le": "2026-10-25T10:00:00"},
                 "paul": {"etat": "écarté", "nom_complet": "Paul X"}}
     async def toutes():
-        return [{"page": "p1", "nom": "Botify", "lancement": "locataires_flex_paris (suite 1/2) ; autre", "validation": "À valider",
+        return [{"page": "p1", "nom": "Botify", "lancement": "locataires_flex_paris (suite 1/2) ; autre", "validation": "À valider", "decisions": "",
                  "nouveaux": json.dumps(nouveaux, ensure_ascii=False), "negos": "Richard", "adresse_retenue": ""},
-                {"page": "p2", "nom": "Hors fichier", "lancement": "autre", "validation": "À valider",
+                {"page": "p2", "nom": "Hors fichier", "lancement": "autre", "validation": "À valider", "decisions": "",
                  "nouveaux": json.dumps(nouveaux, ensure_ascii=False)}]
     async def lire(p):
-        return {"domaine": "botify.com", "adresse_proposee": "7 rue de Madrid, 75008 Paris", "effectif_linkedin": 274, "dirigeants": []}
+        return {"domaine": "botify.com", "adresse_proposee": "7 rue de Madrid, 75008 Paris", "effectif_linkedin": 274, "dirigeants": [],
+                "contacts_crm": [{"id": "9", "nom_complet": "Anna Naccache", "fonction": "DAF", "telephone": "0601020304", "statut": "",
+                                  "fiche_doublon": "15395"}, {"id": "8", "nom_complet": "Parti Gone", "statut": "probablement parti"}]}
     async def moi(req):
         return {"role": "admin", "mail": "m@x.fr", "membre": {}, "equipe": []}
     monkeypatch.setattr(VALID, "_toutes", toutes); monkeypatch.setattr(MEM, "lire", lire); monkeypatch.setattr(VALID, "moi", moi)
@@ -27,5 +29,6 @@ def test_phoning(monkeypatch):
     assert r.status_code == 200, r.text
     ws = load_workbook(io.BytesIO(r.content)).active
     rows = list(ws.iter_rows(values_only=True))
-    assert len(rows) == 2 and rows[1][0] == "Botify" and rows[1][4] == "Jean" and rows[1][8] == "jd@x.fr"
+    assert len(rows) == 3 and rows[1][0] == "Botify" and rows[1][4] == "Nouveau contact" and rows[1][5] == "Jean" and rows[1][9] == "jd@x.fr"
     assert rows[1][2].startswith("7 rue de Madrid")
+    assert rows[2][4] == "Pipedrive" and rows[2][5] == "Anna" and rows[2][10] == "0601020304" and "doublon 15395" in rows[2][12]
