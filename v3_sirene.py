@@ -48,8 +48,8 @@ def _numeros(a: str) -> set:
     t = t[:m.start()] if (m := re.search(r"\b\d{5}\b", t)) else t
     out = set()
     for d, f in re.findall(r"\b(\d{1,4})\s*(?:-|a|au|et)\s*(\d{1,4})\b", t):
-        if 0 < int(f) - int(d) <= 12:
-            out |= set(range(int(d), int(f) + 1))
+        if 0 < int(f) - int(d) <= 12:                 # « 17-21 » = 17, 19, 21 (même côté de la rue)
+            out |= set(range(int(d), int(f) + 1, 2 if (int(f) - int(d)) % 2 == 0 else 1))
     out |= {int(n) for n in re.findall(r"\b(\d{1,4})(?:bis|ter|b)?\b", t)}
     return out
 
@@ -158,7 +158,7 @@ async def appliquer(api, page_id: str, info: dict, adresse: str) -> dict:
                                                      f"créé à cette adresse le {r['date'][8:10]}/{r['date'][5:7]}/{r['date'][:4]}")
     if r["operateur"] and not (info.get("operateur_flex") or "").replace("(probable)", "").strip() \
             and await VALID.assurer_colonne("Opérateur flex"):
-        sur = r["indice"].startswith("adresse SIRENE")
+        sur = r["indice"].startswith("adresse SIRENE") or bool(info.get("flexoffice"))   # déjà coché : l'opérateur n'est plus « probable »
         props["Opérateur flex"] = MEM._txt(r["operateur"] if sur else f"{r['operateur']} (probable)")
         if sur and not info.get("flexoffice") and await VALID.assurer_colonne("Flexoffice", "checkbox"):
             props["Flexoffice"] = {"checkbox": True}

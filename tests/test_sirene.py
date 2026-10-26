@@ -57,3 +57,9 @@ def test_appliquer(monkeypatch):
     ecrit.clear()
     asyncio.run(S.appliquer(None, "p", {"siren": "1", "nom": "A", "debut_bail": "2020-01-01", "operateur_flex": "Morning"}, "x"))
     assert ecrit == {}                                  # rien d'écrasé
+
+
+def test_plage_meme_cote():
+    assert S.meme_lieu("17-21 17 RUE SAINT-FIACRE 75002 PARIS", "19 rue Saint-Fiacre, 75002 Paris")
+    assert not S.meme_lieu("17-21 17 RUE SAINT-FIACRE 75002 PARIS", "20 Rue Saint-Fiacre, 75002 Paris")
+    assert not S.meme_lieu("17-21 17 RUE SAINT-FIACRE 75002 PARIS", "18 Rue Saint-Fiacre, 75002 Paris")
