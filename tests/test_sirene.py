@@ -109,3 +109,24 @@ def test_route_sirene_flex(monkeypatch):
     j = TestClient(app).get(f"/v3/validation/api/sirene-flex/{page}").json()
     assert j["operateur"] == "Patchwork" and j["enregistre"]
     assert ecrit["Opérateur flex"]["rich_text"][0]["text"]["content"] == "Patchwork"
+
+
+def test_operateur_retire(monkeypatch):
+    import v3_validation as VALID
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI(); app.include_router(S.router)
+    async def une(p):
+        return {"siren": "927528471", "flexoffice": True, "operateur_flex": "(aucun)", "adresse_retenue": "8 rue Sainte-Cécile 75009"}
+    monkeypatch.setattr(VALID, "_refus", lambda req, b: None); monkeypatch.setattr(VALID, "_une", une)
+    j = TestClient(app).get("/v3/validation/api/sirene-flex/" + "0" * 32).json()
+    assert j["operateur"] == "" and j["retire"]
+    # la validation (appliquer) ne remplace pas un opérateur retiré
+    ecrit = {}
+    async def maj(p, props): ecrit.update(props); return {}
+    async def col(nom, genre="rich_text"): return True
+    async def analyse(api, siren, nom, adr):
+        return {"date": "", "etab": "", "siege": "", "operateur": "Patchwork", "indice": "centre", "sur": False}
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col); monkeypatch.setattr(S, "analyser", analyse)
+    asyncio.run(S.appliquer(None, "p", {"siren": "1", "debut_bail": "x", "operateur_flex": "(aucun)", "flexoffice": True}, "x"))
+    assert "Opérateur flex" not in ecrit

@@ -1723,6 +1723,26 @@ async def flexoffice_ecrire(page_id: str, req: Request):
     return {"ok": True, "flexoffice": coche, "operateur_flex": maj.get("operateur_flex", "") if isinstance(maj, dict) else ""}
 
 
+AUCUN_OPERATEUR = "(aucun)"     # opérateur retiré à la main : SIRENE ne le repropose plus
+
+
+@router.post("/v3/validation/api/operateur-flex/{page_id}")
+async def operateur_flex_ecrire(page_id: str, req: Request):
+    """Admin : {"retirer": true} retire l'opérateur (SIRENE ne le repropose plus) ; {"retirer": false} efface la
+    décision pour relancer la lecture SIRENE."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    retirer = bool((await req.json()).get("retirer"))
+    if not await VALID.assurer_colonne("Opérateur flex"):
+        return JSONResponse({"erreur": "Notion refuse de créer la colonne « Opérateur flex »"}, 502)
+    maj = await VALID._maj(page_id, {"Opérateur flex": MEM._txt(AUCUN_OPERATEUR if retirer else "")})
+    if isinstance(maj, JSONResponse):
+        return maj
+    return {"ok": True, "operateur_flex": AUCUN_OPERATEUR if retirer else ""}
+
+
 @router.post("/v3/validation/api/siren/{page_id}")
 async def corriger_siren(page_id: str, req: Request):
     """Admin : remplace un SIREN faux. Le nouveau est contrôlé (9 chiffres, clé) et sa fiche INSEE est relue.

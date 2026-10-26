@@ -342,6 +342,8 @@ async def sirene_flex(page_id: str, req: Request, adresse: str = ""):
     if not VALID.RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     info = await VALID._une(page_id) or {}
+    if (info.get("operateur_flex") or "").strip() == "(aucun)":
+        return {"operateur": "", "indice": "retiré à la main", "retire": True}
     if (info.get("operateur_flex") or "").strip():
         return {"operateur": info["operateur_flex"].replace("(probable)", "").strip(), "indice": "", "enregistre": True}
     adresse = adresse.strip() or info.get("adresse_retenue", "")
