@@ -200,22 +200,46 @@ async def excel(req: Request):
 
 
 # ───────── contacts Pipedrive jamais lus (société sans page LinkedIn, avant le 26/10) ─────────
-MANQUANTS = {"actif": False, "phase": "", "total": 0, "fait": 0, "ok": 0, "contacts": 0, "echecs": []}
+# Tout se fait en tâche de fond (analyse de ~600 fiches Notion : trop long pour une seule requête web) ;
+# rappeler l'adresse pour voir où on en est.
+MANQUANTS = {"actif": False, "phase": "", "analysees": 0, "total": 0, "a_lire": None, "exemples": [], "fait": 0, "ok": 0,
+             "contacts": 0, "echecs": [], "illisibles": 0, "_cibles": [], "_quand": 0.0}
 
 
-async def _candidats_manquants() -> list:
+async def _lire_page(s):
+    for essai in range(3):
+        try:
+            return await MEM.lire(s["page"])
+        except Exception:
+            await asyncio.sleep(2 + essai * 3)
+    return None
+
+
+async def _analyser():
     socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée" and s["perimetre"] in ("dirigeants", "tout")]
-    sem = asyncio.Semaphore(4)
+    MANQUANTS.update(total=len(socs), analysees=0, illisibles=0)
+    sem, cibles = asyncio.Semaphore(3), []
     async def voir(s):
         async with sem:
-            d = await MEM.lire(s["page"])
-        return (s, d) if d and str(d.get("id") or "").isdigit() and "contacts_crm" not in d else None
-    return [x for x in await asyncio.gather(*(voir(s) for s in socs)) if x]
+            d = await _lire_page(s)
+        MANQUANTS["analysees"] += 1
+        if d is None:
+            MANQUANTS["illisibles"] += 1
+        elif d and str(d.get("id") or "").isdigit() and "contacts_crm" not in d:
+            cibles.append((s, d))
+    await asyncio.gather(*(voir(s) for s in socs))
+    return cibles
 
 
-async def _lire_manquants(cibles: list):
-    MANQUANTS.update(actif=True, total=len(cibles), fait=0, ok=0, contacts=0, echecs=[], phase="lecture Pipedrive")
+async def _tache_manquants(confirmer: bool):
+    MANQUANTS.update(actif=True, phase="analyse des fiches", fait=0, ok=0, contacts=0, echecs=[])
     try:
+        cibles = await _analyser()
+        MANQUANTS.update(a_lire=len(cibles), exemples=[s["nom"] for s, _ in cibles[:40]], _cibles=cibles, _quand=time.time())
+        if not confirmer:
+            MANQUANTS["phase"] = "essai à blanc terminé : rien n'a été écrit"
+            return
+        MANQUANTS["phase"] = "lecture Pipedrive et enregistrement"
         async with httpx.AsyncClient(timeout=30) as c:
             for s, data in cibles:
                 try:
@@ -228,23 +252,25 @@ async def _lire_manquants(cibles: list):
                 except Exception as e:
                     MANQUANTS["echecs"].append(f"{s['nom']} : {e}")
                 MANQUANTS["fait"] += 1
+        MANQUANTS["phase"] = "terminé"
+    except Exception as e:
+        MANQUANTS["phase"] = f"arrêt sur erreur : {e}"
     finally:
-        MANQUANTS.update(actif=False, phase="terminé")
+        MANQUANTS["actif"] = False
 
 
 @router.get("/v3/validation/api/contacts-crm-manquants")
 async def contacts_crm_manquants(req: Request, confirmer: int = 0):
     """Admin. Sociétés avec une fiche Pipedrive dont les contacts n'ont jamais été lus (pas de page LinkedIn trouvée).
-    Sans &confirmer=1 : essai à blanc. Avec : lit leurs contacts dans Pipedrive (doublons compris) et les enregistre.
-    Pipedrive seulement : aucun phantom, aucun crédit LinkedIn."""
+    Sans &confirmer=1 : essai à blanc (analyse seulement). Avec : lit leurs contacts dans Pipedrive (doublons compris)
+    et les enregistre. Pipedrive seulement : aucun phantom, aucun crédit LinkedIn. En tâche de fond : rappeler l'adresse."""
     if (x := VALID._refus(req, "admin")):
         return x
+    etat = {k: v for k, v in MANQUANTS.items() if not k.startswith("_")}
     if MANQUANTS["actif"]:
-        return {k: MANQUANTS[k] for k in ("actif", "phase", "total", "fait", "ok", "contacts", "echecs")}
-    cibles = await _candidats_manquants()
-    rep = {"essai_a_blanc": not confirmer, "a_lire": len(cibles), "exemples": [s["nom"] for s, _ in cibles[:40]],
-           "dernier_passage": {k: MANQUANTS[k] for k in ("phase", "total", "ok", "contacts", "echecs")} if MANQUANTS["phase"] else None}
-    if confirmer and cibles:
-        asyncio.create_task(_lire_manquants(cibles))
-        rep["lance"] = True
-    return rep
+        return etat | {"conseil": "en cours : rouvrez cette adresse dans une minute"}
+    if not confirmer and MANQUANTS["phase"] and time.time() - MANQUANTS["_quand"] < 900:
+        return etat | {"conseil": "résultat du dernier passage (moins de 15 min) ; ajoutez &confirmer=1 pour écrire"}
+    asyncio.create_task(_tache_manquants(bool(confirmer)))
+    return {"lance": "écriture" if confirmer else "essai à blanc", "conseil": "rouvrez cette adresse (sans &confirmer) dans 2 minutes",
+            "dernier_passage": etat if etat["phase"] else None}
