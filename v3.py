@@ -32,6 +32,8 @@ import v3_partis as PARTIS
 router.include_router(VALID.router)              # écrans de validation (admin / négos)
 import v3_rattrapage as RATTRAPAGE
 router.include_router(RATTRAPAGE.router)         # rattrapage du contrôle des contacts CRM
+import v3_sirene as SIRENE
+router.include_router(SIRENE.router)            # SIRENE : date d'installation (bail) et opérateurs de flex
 import v3_import as IMPORT
 router.include_router(IMPORT.router)             # import d'un Excel de lancement dans la mémoire
 import v3_export as EXPORT
