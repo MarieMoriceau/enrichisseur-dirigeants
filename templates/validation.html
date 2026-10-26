@@ -176,6 +176,7 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
   <aside class="card liste" aria-label="Sociétés">
     <div class="filtres" id="filtres" role="group" aria-label="Filtrer par étape"></div>
     <select id="qui" aria-label="Négociateur" style="margin-bottom:8px"><option value="">Tous les négos</option></select>
+    <select id="fichier" aria-label="Fichier lancé" style="margin-bottom:8px;width:100%"><option value="">Tous les fichiers</option></select>
     <input type="search" id="cherche" placeholder="Chercher une société, un SIREN, un lancement…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement de la mémoire Notion…</div></div>
   </aside>
@@ -224,7 +225,20 @@ function dessinerQui(negos) {
     + noms.map(x => `<option value="p:${esc(x)}">${esc(x)} · ${nb("p:" + x)}</option>`).join("");
   $("#qui").value = [...$("#qui").options].some(o => o.value === garde) ? garde : "";
 }
+// Fichiers lancés (une société reprise de la mémoire peut appartenir à plusieurs : « Liste A ; Liste B »)
+const fichiersDe = s => String(s.lancement || "").split(";").map(x => x.trim()).filter(Boolean);
+function dessinerFichiers() {
+  const dernier = {};
+  SOC.forEach(s => fichiersDe(s).forEach(f => { if (!dernier[f] || s.traitee > dernier[f]) dernier[f] = s.traitee; }));
+  const noms = Object.keys(dernier).sort((a, b) => (dernier[b] || "").localeCompare(dernier[a] || "") || a.localeCompare(b));
+  const garde = $("#fichier").value, nb = f => SOC.filter(s => s.validation === "À valider" && fichiersDe(s).includes(f)).length;
+  $("#fichier").innerHTML = `<option value="">Tous les fichiers</option>` + noms.map(f =>
+    `<option value="${esc(f)}">${esc(f)} · ${nb(f)} à valider</option>`).join("");
+  if (noms.includes(garde)) $("#fichier").value = garde;
+}
 function quiOk(s, f = $("#qui").value) {
+  const fi = $("#fichier").value;
+  if (fi && !fichiersDe(s).includes(fi)) return false;
   if (!f) return true;
   if (f === "non") return !!s.non_attribue;
   return (s.attribue_a || []).includes(f.slice(2));
@@ -236,7 +250,7 @@ function etiquetteNego(s) {
 
 let NEGOS = [];
 function dessinerFiltres() {
-  dessinerQui(NEGOS);                          // compteurs par négo à jour après chaque validation
+  dessinerQui(NEGOS); dessinerFichiers();      // compteurs par négo et par fichier à jour après chaque validation
   const n = e => SOC.filter(s => quiOk(s) && (e === "Toutes" || s.validation === e)).length;
   $("#filtres").innerHTML = [...ETAPES, "Toutes"].map(e =>
     `<button aria-pressed="${e === filtre}" data-f="${esc(e)}"${e === "À valider" || e === "Société validée" ? ' class="file"' : ""}>${esc(lib(e))} · ${n(e)}</button>`).join("");
@@ -263,6 +277,7 @@ function dessinerListe() {
 }
 $("#cherche").oninput = dessinerListe;
 $("#qui").onchange = () => { dessinerFiltres(); dessinerListe(); };
+$("#fichier").onchange = () => { dessinerFiltres(); dessinerListe(); };
 
 async function ouvrir(page, vers) {
   courant = page; dessinerListe();
