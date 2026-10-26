@@ -653,14 +653,14 @@ function ecranContacts() {
       <div class="tab-wrap"><table class="saisie"><thead><tr><th>Contact et LinkedIn</th><th>Fonction</th><th>Rôle</th><th>E-mail</th><th>Téléphone</th><th>Contrôle et décision</th></tr></thead><tbody>
       ${crm.map((x, i) => `<tr class="${x.statut === "probablement parti" ? "parti" : ""}">
         <td><b>${esc(x.nom_complet)}</b>${lienLi(val(x, "linkedin"), x.nom_complet, (info && info.nom) || "")}
-          <div style="margin-top:4px">${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</div><small>fiche Pipedrive ${esc(x.id)}</small></td>
+          <div style="margin-top:4px">${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</div><small>fiche Pipedrive ${esc(x.id)}${x.fiche_doublon ? " (rattachée au doublon " + esc(x.fiche_doublon) + ")" : ""}</small></td>
         <td>${inp(x, i, "fonction", "Fonction", "text")}</td>
         <td>${roleC(x, i)}</td>
         <td>${inp(x, i, "email", "prenom.nom@societe.fr", "email")}</td>
         <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}</td>
         <td>${pillC(x.statut)}<small>${esc(x.detail || "")}</small>
           <div style="margin-top:6px"><select class="edit" data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à supprimer","à revoir"], defC(x))}</select></div></td></tr>`).join("")}</tbody></table></div>`
-      : `<p class="msg">${sansContacts ? "" : "Aucun contact Pipedrive rattaché à cette société."}</p>`}
+      : `<p class="msg">${sansContacts ? "" : !("contacts_crm" in d) && d.id ? "Contacts Pipedrive pas encore lus pour cette société (fiche " + esc(d.id) + ") : relancez le rattrapage des contacts CRM." : "Aucun contact Pipedrive rattaché à cette société."}</p>`}
     ${ailleurs.length ? `<h3>Déjà dans Pipedrive chez une autre société <span class="pill">${ailleurs.length}</span></h3>
       <p class="msg" style="margin:0 0 8px">Trouvés dirigeants ici, mais fichés ailleurs. Le négo dit s'il faut l'ajouter ; vous décidez s'il change de société ou appartient aux deux.</p>
       <div class="tab-wrap"><table><thead><tr><th>Décision</th><th>Contact</th><th>Fiché chez</th><th>Négos</th></tr></thead><tbody>
