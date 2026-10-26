@@ -285,7 +285,7 @@ function dessinerDetail() {
         <button class="btn ghost" id="annNom" type="button" style="padding:6px 10px;font-size:13px">Annuler</button></span>
       <span class="pill ${PILL[info.validation]}">${esc(lib(info.validation))}</span>
       <span class="meta">${[d.domaine ? `<a href="https://${esc(d.domaine)}" target="_blank" rel="noopener">${esc(d.domaine)}</a>` : "",
-        /^\d{9}$/.test(info.siren || "") ? `SIREN <a href="https://annuaire-entreprises.data.gouv.fr/entreprise/${info.siren}" target="_blank" rel="noopener">${info.siren}</a>` : "SIREN —", esc(d.statut || ""), `lancement « ${esc(info.lancement)} » du ${esc(info.traitee)}`,
+        /^\d{9}$/.test(info.siren || "") ? `SIREN <a href="https://www.pappers.fr/entreprise/${info.siren}" target="_blank" rel="noopener">${info.siren}</a>` : "SIREN —", esc(d.statut || ""), `lancement « ${esc(info.lancement)} » du ${esc(info.traitee)}`,
         info.non_attribue ? "non attribué" : "négo : " + esc((info.attribue_a || []).join(", "))].filter(Boolean).join(" · ")}</span>
     </div>
     <div class="etapes" role="group" aria-label="Étapes">
@@ -362,7 +362,7 @@ function ecranSociete() {
         <button class="btn ghost" id="okBail" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
         <p class="msg" id="msgBail">${info.debut_bail ? "" : "à remplir quand vous avez l'info"}</p></div>
       <div class="fait" id="carteSiren"><span>SIREN</span><b style="font-size:17px">${esc(info.siren || "—")}</b>
-        ${/^\d{9}$/.test(info.siren || "") ? `<p style="margin:4px 0"><a href="https://annuaire-entreprises.data.gouv.fr/entreprise/${info.siren}" target="_blank" rel="noopener">Annuaire des entreprises ↗</a> · <a href="https://www.pappers.fr/entreprise/${info.siren}" target="_blank" rel="noopener">Pappers ↗</a></p>` : ""}
+        ${/^\d{9}$/.test(info.siren || "") ? `<p style="margin:4px 0"><a href="https://www.pappers.fr/entreprise/${info.siren}" target="_blank" rel="noopener">Voir sur Pappers ↗</a></p>` : ""}
         <p>${esc(d.action || "")}</p>
         <p>${info.siren && !d.raison_sociale ? `<button class="lien" id="relireSiren" type="button">Relire la fiche INSEE</button><br>` : ""}<button class="lien" id="corrSiren" type="button">${info.siren ? "Corriger le SIREN" : "Ajouter le SIREN"}</button></p>
         <div id="panSiren" hidden>
