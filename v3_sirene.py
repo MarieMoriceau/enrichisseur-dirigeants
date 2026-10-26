@@ -331,3 +331,27 @@ async def sirene_une(req: Request, siren: str, adresse: str, nom: str = ""):
         r = await analyser(api, siren.strip(), nom, adresse)
         brut = [x.get("siege") for x in await _chercher(api, {"q": siren.strip()}) if x.get("siren") == siren.strip()]
     return {"essai_a_blanc": True, "resultat": r, "siege_brut": brut[:1]}
+
+
+@router.get("/v3/validation/api/sirene-flex/{page_id}")
+async def sirene_flex(page_id: str, req: Request, adresse: str = ""):
+    """Fiche de validation : opérateur de flex lu dans SIRENE pour l'adresse des bureaux affichée.
+    Lecture seule, sauf si Flexoffice est déjà coché et l'opérateur vide : il est alors enregistré (sûr)."""
+    if (x := VALID._refus(req, "negos")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    info = await VALID._une(page_id) or {}
+    if (info.get("operateur_flex") or "").strip():
+        return {"operateur": info["operateur_flex"].replace("(probable)", "").strip(), "indice": "", "enregistre": True}
+    adresse = adresse.strip() or info.get("adresse_retenue", "")
+    if not (re.fullmatch(r"\d{9}", info.get("siren") or "") and adresse):
+        return {"operateur": "", "indice": "pas de SIREN ou pas d'adresse"}
+    async with httpx.AsyncClient(timeout=20) as api:
+        r = await analyser(api, info["siren"], info.get("nom", ""), adresse)
+    enregistre = False
+    if r["operateur"] and info.get("flexoffice") and VALID.role(req) == "admin" \
+            and await VALID.assurer_colonne("Opérateur flex"):
+        await VALID._maj(page_id, {"Opérateur flex": MEM._txt(r["operateur"])})
+        enregistre = True
+    return {"operateur": r["operateur"], "indice": r["indice"], "enregistre": enregistre}
