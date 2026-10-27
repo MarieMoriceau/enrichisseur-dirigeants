@@ -144,6 +144,9 @@ def test_route_sirene_flex_date(monkeypatch):
         return {"date": "2026-01-01", "etab": "8 RUE SAINTE-CECILE", "siege": "oui", "operateur": "Patchwork", "indice": "", "sur": False}
     monkeypatch.setattr(VALID, "_refus", lambda req, b: None); monkeypatch.setattr(VALID, "role", lambda req: "admin")
     monkeypatch.setattr(VALID, "_une", une); monkeypatch.setattr(S, "analyser", analyse)
+    async def maj(p, props): return {}
+    async def col(nom, genre="rich_text"): return True
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col)
     j = TestClient(app).get("/v3/validation/api/sirene-flex/" + "0" * 32, params={"adresse": "8 rue Sainte-Cécile 75009"}).json()
     assert j["date"] == "2026-01-01" and "siège créé à cette adresse le 01/01/2026" in j["source_date"] and j["operateur"] == "Patchwork"
 
@@ -167,3 +170,36 @@ def test_saisie_operateur(monkeypatch):
     ecrit.clear()
     j = TestClient(app).post("/v3/validation/api/operateur-flex/" + "0" * 32, json={"retirer": True}).json()
     assert j["operateur_flex"] == "(aucun)" and "Flexoffice" not in ecrit
+
+
+def test_completer_cp():
+    autres = ["18 rue de la Fontaine au Roi, Paris, 75011, FR", "1 bis Av. de la République, 75011 Paris, France"]
+    assert S.completer_cp("1 bis avenue de la République", autres) == "1 bis avenue de la République 75011"
+    assert S.completer_cp("1 bis avenue de la République", ["1 avenue de la République 13001 Marseille",
+                                                            "1 avenue de la République 75011 Paris"]) == "1 bis avenue de la République"
+    assert S.completer_cp("8 rue de Sofia 75018", autres) == "8 rue de Sofia 75018"
+    assert S.meme_lieu("1 B AVENUE DE LA REPUBLIQUE 75011 PARIS", S.completer_cp("1 bis avenue de la République", autres))
+
+
+def test_route_date_ecrite(monkeypatch):
+    import v3_validation as VALID
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI(); app.include_router(S.router)
+    ecrit, vu = {}, {}
+    async def une(p):
+        return {"siren": "840592455", "nom": "Ask for the moon", "flexoffice": True, "operateur_flex": "", "debut_bail": ""}
+    async def analyse(api, siren, nom, adr):
+        vu["adr"] = adr
+        return {"date": "2025-10-01", "etab": "1 B AVENUE DE LA REPUBLIQUE 75011 PARIS", "siege": "non (établissement secondaire)",
+                "operateur": "", "indice": "", "sur": False}
+    async def maj(p, props): ecrit.update(props); return {}
+    async def col(nom, genre="rich_text"): return True
+    monkeypatch.setattr(VALID, "_refus", lambda req, b: None); monkeypatch.setattr(VALID, "role", lambda req: "admin")
+    monkeypatch.setattr(VALID, "_une", une); monkeypatch.setattr(S, "analyser", analyse)
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col)
+    j = TestClient(app).get("/v3/validation/api/sirene-flex/" + "0" * 32, params={
+        "adresse": "1 bis avenue de la République", "autres": "1 bis Av. de la République, 75011 Paris, France"}).json()
+    assert vu["adr"].endswith("75011") and j["date"] == "2025-10-01" and j["date_ecrite"]
+    assert ecrit["Début de bail"] == {"date": {"start": "2025-10-01"}}
+    assert "établissement secondaire créé à cette adresse le 01/10/2025" in ecrit["Source début de bail"]["rich_text"][0]["text"]["content"]

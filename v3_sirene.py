@@ -93,6 +93,22 @@ def meme_lieu(a: str, b: str) -> bool:
     return bool(_numeros(a) & _numeros(b))
 
 
+def completer_cp(adresse: str, autres: list) -> str:
+    """Adresse sans code postal (« 1 bis avenue de la République », fiche Pipedrive) : on reprend le code postal d'une
+    autre source qui donne le même numéro dans la même rue. Plusieurs codes postaux possibles : on ne devine pas."""
+    if _cp(adresse) or not (k := LI.cle_adresse(f"{adresse} 00000")) or not k[1]:
+        return adresse
+    cps = set()
+    for a in autres:
+        ka = LI.cle_adresse(a or "")
+        if not (ka and ka[1]):
+            continue
+        x, y = k[1], ka[1]
+        if (x in y or y in x or x.split()[0] == y.split()[0]) and (_numeros(adresse) & _numeros(a) or k[0] == ka[0]):
+            cps.add(ka[2])
+    return f"{adresse} {cps.pop()}" if len(cps) == 1 else adresse
+
+
 def _cp(a: str) -> str:
     m = re.search(r"\b(75\d{3}|77\d{3}|78\d{3}|91\d{3}|92\d{3}|93\d{3}|94\d{3}|95\d{3}|\d{5})\b", a or "")
     return m.group(1) if m else ""
@@ -205,13 +221,20 @@ async def appliquer(api, page_id: str, info: dict, adresse: str) -> dict:
     return r | {"ecrit": sorted(props)}
 
 
+ADRESSES_FICHE = ("adresse_google", "adresse_linkedin", "adresse_site", "adresse_crm", "adresse_proposee", "adresse_notion")
+
+
 async def appliquer_en_fond(page_id: str):
     """Appelé à la validation d'une société (adresse retenue connue)."""
     try:
         info = await VALID._une(page_id)
         if info and info.get("adresse_retenue"):
+            adresse = info["adresse_retenue"]
+            if not _cp(adresse):                       # adresse du CRM sans code postal : repris d'une autre source
+                d = await MEM.lire(page_id) or {}
+                adresse = completer_cp(adresse, [d.get(k, "") for k in ADRESSES_FICHE])
             async with httpx.AsyncClient(timeout=20) as api:
-                await appliquer(api, page_id, info, info["adresse_retenue"])
+                await appliquer(api, page_id, info, adresse)
     except Exception as e:
         print(f"[V3 SIRENE] {page_id} : {e}")
 
@@ -334,31 +357,44 @@ async def sirene_une(req: Request, siren: str, adresse: str, nom: str = ""):
 
 
 @router.get("/v3/validation/api/sirene-flex/{page_id}")
-async def sirene_flex(page_id: str, req: Request, adresse: str = ""):
+async def sirene_flex(page_id: str, req: Request, adresse: str = "", autres: str = ""):
     """Fiche de validation : ce que SIRENE dit pour l'adresse des bureaux affichée.
-    - opérateur de flex (centre déclaré à cette adresse) ; enregistré seulement si Flexoffice est déjà coché ;
-    - début de bail = date de création de l'établissement de la société à cette adresse exacte (siège ou
-      secondaire) ; proposé, pas écrit : il l'est à la validation (même règle)."""
+    - opérateur de flex (centre déclaré à cette adresse) ; enregistré si Flexoffice est déjà coché ;
+    - début de bail = date de création de l'établissement de la société à cette adresse exacte (siège ou secondaire) ;
+      enregistré tout de suite si la case est vide (admin).
+    `autres` : les autres adresses de la fiche (séparées par « | »), pour retrouver un code postal manquant."""
     if (x := VALID._refus(req, "negos")):
         return x
     if not VALID.RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     info = await VALID._une(page_id) or {}
     op = (info.get("operateur_flex") or "").strip()
-    rep = {"operateur": "", "indice": "", "enregistre": False, "retire": op == "(aucun)", "date": "", "source_date": ""}
+    rep = {"operateur": "", "indice": "", "enregistre": False, "retire": op == "(aucun)", "date": "", "source_date": "",
+           "date_ecrite": False, "adresse_lue": ""}
     if op and op != "(aucun)":
         rep.update(operateur=op.replace("(probable)", "").strip(), enregistre=True)
-    adresse = adresse.strip() or info.get("adresse_retenue", "")
+    adresse = completer_cp(adresse.strip() or info.get("adresse_retenue", ""), autres.split("|"))
+    rep["adresse_lue"] = adresse
     if not (re.fullmatch(r"\d{9}", info.get("siren") or "") and adresse):
         return rep | {"indice": rep["indice"] or "pas de SIREN ou pas d'adresse"}
+    if not _cp(adresse):
+        return rep | {"indice": rep["indice"] or "adresse sans code postal : SIRENE ne peut pas la comparer",
+                      "sans_cp": True}
     if op and info.get("debut_bail"):
         return rep                                    # rien à chercher
     async with httpx.AsyncClient(timeout=20) as api:
         r = await analyser(api, info["siren"], info.get("nom", ""), adresse)
     if r["date"] and not info.get("debut_bail"):
         j = r["date"]
-        rep.update(date=j, source_date=f"SIRENE : {'siège' if r['siege'].startswith('oui') else 'établissement secondaire'} "
-                                       f"créé à cette adresse le {j[8:10]}/{j[5:7]}/{j[:4]}")
+        source = (f"SIRENE : {'siège' if r['siege'].startswith('oui') else 'établissement secondaire'} "
+                  f"créé à cette adresse le {j[8:10]}/{j[5:7]}/{j[:4]}")
+        rep.update(date=j, source_date=source)
+        if VALID.role(req) == "admin" and await VALID.assurer_colonne("Début de bail", "date"):
+            props = {"Début de bail": {"date": {"start": j}}}
+            if await VALID.assurer_colonne("Source début de bail"):
+                props["Source début de bail"] = MEM._txt(source)
+            await VALID._maj(page_id, props)
+            rep["date_ecrite"] = True
     if not op:
         rep.update(operateur=r["operateur"], indice=r["indice"])
         if r["operateur"] and info.get("flexoffice") and VALID.role(req) == "admin" \

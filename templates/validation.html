@@ -493,11 +493,15 @@ function ecranSociete() {
     if (!opConnu) $("#flexOp").innerHTML = `<p style="margin:0"><small>opérateur : lecture SIRENE…</small></p>`;
     if (!info.debut_bail) { $("#msgBail").className = "msg"; $("#msgBail").textContent = "lecture SIRENE…"; }
     try {
-      const r = await api(`/v3/validation/api/sirene-flex/${page}?adresse=${encodeURIComponent(adr)}`);
+      const autres = [d.adresse_google, d.adresse_linkedin, site, d.adresse_crm, d.adresse_proposee, d.adresse_notion].filter(Boolean).join("|");
+      const r = await api(`/v3/validation/api/sirene-flex/${page}?adresse=${encodeURIComponent(adr)}&autres=${encodeURIComponent(autres)}`);
       if (page !== courant || adr !== adresseCochee()) return;
       if (!info.debut_bail) {
         $("#valBail").value = r.date || "";
-        $("#msgBail").textContent = r.date ? r.source_date + " · enregistrée à la validation (ou « Enregistrer »)" : "rien à cette adresse dans SIRENE : à remplir quand vous avez l'info";
+        if (r.date_ecrite) info.debut_bail = r.date;
+        $("#msgBail").textContent = r.date ? r.source_date + (r.date_ecrite ? " · enregistrée" : " · enregistrée à la validation (ou « Enregistrer »)")
+          : r.sans_cp ? "adresse sans code postal : SIRENE ne peut pas la comparer (choisissez une adresse complète)"
+          : "rien à cette adresse dans SIRENE : à remplir quand vous avez l'info";
       }
       if (opConnu) return;
       opSirene = r.operateur || "";
