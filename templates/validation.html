@@ -178,6 +178,8 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
     <select id="qui" aria-label="Négociateur" style="margin-bottom:8px"><option value="">Tous les négos</option></select>
     <select id="fichier" aria-label="Fichier lancé" style="margin-bottom:8px;width:100%"><option value="">Tous les fichiers</option></select>
     <a class="btn ghost" id="phoning" hidden style="display:block;text-align:center;margin:0 0 8px;font-size:13px">📞 Liste de phoning de ce fichier (Excel)</a>
+    <button class="btn ghost" id="profils" hidden style="display:block;width:100%;text-align:center;margin:0 0 4px;font-size:13px">🔎 Lire les profils LinkedIn restants</button>
+    <div class="msg" id="profilsMsg" style="font-size:12px;margin:0 0 8px"></div>
     <input type="search" id="cherche" placeholder="Chercher une société, un SIREN, un lancement…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement de la mémoire Notion…</div></div>
   </aside>
@@ -281,7 +283,34 @@ $("#qui").onchange = () => { dessinerFiltres(); dessinerListe(); };
 function lienPhoning() {
   const f = $("#fichier").value, a = $("#phoning");
   a.hidden = !f; if (f) a.href = "/v3/contacts/api/phoning?lancement=" + encodeURIComponent(f);
+  $("#profils").hidden = !f; $("#profilsMsg").textContent = "";
 }
+/* profils LinkedIn des contacts CRM « à vérifier » jamais lus (plafond de 80 par lancement) : aperçu, puis lecture */
+let prTimer = null;
+const urlProfils = (f, conf) => "/v3/validation/api/profils-restants?lancement=" + encodeURIComponent(f) + (conf ? "&confirmer=1" : "");
+async function suivreProfils(f) {
+  let j; try { j = await api(urlProfils(f)); } catch (e) { $("#profilsMsg").textContent = e.message; return; }
+  clearTimeout(prTimer);
+  if (j.actif) { $("#profilsMsg").textContent = "En cours : " + (j.phase || "…"); prTimer = setTimeout(() => suivreProfils(f), 10000); }
+  else { $("#profilsMsg").textContent = (j.journal || []).slice(-1)[0] || ""; $("#profils").disabled = false; if (courant) ouvrir(courant); }
+}
+$("#profils").onclick = async () => {
+  const f = $("#fichier").value; if (!f) return;
+  $("#profils").disabled = true; $("#profilsMsg").textContent = "Comptage des profils à lire…";
+  try {
+    const a = await api(urlProfils(f));
+    if (a.actif) { suivreProfils(f); return; }
+    if (!a.profils) { $("#profilsMsg").textContent = "Aucun profil en attente dans ce fichier."; $("#profils").disabled = false; return; }
+    if (!a.ce_passage) { $("#profilsMsg").textContent = `${a.profils} profils en attente, mais le quota LinkedIn du jour est atteint : demain.`; $("#profils").disabled = false; return; }
+    const ok = confirm(`${a.profils} profils à lire (${a.societes} sociétés).\n`
+      + `Ce passage : ${a.ce_passage} (80 au plus, quota LinkedIn restant aujourd'hui : ${a.quota_restant}).\n`
+      + `Exemples : ${(a.exemples || []).join(", ")}\n\nLancer la lecture ?`);
+    if (!ok) { $("#profilsMsg").textContent = ""; $("#profils").disabled = false; return; }
+    const r = await api(urlProfils(f, true));
+    $("#profilsMsg").textContent = r.motif || "";
+    if (r.lance) setTimeout(() => suivreProfils(f), 3000); else $("#profils").disabled = false;
+  } catch (e) { $("#profilsMsg").textContent = e.message; $("#profils").disabled = false; }
+};
 $("#fichier").onchange = () => { lienPhoning(); dessinerFiltres(); dessinerListe(); };
 
 async function ouvrir(page, vers) {
@@ -742,7 +771,10 @@ function ecranContacts() {
   const fiches = info.fiches || [];
   const ailleurs = fiches.filter(x => x.ailleurs && x.ailleurs.id);
   const choix = (opts, val) => opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("");
-  const defC = x => (avant[String(x.id)] || {}).action || ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
+  const defStatut = x => ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
+  // « à revoir » enregistré avant que le profil ne soit lu : le nouveau contrôle reprend la main
+  const defC = x => { const a = avant[String(x.id)] || {};
+    return a.action && !(a.action === "à revoir" && a.statut && a.statut !== x.statut) ? a.action : defStatut(x); };
   const val = (x, k) => { const a = avant[String(x.id)]; return a && a[k] ? a[k] : (x[k] || ""); };
   const modifC = (x, k) => { const a = avant[String(x.id)]; return a && a[k] && a[k] !== (x[k] || "") ? " modif" : ""; };
   const inp = (x, i, k, ph, type) => k === "fonction"

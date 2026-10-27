@@ -57,8 +57,7 @@ def a_rattraper(data: dict) -> bool:
         return True                                    # URL ajoutée à la main depuis le dernier passage
     if any(not d.get("dans_pipedrive") and "ailleurs_crm" not in d for d in data.get("dirigeants", [])):
         return True                                    # nouveaux dirigeants pas encore cherchés dans tout Pipedrive
-    return bool(LI.PB_PROFILS) and any(p.get("statut") == "à vérifier" and p.get("linkedin") and "profil" not in p.get("detail", "")
-                                       for p in data["contacts_crm"])
+    return bool(LI.PB_PROFILS) and any(LI.profil_a_lire(p) for p in data["contacts_crm"])
 
 
 async def _reecrire(c: httpx.AsyncClient, page: str, data: dict):
