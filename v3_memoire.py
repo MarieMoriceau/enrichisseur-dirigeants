@@ -53,11 +53,15 @@ def _val(p, nom):
 
 async def _req(c, methode, url, **kw):
     async with _SEM:
-        for essai in range(4):
+        for essai in range(7):                         # Notion limite à ~3 requêtes/s : on patiente (jusqu'à ~1 min)
             r = await c.request(methode, url, headers=_h("json" in kw), **kw)
             if r.status_code != 429:
                 return r
-            await asyncio.sleep(1 + essai)
+            try:
+                attente = float(r.headers.get("retry-after") or 0)
+            except ValueError:
+                attente = 0
+            await asyncio.sleep(min(max(attente, 1 + essai * 2), 20))
         return r
 
 
