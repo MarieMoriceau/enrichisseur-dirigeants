@@ -274,3 +274,116 @@ async def contacts_crm_manquants(req: Request, confirmer: int = 0):
     asyncio.create_task(_tache_manquants(bool(confirmer)))
     return {"lance": "écriture" if confirmer else "essai à blanc", "conseil": "rouvrez cette adresse (sans &confirmer) dans 2 minutes",
             "dernier_passage": etat if etat["phase"] else None}
+
+
+# ───────── e-mails Fullenrich manqués (envoi refusé « Too many data » avant le 27/10) ─────────
+# Mêmes contacts que le run aurait envoyés : rôles 1 à 5, 4 premiers par société, absents de Pipedrive, sans e-mail,
+# société avec un domaine. Un contact déjà tenté par ce rattrapage n'est jamais renvoyé (crédits).
+FULLENRICH = {"actif": False, "phase": "", "lancement": "", "mode": "", "societes": 0, "contacts": 0, "trouves": 0,
+              "ecrites": 0, "echecs": [], "exemples": [], "_cibles": [], "_quand": 0.0, "_lignes": []}
+
+
+def contacts_fullenrich(data: dict) -> list:
+    """Dirigeants de la fiche à envoyer à Fullenrich (même sélection que l'étape 5 du run)."""
+    if not data.get("domaine"):
+        return []
+    ds = sorted(data.get("dirigeants", []), key=lambda d: str(d.get("role", "")))
+    utiles = [d for d in ds if str(d.get("role", ""))[:1] in "12345"][:4]
+    return [d for d in utiles if not d.get("dans_pipedrive") and not d.get("email") and not d.get("fullenrich_tente")
+            and d.get("prenom") and d.get("nom")]
+
+
+def _du_lancement(s: dict, lancements: list) -> bool:
+    l = (s.get("lancement") or "").lower()
+    return any(x in l for x in lancements)
+
+
+async def _tache_fullenrich(lancements: list, confirmer: bool):
+    FULLENRICH.update(actif=True, phase="lecture des fiches", mode="écriture" if confirmer else "essai à blanc",
+                      societes=0, contacts=0, trouves=0, ecrites=0, echecs=[], exemples=[], _lignes=[])
+    try:
+        socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée" and _du_lancement(s, lancements)]
+        sem, cibles = asyncio.Semaphore(3), []
+        async def voir(s):
+            async with sem:
+                d = await _lire_page(s)
+            if d and (cs := contacts_fullenrich(d)):
+                cibles.append((s, d, cs))
+        await asyncio.gather(*(voir(s) for s in socs))
+        n = sum(len(cs) for _, _, cs in cibles)
+        FULLENRICH.update(societes=len(cibles), contacts=n, _cibles=cibles, _quand=time.time(),
+                          exemples=[f"{s['nom']} : {', '.join(d.get('nom_complet') or d['prenom'] + ' ' + d['nom'] for d in cs)}"
+                                    for s, _, cs in cibles[:15]])
+        FULLENRICH["_lignes"] = [[d0.get("id", ""), s["nom"], d0.get("domaine", ""), d.get("prenom", ""), d.get("nom", ""),
+                                  d.get("fonction", ""), d.get("role", ""), d.get("linkedin", ""), ""] for s, d0, cs in cibles for d in cs]
+        if not confirmer:
+            FULLENRICH["phase"] = f"essai à blanc terminé : rien n'a été envoyé ({len(socs)} sociétés de ces lancements lues)"
+            return
+        if not LI.FULLENRICH_KEY:
+            FULLENRICH["phase"] = "FULLENRICH_API_KEY absente dans Render"
+            return
+        FULLENRICH["phase"] = f"Fullenrich : {n} contacts par lots de {LI.FULLENRICH_LOT}"
+        paires = [(d, d0, s) for s, d0, cs in cibles for d in cs]
+        journal = lambda m: FULLENRICH["echecs"].append(m) if ("refusé" in m or "échec" in m or "pas de réponse" in m) else None
+        async with httpx.AsyncClient(timeout=60) as c:
+            trouves = await LI.fullenrich_emails(c, [(d, d0) for d, d0, _ in paires], journal)
+            FULLENRICH["trouves"] = len(trouves)
+            quand = datetime.now(timezone.utc).date().isoformat()
+            for i, (d, _, _) in enumerate(paires):
+                d["fullenrich_tente"] = quand
+                if trouves.get(str(i)):
+                    d["email"], d["source_email"] = trouves[str(i)], "Fullenrich"
+                    FULLENRICH["_lignes"][i][8] = d["email"]
+            FULLENRICH["phase"] = "écriture dans Notion"
+            for s, d0, _ in cibles:
+                try:
+                    await _reecrire(c, s["page"], d0)
+                    await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
+                        "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))}}})
+                    FULLENRICH["ecrites"] += 1
+                except Exception as e:
+                    FULLENRICH["echecs"].append(f"{s['nom']} : {e}")
+        FULLENRICH["phase"] = "terminé"
+    except Exception as e:
+        FULLENRICH["phase"] = f"arrêt sur erreur : {e}"
+    finally:
+        FULLENRICH["actif"] = False
+
+
+@router.get("/v3/validation/api/fullenrich-rattrapage")
+async def fullenrich_rattrapage(req: Request, lancement: str = "", confirmer: int = 0):
+    """Admin. E-mails Fullenrich des dirigeants d'un ou plusieurs lancements (séparés par des virgules, morceau du nom
+    suffit : « 4097 (suite 1/9),locataires_flex_paris »). Sans &confirmer=1 : essai à blanc (nombre de contacts = crédits
+    au plus, rien n'est envoyé). Avec : envoi par lots de 100, e-mails écrits dans la mémoire. L'écriture n'est possible
+    qu'après un essai à blanc des mêmes lancements de moins d'une heure. Détail : /v3/validation/api/fullenrich-rattrapage/excel"""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    lancements = [x.strip().lower() for x in lancement.split(",") if x.strip()]
+    etat = {k: v for k, v in FULLENRICH.items() if not k.startswith("_")}
+    if FULLENRICH["actif"]:
+        return etat | {"conseil": "en cours : rouvrez cette adresse (sans &confirmer) dans une minute"}
+    if not lancements:
+        return etat | {"conseil": "ajoutez ?lancement=… (morceau du nom, plusieurs séparés par des virgules)"}
+    meme = FULLENRICH["lancement"] == ",".join(lancements)
+    if not confirmer and meme and FULLENRICH["phase"] and time.time() - FULLENRICH["_quand"] < 900:
+        return etat | {"conseil": "résultat du dernier passage ; &confirmer=1 pour envoyer à Fullenrich (crédits)"}
+    if confirmer and not (meme and FULLENRICH["mode"] == "essai à blanc" and FULLENRICH["phase"].startswith("essai à blanc terminé")
+                          and time.time() - FULLENRICH["_quand"] < 3600):
+        return JSONResponse({"erreur": "faites d'abord l'essai à blanc de ces mêmes lancements (sans &confirmer), il y a moins d'une heure"}, 409)
+    FULLENRICH["lancement"] = ",".join(lancements)
+    asyncio.create_task(_tache_fullenrich(lancements, bool(confirmer)))
+    return {"lance": "envoi Fullenrich" if confirmer else "essai à blanc", "conseil": "rouvrez cette adresse (sans &confirmer) dans 1 à 2 minutes"}
+
+
+@router.get("/v3/validation/api/fullenrich-rattrapage/excel")
+async def fullenrich_rattrapage_excel(req: Request):
+    if (x := VALID._refus(req, "admin")):
+        return x
+    from v3 import feuille
+    wb = Workbook(); wb.remove(wb.active)
+    feuille(wb, "Contacts Fullenrich", ["ID Pipedrive", "Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "LinkedIn",
+                                        "E-mail trouvé"], FULLENRICH["_lignes"])
+    b = io.BytesIO(); wb.save(b)
+    nom = f"rattrapage_fullenrich_{'essai' if FULLENRICH['mode'] == 'essai à blanc' else 'reel'}_{datetime.now(timezone.utc):%Y%m%d_%H%M}.xlsx"
+    return StreamingResponse(io.BytesIO(b.getvalue()), headers={"Content-Disposition": f'attachment; filename="{nom}"'},
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
