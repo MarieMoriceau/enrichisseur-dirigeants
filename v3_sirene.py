@@ -174,6 +174,47 @@ async def etablissements(api, siren: str, nom: str, cp: str) -> list:
     return out
 
 
+# ── Liste Equation des adresses de coworkings et bureaux opérés (outil Dispos opérateurs, mise à jour chaque mois)
+ADRESSES_URL = os.getenv("ADRESSES_OPERATEURS_URL", "https://dispos-operateurs.onrender.com/adresses.json")
+ADRESSES_CLE = os.getenv("ADRESSES_OPERATEURS_CLE", "")          # même valeur que ADRESSES_CLE dans le service Dispos
+ADRESSES_DUREE = 6 * 3600                                         # relue au plus toutes les 6 h
+_ADRESSES = {"quand": 0.0, "releve": "", "liste": [], "erreur": ""}
+
+
+async def adresses_operateurs() -> list:
+    """[{operateur, nom, adresse, code_postal}] du dernier relevé ; liste précédente gardée si Dispos ne répond pas."""
+    if not ADRESSES_CLE:
+        _ADRESSES["erreur"] = "ADRESSES_OPERATEURS_CLE absente dans Render"
+        return []
+    if time.time() - _ADRESSES["quand"] < ADRESSES_DUREE and _ADRESSES["liste"]:
+        return _ADRESSES["liste"]
+    try:
+        async with httpx.AsyncClient(timeout=90) as c:            # le service Dispos peut être endormi (~1 min)
+            r = await c.get(ADRESSES_URL, headers={"X-Cle": ADRESSES_CLE})
+        if r.status_code == 200:
+            j = r.json()
+            _ADRESSES.update(quand=time.time(), releve=j.get("releve", ""), liste=j.get("adresses") or [], erreur="")
+        else:
+            _ADRESSES.update(erreur=f"Dispos opérateurs : {r.status_code}", quand=time.time() - ADRESSES_DUREE + 600)
+    except Exception as e:
+        _ADRESSES.update(erreur=f"Dispos opérateurs injoignable : {e}", quand=time.time() - ADRESSES_DUREE + 600)
+    return _ADRESSES["liste"]
+
+
+def operateur_liste(bureaux: str, liste: list) -> tuple:
+    """(opérateur, indice) si l'adresse des bureaux figure dans la liste Equation des coworkings / bureaux opérés."""
+    for l in liste:
+        adr = l.get("adresse_ban") or f"{l.get('adresse', '')} {l.get('code_postal', '')}"
+        if meme_lieu(adr, bureaux):
+            op = (l.get("operateur") or "").strip()
+            if op.lower().startswith("indépendant"):
+                op = f"{l['nom']} (indépendant)" if l.get("nom") else op
+            centre = f"{l.get('nom')} : " if l.get("nom") else ""
+            return op, (f"liste Equation des coworkings et bureaux opérés (relevé {_ADRESSES['releve'] or '?'}) : "
+                        f"{centre}{l.get('adresse', '')} {l.get('code_postal', '')}").strip()
+    return "", ""
+
+
 _CENTRES: dict = {}            # (opérateur, cp) -> [(adresse, nom)] ; mémoire du serveur, vidée au redémarrage
 
 
@@ -229,6 +270,10 @@ async def analyser(api, siren: str, nom: str, bureaux: str) -> dict:
             if meme_lieu(a, bureaux):
                 rep.update(operateur=o, indice=f"centre {o} à la même adresse ({n} : {a})")
                 break
+    if not rep["operateur"]:                          # SIRENE muet : liste Equation des coworkings / bureaux opérés
+        o, indice = operateur_liste(bureaux, await adresses_operateurs())
+        if o:
+            rep.update(operateur=o, indice=indice)
     return rep
 
 
@@ -448,4 +493,9 @@ async def operateurs_flex(req: Request):
     """Liste des opérateurs de flex connus (saisie de l'opérateur sur la fiche)."""
     if (x := VALID._refus(req, "negos")):
         return x
-    return {"operateurs": OPERATEURS_FLEX}
+    noms = list(OPERATEURS_FLEX)
+    for l in await adresses_operateurs():
+        o = (l.get("operateur") or "").strip()
+        if o and not o.lower().startswith("indépendant") and o.lower() not in [n.lower() for n in noms]:
+            noms.append(o)
+    return {"operateurs": sorted(noms, key=str.lower), "releve": _ADRESSES["releve"], "erreur": _ADRESSES["erreur"]}

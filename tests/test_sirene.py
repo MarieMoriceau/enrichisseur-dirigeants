@@ -245,3 +245,24 @@ def test_etablissements_par_raison_sociale(monkeypatch):
     monkeypatch.setattr(S, "_chercher", chercher)
     r = asyncio.run(S.analyser(None, "853327518", "Yield Studio", "24 rue de Mogador 75009"))
     assert r["date"] == "2025-01-30" and r["siege"].startswith("non")
+
+
+def test_liste_operateurs(monkeypatch):
+    """SIRENE ne connaît pas l'opérateur : la liste Equation (Dispos opérateurs) le donne."""
+    S._CENTRES.clear()
+    async def chercher(api, p): return []
+    async def liste():
+        return [{"operateur": "Wojo", "nom": "Wojo Opéra", "adresse": "17-19 rue Auber", "code_postal": "75009"},
+                {"operateur": "Indépendant", "nom": "", "adresse": "102 rue Réaumur", "code_postal": "75002"}]
+    monkeypatch.setattr(S, "_chercher", chercher); monkeypatch.setattr(S, "adresses_operateurs", liste)
+    r = asyncio.run(S.analyser(None, "123456789", "X", "19 rue Auber 75009 Paris"))
+    assert r["operateur"] == "Wojo" and "liste Equation" in r["indice"] and "Wojo Opéra" in r["indice"]
+    r = asyncio.run(S.analyser(None, "123456789", "X", "102 rue Réaumur 75002"))
+    assert r["operateur"] == "Indépendant"
+    r = asyncio.run(S.analyser(None, "123456789", "X", "20 rue Auber 75009"))
+    assert r["operateur"] == ""
+
+
+def test_liste_sans_cle(monkeypatch):
+    monkeypatch.setattr(S, "ADRESSES_CLE", "")
+    assert asyncio.run(S.adresses_operateurs()) == []
