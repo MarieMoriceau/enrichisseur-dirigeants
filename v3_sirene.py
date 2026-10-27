@@ -136,20 +136,41 @@ async def _chercher(api, params: dict) -> list:
         return []
 
 
-async def etablissements(api, siren: str, nom: str, cp: str) -> list:
-    """Établissements de la société dans ce code postal (+ son siège) : [{adresse, date_creation, est_siege, ouvert}]."""
+def _noms_insee(x: dict) -> list:
+    """Noms sous lesquels chercher la société : « YIELD (YIELD STUDIO) » → YIELD, YIELD STUDIO."""
     out = []
-    for q in ([nom, siren] if nom else [siren]):
-        for x in await _chercher(api, {"q": q, "code_postal": cp} if cp else {"q": q}):
-            if x.get("siren") != siren:
-                continue
-            for e in [x.get("siege") or {}] + (x.get("matching_etablissements") or []):
-                if e.get("adresse") and not any(o["siret"] == e.get("siret") for o in out):
-                    out.append({"siret": e.get("siret", ""), "adresse": e["adresse"], "date_creation": e.get("date_creation") or "",
-                                "est_siege": bool(e.get("est_siege")), "ouvert": e.get("etat_administratif") == "A",
-                                "texte": _texte_etab(e)})
-        if out:
-            break
+    for t in (x.get("nom_raison_sociale"), x.get("nom_complet"), x.get("sigle")):
+        for m in re.findall(r"[^()]+", t or ""):
+            if (m := m.strip()) and m.lower() not in [o.lower() for o in out]:
+                out.append(m)
+    return out
+
+
+async def etablissements(api, siren: str, nom: str, cp: str) -> list:
+    """Établissements de la société dans ce code postal (+ son siège) : [{adresse, date_creation, est_siege, ouvert}].
+    L'API ne liste les établissements que quand le texte cherché correspond à leur nom : une recherche par SIREN ne
+    renvoie que le siège. On cherche donc sous chacun de ses noms (nom de la fiche, raison sociale, nom complet, sigle),
+    filtré par code postal, et on garde tout ce qui porte ce SIREN."""
+    out = []
+
+    def garder(x):
+        for e in [x.get("siege") or {}] + (x.get("matching_etablissements") or []):
+            if e.get("adresse") and not any(o["siret"] == e.get("siret") for o in out):
+                out.append({"siret": e.get("siret", ""), "adresse": e["adresse"], "date_creation": e.get("date_creation") or "",
+                            "est_siege": bool(e.get("est_siege")), "ouvert": e.get("etat_administratif") == "A",
+                            "texte": _texte_etab(e)})
+
+    noms = [nom] if nom else []
+    for x in await _chercher(api, {"q": siren}):
+        if x.get("siren") == siren:
+            garder(x)
+            noms += [n for n in _noms_insee(x) if n.lower() not in [o.lower() for o in noms]]
+    for n in noms:
+        if cp and any(_cp(e["adresse"]) == cp and not e["est_siege"] for e in out):
+            break                                     # un établissement dans ce code postal : trouvé
+        for x in await _chercher(api, {"q": n, "code_postal": cp} if cp else {"q": n}):
+            if x.get("siren") == siren:
+                garder(x)
     return out
 
 
