@@ -375,11 +375,35 @@ async def fullenrich_rattrapage(req: Request, lancement: str = "", confirmer: in
     return {"lance": "envoi Fullenrich" if confirmer else "essai à blanc", "conseil": "rouvrez cette adresse (sans &confirmer) dans 1 à 2 minutes"}
 
 
+async def _lignes_depuis_notion(lancements: list) -> list:
+    """Après un redémarrage du serveur : contacts envoyés à Fullenrich relus dans la mémoire Notion (marque fullenrich_tente)."""
+    socs = [s for s in await VALID._toutes() if _du_lancement(s, lancements)]
+    sem, out = asyncio.Semaphore(3), []
+    async def voir(s):
+        async with sem:
+            d0 = await _lire_page(s)
+        for d in (d0 or {}).get("dirigeants", []):
+            if d.get("fullenrich_tente"):
+                out.append([d0.get("id", ""), s["nom"], d0.get("domaine", ""), d.get("prenom", ""), d.get("nom", ""),
+                            d.get("fonction", ""), d.get("role", ""), d.get("linkedin", ""),
+                            d.get("email", "") if d.get("source_email") == "Fullenrich" else ""])
+    await asyncio.gather(*(voir(s) for s in socs))
+    return sorted(out, key=lambda l: (l[1], str(l[6])))
+
+
 @router.get("/v3/validation/api/fullenrich-rattrapage/excel")
-async def fullenrich_rattrapage_excel(req: Request):
+async def fullenrich_rattrapage_excel(req: Request, lancement: str = ""):
+    """Détail du dernier passage ; après un redémarrage (ou avec ?lancement=…), relu dans la mémoire Notion."""
     if (x := VALID._refus(req, "admin")):
         return x
     from v3 import feuille
+    lancements = [x.strip().lower() for x in lancement.split(",") if x.strip()]
+    if lancements or not FULLENRICH["_lignes"]:
+        lancements = lancements or [x for x in FULLENRICH["lancement"].split(",") if x]
+        if not lancements:
+            return JSONResponse({"erreur": "serveur redémarré : ajoutez ?lancement=… (les mêmes que pour le rattrapage)"}, 400)
+        FULLENRICH["_lignes"] = await _lignes_depuis_notion(lancements)
+        FULLENRICH["mode"] = FULLENRICH["mode"] or "écriture"
     wb = Workbook(); wb.remove(wb.active)
     feuille(wb, "Contacts Fullenrich", ["ID Pipedrive", "Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "LinkedIn",
                                         "E-mail trouvé"], FULLENRICH["_lignes"])

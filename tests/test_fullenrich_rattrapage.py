@@ -31,3 +31,16 @@ def test_tache(monkeypatch):
     asyncio.run(R._tache_fullenrich(["4097 (suite 1/9)"], True))
     d = ecrits["p1"]["dirigeants"][0]
     assert d["email"] == "a1@a.fr" and d["source_email"] == "Fullenrich" and d["fullenrich_tente"]
+
+
+def test_excel_relu(monkeypatch):
+    async def toutes():
+        return [{"page": "p1", "nom": "Soc", "validation": "À valider", "lancement": "locataires_flex_paris (suite 1/2)"}]
+    async def lire(s):
+        return {"id": "1", "domaine": "a.fr", "dirigeants": [
+            {"prenom": "A", "nom": "1", "role": "1 CEO", "fullenrich_tente": "2026-10-27", "email": "a@a.fr", "source_email": "Fullenrich"},
+            {"prenom": "B", "nom": "2", "role": "5 Associé", "fullenrich_tente": "2026-10-27"},
+            {"prenom": "C", "nom": "3", "role": "1 CEO", "email": "c@a.fr", "source_email": "Kaspr"}]}
+    monkeypatch.setattr(VALID, "_toutes", toutes); monkeypatch.setattr(R, "_lire_page", lire)
+    l = asyncio.run(R._lignes_depuis_notion(["locataires_flex_paris"]))
+    assert [(x[3], x[8]) for x in l] == [("A", "a@a.fr"), ("B", "")]
