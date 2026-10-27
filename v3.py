@@ -1728,19 +1728,29 @@ AUCUN_OPERATEUR = "(aucun)"     # opérateur retiré à la main : SIRENE ne le r
 
 @router.post("/v3/validation/api/operateur-flex/{page_id}")
 async def operateur_flex_ecrire(page_id: str, req: Request):
-    """Admin : {"retirer": true} retire l'opérateur (SIRENE ne le repropose plus) ; {"retirer": false} efface la
-    décision pour relancer la lecture SIRENE."""
+    """Admin : {"operateur": "Morning"} enregistre l'opérateur saisi à la main (sûr, coche Flexoffice) ;
+    {"retirer": true} retire l'opérateur (SIRENE ne le repropose plus) ; {"retirer": false} efface la décision pour
+    relancer la lecture SIRENE."""
     if (x := VALID._refus(req, "admin")):
         return x
     if not VALID.RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
-    retirer = bool((await req.json()).get("retirer"))
+    corps = await req.json()
+    saisi = re.sub(r"\s+", " ", str(corps.get("operateur") or "")).replace("(probable)", "").strip()[:60]
     if not await VALID.assurer_colonne("Opérateur flex"):
         return JSONResponse({"erreur": "Notion refuse de créer la colonne « Opérateur flex »"}, 502)
-    maj = await VALID._maj(page_id, {"Opérateur flex": MEM._txt(AUCUN_OPERATEUR if retirer else "")})
+    if saisi:
+        valeur = next((o for o in SIRENE.OPERATEURS_FLEX if o.lower() == saisi.lower()), saisi)   # orthographe de la liste
+        props = {"Opérateur flex": MEM._txt(valeur)}
+        if await VALID.assurer_colonne("Flexoffice", "checkbox"):
+            props["Flexoffice"] = {"checkbox": True}
+    else:
+        valeur = AUCUN_OPERATEUR if corps.get("retirer") else ""
+        props = {"Opérateur flex": MEM._txt(valeur)}
+    maj = await VALID._maj(page_id, props)
     if isinstance(maj, JSONResponse):
         return maj
-    return {"ok": True, "operateur_flex": AUCUN_OPERATEUR if retirer else ""}
+    return {"ok": True, "operateur_flex": valeur, "flexoffice": True if saisi else None}
 
 
 @router.post("/v3/validation/api/siren/{page_id}")

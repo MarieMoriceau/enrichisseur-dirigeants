@@ -800,20 +800,19 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
     journal(f"contacts du CRM : {partis} probablement partis sur {len(a_lire)} profils lus")
 
 
-async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> dict:
-    """contacts = [(dirigeant, société)] → {index: e-mail}. E-mails seulement (pas de téléphone) pour limiter les crédits."""
-    datas = [{"firstname": d["prenom"], "lastname": d["nom"], "domain": r["domaine"], "company_name": r["nom"],
-              "linkedin_url": d["linkedin"], "enrich_fields": ["contact.emails"], "custom": {"idx": str(i)}}
-             for i, (d, r) in enumerate(contacts)]
-    h = {"Authorization": f"Bearer {FULLENRICH_KEY}", "Content-Type": "application/json"}
+FULLENRICH_LOT = int(os.getenv("FULLENRICH_LOT", "100"))      # Fullenrich refuse au-delà de 100 contacts par envoi (« Too many data »)
+
+
+async def _fullenrich_lot(c: httpx.AsyncClient, h: dict, datas: list, journal, n: int, total: int) -> dict:
+    """Un envoi Fullenrich (≤ FULLENRICH_LOT contacts) → {idx: e-mail}."""
     try:
         r = await c.post("https://app.fullenrich.com/api/v1/contact/enrich/bulk", headers=h,
-                         json={"name": "Enrichisseur v3", "datas": datas})
+                         json={"name": f"Enrichisseur v3 ({n}/{total})", "datas": datas})
         if r.status_code not in (200, 201):
-            journal(f"Fullenrich refusé ({r.status_code}) : {r.text[:150]}")
+            journal(f"Fullenrich lot {n}/{total} refusé ({r.status_code}) : {r.text[:150]}")
             return {}
         eid = r.json().get("enrichment_id") or r.json().get("id")
-        for _ in range(60):                                   # jusqu'à 5 minutes
+        for _ in range(60):                                   # jusqu'à 5 minutes par lot
             await asyncio.sleep(5)
             r2 = await c.get(f"https://app.fullenrich.com/api/v1/contact/enrich/bulk/{eid}", headers=h)
             if r2.status_code != 200:
@@ -829,10 +828,26 @@ async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> di
                             out[idx] = v
                             break
                 return out
-        journal("Fullenrich : pas de réponse après 5 minutes")
+        journal(f"Fullenrich lot {n}/{total} : pas de réponse après 5 minutes")
     except Exception as e:
-        journal(f"Fullenrich en échec : {e}")
+        journal(f"Fullenrich lot {n}/{total} en échec : {e}")
     return {}
+
+
+async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> dict:
+    """contacts = [(dirigeant, société)] → {index: e-mail}. E-mails seulement (pas de téléphone) pour limiter les crédits.
+    Envoyés par lots de FULLENRICH_LOT (limite de l'API)."""
+    datas = [{"firstname": d["prenom"], "lastname": d["nom"], "domain": r["domaine"], "company_name": r["nom"],
+              "linkedin_url": d["linkedin"], "enrich_fields": ["contact.emails"], "custom": {"idx": str(i)}}
+             for i, (d, r) in enumerate(contacts)]
+    h = {"Authorization": f"Bearer {FULLENRICH_KEY}", "Content-Type": "application/json"}
+    lots = [datas[i:i + FULLENRICH_LOT] for i in range(0, len(datas), FULLENRICH_LOT)]
+    out = {}
+    for n, lot in enumerate(lots, 1):
+        out |= await _fullenrich_lot(c, h, lot, journal, n, len(lots))
+    if len(lots) > 1:
+        journal(f"Fullenrich : {len(datas)} contacts envoyés en {len(lots)} lots, {len(out)} e-mails trouvés")
+    return out
 
 
 # ───────────────────────── orchestration des étapes 3 à 5 ─────────────────────────

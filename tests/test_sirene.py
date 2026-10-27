@@ -146,3 +146,24 @@ def test_route_sirene_flex_date(monkeypatch):
     monkeypatch.setattr(VALID, "_une", une); monkeypatch.setattr(S, "analyser", analyse)
     j = TestClient(app).get("/v3/validation/api/sirene-flex/" + "0" * 32, params={"adresse": "8 rue Sainte-Cécile 75009"}).json()
     assert j["date"] == "2026-01-01" and "siège créé à cette adresse le 01/01/2026" in j["source_date"] and j["operateur"] == "Patchwork"
+
+
+def test_saisie_operateur(monkeypatch):
+    import v3, v3_validation as VALID
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI(); app.include_router(v3.router)
+    ecrit = {}
+    async def maj(p, props): ecrit.update(props); return {}
+    async def col(nom, genre="rich_text"): return True
+    monkeypatch.setattr(VALID, "_refus", lambda req, b: None)
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col)
+    j = TestClient(app).post("/v3/validation/api/operateur-flex/" + "0" * 32, json={"operateur": "morning"}).json()
+    assert j["operateur_flex"] == "Morning" and ecrit["Flexoffice"] == {"checkbox": True}
+    assert ecrit["Opérateur flex"]["rich_text"][0]["text"]["content"] == "Morning"
+    ecrit.clear()
+    j = TestClient(app).post("/v3/validation/api/operateur-flex/" + "0" * 32, json={"operateur": "Blue Office"}).json()
+    assert j["operateur_flex"] == "Blue Office"
+    ecrit.clear()
+    j = TestClient(app).post("/v3/validation/api/operateur-flex/" + "0" * 32, json={"retirer": True}).json()
+    assert j["operateur_flex"] == "(aucun)" and "Flexoffice" not in ecrit

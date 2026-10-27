@@ -366,3 +366,11 @@ async def sirene_flex(page_id: str, req: Request, adresse: str = ""):
             await VALID._maj(page_id, {"Opérateur flex": MEM._txt(r["operateur"])})
             rep["enregistre"] = True
     return rep
+
+
+@router.get("/v3/validation/api/operateurs-flex")
+async def operateurs_flex(req: Request):
+    """Liste des opérateurs de flex connus (saisie de l'opérateur sur la fiche)."""
+    if (x := VALID._refus(req, "negos")):
+        return x
+    return {"operateurs": OPERATEURS_FLEX}
