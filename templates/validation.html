@@ -533,9 +533,11 @@ function ecranSociete() {
         : r.date ? r.source_date + (info.debut_bail === r.date ? " · enregistrée" : " · enregistrée à la validation (ou « Enregistrer »)")
         : r.sans_cp ? "adresse sans code postal : SIRENE ne peut pas la comparer (choisissez une adresse complète)"
         : "rien à cette adresse dans SIRENE : à remplir quand vous avez l'info";
+      if (r.cp_trouve === "BAN") $("#msgBail").textContent += ` (lu pour ${r.adresse_lue}, code postal de la Base Adresse Nationale)`;
       opSirene = info.operateur_flex ? "" : (r.operateur || ""); srcSirene = r.source || "";
       if (info.operateur_flex) return afficherOp();
-      $("#flexOp").innerHTML = opSirene
+      $("#flexOp").innerHTML = r.sans_cp ? `<p style="margin:0"><small>opérateur : adresse sans code postal, SIRENE ne peut pas la comparer</small></p>`
+        : opSirene
         ? `<p style="margin:0"><b>${esc(opSirene)}</b>${lienFlex("retirer", "retirerOp")}<br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
         : `<p style="margin:0"><small>aucun opérateur déclaré à cette adresse (SIRENE)</small></p>`;
       brancherFlex();
@@ -560,11 +562,13 @@ function ecranSociete() {
         $("#msgBail").textContent = r.date ? r.source_date + (r.date_ecrite ? " · enregistrée" : " · enregistrée à la validation (ou « Enregistrer »)")
           : r.sans_cp ? "adresse sans code postal : SIRENE ne peut pas la comparer (choisissez une adresse complète)"
           : "rien à cette adresse dans SIRENE : à remplir quand vous avez l'info";
+        if (r.cp_trouve === "BAN") $("#msgBail").textContent += ` (lu pour ${r.adresse_lue}, code postal de la Base Adresse Nationale)`;
       }
       if (opConnu) { if (r.source && !info.source_flex) { info.source_flex = r.source; afficherOp(); } return; }
       opSirene = r.operateur || ""; srcSirene = r.source || "";
       if (r.enregistre) { info.operateur_flex = opSirene; info.source_flex = srcSirene; return afficherOp(); }
-      $("#flexOp").innerHTML = opSirene
+      $("#flexOp").innerHTML = r.sans_cp ? `<p style="margin:0"><small>opérateur : adresse sans code postal, SIRENE ne peut pas la comparer</small></p>`
+        : opSirene
         ? `<p style="margin:0"><b>${esc(opSirene)}</b>${lienFlex("retirer", "retirerOp")}<br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
         : `<p style="margin:0"><small>aucun opérateur déclaré à cette adresse (SIRENE)</small></p>`;
       brancherFlex();

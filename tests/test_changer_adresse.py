@@ -53,3 +53,38 @@ def test_nego_voit_sans_enregistrer(monkeypatch):
     ecrit = _monter(monkeypatch, {})
     r = asyncio.run(S._relire_adresse(PAGE, dict(PLATONIA), "25 rue du Petit Musc 75004", "", False))
     assert not ecrit and r["etat"]["operateur_flex"] == "Reflex"
+
+
+class _Rep:
+    def __init__(self, feats): self.status_code, self._f = 200, feats
+    def json(self): return {"features": self._f}
+
+
+def _ban(monkeypatch, feats):
+    class Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None): return _Rep(feats)
+    monkeypatch.setattr(S.httpx, "AsyncClient", Client)
+
+
+def _f(num, rue, cp, score=0.9):
+    return {"properties": {"housenumber": num, "street": rue, "postcode": cp, "score": score}}
+
+
+def test_cp_retrouve_dans_la_ban(monkeypatch):
+    """Yacast France : CRM « 25 rue Alphonse de Neuville » sans code postal, les autres adresses sont dans le 17e."""
+    _ban(monkeypatch, [_f("25", "Rue Alphonse de Neuville", "75017")])
+    a, src = asyncio.run(S.completer_adresse("25 rue Alphonse de Neuville", ["89 boulevard Pereire, Paris, 75017, FR"]))
+    assert a == "25 rue Alphonse de Neuville 75017" and src == "BAN"
+
+
+def test_ban_plusieurs_villes_on_ne_devine_pas(monkeypatch):
+    _ban(monkeypatch, [_f("1", "Avenue de la République", "75011"), _f("1", "Avenue de la République", "92120")])
+    assert asyncio.run(S.completer_adresse("1 avenue de la République", [])) == ("1 avenue de la République", "")
+
+
+def test_ban_hors_departement_des_autres_adresses(monkeypatch):
+    _ban(monkeypatch, [_f("25", "Rue Alphonse de Neuville", "92100")])
+    assert asyncio.run(S.completer_adresse("25 rue Alphonse de Neuville", ["89 bd Pereire 75017 Paris"]))[1] == ""
