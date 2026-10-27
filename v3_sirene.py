@@ -436,17 +436,23 @@ async def sirene_une(req: Request, siren: str, adresse: str, nom: str = ""):
 
 
 @router.get("/v3/validation/api/sirene-flex/{page_id}")
-async def sirene_flex(page_id: str, req: Request, adresse: str = "", autres: str = ""):
+async def sirene_flex(page_id: str, req: Request, adresse: str = "", autres: str = "", relire: int = 0):
     """Fiche de validation : ce que SIRENE dit pour l'adresse des bureaux affichée.
     - opérateur de flex (centre déclaré à cette adresse) ; enregistré si Flexoffice est déjà coché ;
     - début de bail = date de création de l'établissement de la société à cette adresse exacte (siège ou secondaire) ;
       enregistré tout de suite si la case est vide (admin).
-    `autres` : les autres adresses de la fiche (séparées par « | »), pour retrouver un code postal manquant."""
+    `autres` : les autres adresses de la fiche (séparées par « | »), pour retrouver un code postal manquant.
+    `relire=1` : l'adresse cochée a changé. Ce que SIRENE avait rempli pour l'ancienne adresse (source « SIRENE… »)
+    est recalculé pour la nouvelle, ou effacé si SIRENE n'a rien ; les saisies à la main et le « (aucun) » restent.
+    La case Flexoffice n'est jamais touchée. Réponse : `etat` = valeurs enregistrées après passage."""
     if (x := VALID._refus(req, "negos")):
         return x
     if not VALID.RE_PAGE.fullmatch(page_id):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     info = await VALID._une(page_id) or {}
+    admin = VALID.role(req) == "admin"
+    if relire:
+        return await _relire_adresse(page_id, info, adresse, autres, admin)
     op = (info.get("operateur_flex") or "").strip()
     rep = {"operateur": "", "indice": "", "enregistre": False, "retire": op == "(aucun)", "date": "", "source_date": "",
            "date_ecrite": False, "adresse_lue": ""}
@@ -485,6 +491,60 @@ async def sirene_flex(page_id: str, req: Request, adresse: str = "", autres: str
         rep["source"] = source_operateur(r["indice"])     # opérateur enregistré avant qu'on garde sa source
         if VALID.role(req) == "admin" and await VALID.assurer_colonne("Source opérateur flex"):
             await VALID._maj(page_id, {"Source opérateur flex": MEM._txt(rep["source"])})
+    return rep
+
+
+def _auto(source: str) -> bool:
+    """Valeur remplie par l'outil à partir de SIRENE (et non saisie ou retirée à la main)."""
+    return (source or "").strip().upper().startswith("SIRENE")
+
+
+async def _relire_adresse(page_id: str, info: dict, adresse: str, autres: str, admin: bool) -> dict:
+    """Changement d'adresse cochée : début de bail et opérateur tirés de SIRENE recalculés pour la nouvelle adresse."""
+    op = (info.get("operateur_flex") or "").strip()
+    bail, src_bail, src_flex = info.get("debut_bail") or "", info.get("source_bail") or "", info.get("source_flex") or ""
+    bail_auto, op_auto = bool(bail) and _auto(src_bail), bool(op) and op != "(aucun)" and _auto(src_flex)
+    adresse = completer_cp(adresse.strip(), autres.split("|"))
+    rep = {"relu": True, "adresse_lue": adresse, "operateur": "", "indice": "", "source": "", "date": "", "source_date": "",
+           "bail_garde": bool(bail) and not bail_auto, "op_garde": bool(op) and not op_auto}
+    r = {"date": "", "siege": "", "operateur": "", "indice": ""}
+    if re.fullmatch(r"\d{9}", info.get("siren") or "") and adresse and _cp(adresse):
+        async with httpx.AsyncClient(timeout=20) as api:
+            r = await analyser(api, info["siren"], info.get("nom", ""), adresse)
+    elif adresse and not _cp(adresse):
+        rep["sans_cp"] = True
+    props = {}
+    if not rep["bail_garde"]:
+        if r["date"]:
+            j = r["date"]
+            src = (f"SIRENE : {'siège' if r['siege'].startswith('oui') else 'établissement secondaire'} "
+                   f"créé à cette adresse le {j[8:10]}/{j[5:7]}/{j[:4]}")
+            rep.update(date=j, source_date=src)
+            if j != bail:
+                props |= {"Début de bail": {"date": {"start": j}}, "Source début de bail": MEM._txt(src)}
+                bail, src_bail = j, src
+        elif bail_auto:                                   # la date venait de l'ancienne adresse
+            props |= {"Début de bail": {"date": None}, "Source début de bail": MEM._txt("")}
+            bail, src_bail = "", ""
+    if not rep["op_garde"] and op != "(aucun)":
+        rep.update(operateur=r["operateur"], indice=r["indice"], source=source_operateur(r["indice"]) if r["operateur"] else "")
+        if r["operateur"] and (info.get("flexoffice") or op_auto):
+            if r["operateur"] != op or rep["source"] != src_flex:
+                props |= {"Opérateur flex": MEM._txt(r["operateur"]), "Source opérateur flex": MEM._txt(rep["source"])}
+                op, src_flex = r["operateur"], rep["source"]
+        elif op_auto:                                     # l'opérateur venait de l'ancienne adresse
+            props |= {"Opérateur flex": MEM._txt(""), "Source opérateur flex": MEM._txt("")}
+            op, src_flex = "", ""
+    if props and admin:
+        for col, typ in (("Début de bail", "date"), ("Source début de bail", "rich_text"),
+                         ("Opérateur flex", "rich_text"), ("Source opérateur flex", "rich_text")):
+            if col in props and not await VALID.assurer_colonne(col, typ):
+                props.pop(col)
+        await VALID._maj(page_id, props)
+    elif props:                                           # négo : on montre sans enregistrer
+        bail, src_bail, op, src_flex = info.get("debut_bail") or "", info.get("source_bail") or "", \
+            (info.get("operateur_flex") or "").strip(), info.get("source_flex") or ""
+    rep["etat"] = {"debut_bail": bail, "source_bail": src_bail, "operateur_flex": op, "source_flex": src_flex}
     return rep
 
 
