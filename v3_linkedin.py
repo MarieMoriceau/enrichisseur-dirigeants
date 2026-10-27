@@ -746,10 +746,14 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
     a_lire = [(r, p) for r in avec_crm for p in r.get("contacts_crm", []) if p["statut"] == "à vérifier" and p["linkedin"]]
     if len(a_lire) > PROFILS_MAX:
         journal(f"profils LinkedIn : {len(a_lire)} contacts à vérifier, seuls les {PROFILS_MAX} premiers sont lus (PROFILS_MAX)")
+        for _, p in a_lire[PROFILS_MAX:]:
+            p["detail"] += f" ; {PAS_LU} (plafond de {PROFILS_MAX} profils par lancement)"
         a_lire = a_lire[:PROFILS_MAX]
     if not (a_lire and PB_PROFILS) or stop():
         if a_lire and not PB_PROFILS:
             journal("profils LinkedIn : Profile Scraper de ce compte absent de Render (PB_PROFILE_SCRAPER_ID ou _NEGOS), les contacts restent « à vérifier »")
+            for _, p in a_lire:
+                p["detail"] += f" ; {PAS_LU} (Profile Scraper absent)"
         return
     job["phase"] = f"LinkedIn : lecture de {len(a_lire)} profils de contacts du CRM…"
     try:
@@ -757,8 +761,27 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
                                    valeurs=[p["linkedin"] for _, p in a_lire], colonne="profileUrl")
     except Exception as e:
         journal(f"Profile Scraper en échec : {e}")
+        for _, p in a_lire:
+            p["detail"] += f" ; {PAS_LU} (Profile Scraper en échec)"
         return
     job["profils_lus"] = len(a_lire)
+    partis = classer_profils(a_lire, lignes, ressemblance)
+    journal(f"contacts du CRM : {partis} probablement partis sur {len(a_lire)} profils lus")
+
+
+PAS_LU = "profil pas encore lu"
+
+
+def profil_a_lire(p: dict) -> bool:
+    """Contact « à vérifier » avec une URL LinkedIn dont le profil n'a jamais été lu (plafond atteint, phantom absent ou
+    en échec, contrôle d'avant l'étape de lecture). « profil non lu » = le phantom n'a rien rendu : on ne réessaie pas."""
+    d = p.get("detail", "") or ""
+    return p.get("statut") == "à vérifier" and bool(p.get("linkedin")) and ("profil" not in d or PAS_LU in d)
+
+
+def classer_profils(a_lire: list, lignes: list, ressemblance) -> int:
+    """Rapproche les profils lus par le Profile Scraper des contacts [(société, contact)] et tranche
+       toujours là / probablement parti. Renvoie le nombre de partis."""
     def cle(u):
         return re.sub(r"[?#].*$", "", (u or "").lower()).rstrip("/").split("linkedin.com", 1)[-1]
     par_url = {}
@@ -768,6 +791,7 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
                 par_url.setdefault(cle(l[k]), l)
     partis = 0
     for r, p in a_lire:
+        p["detail"] = (p.get("detail") or "").split(f" ; {PAS_LU}")[0]
         l = par_url.get(cle(p["linkedin"]))
         if not l:
             p["detail"] += " ; profil non lu"
@@ -797,7 +821,7 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
             partis += 1
         else:
             p["detail"] += " ; profil lu, aucun poste affiché"
-    journal(f"contacts du CRM : {partis} probablement partis sur {len(a_lire)} profils lus")
+    return partis
 
 
 FULLENRICH_LOT = int(os.getenv("FULLENRICH_LOT", "100"))      # Fullenrich refuse au-delà de 100 contacts par envoi (« Too many data »)

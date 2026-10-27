@@ -29,6 +29,7 @@ JOBS: dict = {}
 
 import v3_validation as VALID
 import v3_partis as PARTIS
+import v3_profils as PROFILS
 router.include_router(VALID.router)              # écrans de validation (admin / négos)
 import v3_rattrapage as RATTRAPAGE
 router.include_router(RATTRAPAGE.router)         # rattrapage du contrôle des contacts CRM
@@ -1604,6 +1605,27 @@ async def partis_arreter(req: Request):
         return x
     PARTIS.ETAT["stop"] = True
     return {"ok": True}
+
+
+# ───────────────────────── profils LinkedIn restés « à vérifier » (plafond de 80 par lancement) ─────────────────────────
+@router.get("/v3/validation/api/profils-restants")
+async def profils_restants(req: Request, lancement: str = "", confirmer: int = 0):
+    """Admin. Sans &confirmer : aperçu (nombre de profils à lire dans ce fichier, rien n'est lancé).
+    Avec &confirmer=1 : lecture de 80 profils au plus (compte automatisations, file d'attente, quota du jour),
+    possible seulement après un aperçu du même fichier de moins d'une heure."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    etat = {"actif": PROFILS.ETAT["actif"], "phase": PROFILS.ETAT["phase"], "journal": PROFILS.ETAT["journal"][-8:]}
+    if not lancement.strip():
+        return etat | {"conseil": "ajoutez ?lancement=… (nom du fichier)"}
+    if PROFILS.ETAT["actif"]:
+        return etat
+    try:
+        if confirmer:
+            return etat | await PROFILS.lancer(lancement.strip(), entrer_file, sortir_file, JOBS)
+        return etat | await PROFILS.apercu(lancement.strip())
+    except RuntimeError as e:
+        return JSONResponse({"erreur": str(e)}, 502)
 
 
 @router.get("/v3/validation/api/base-quali/{page_id}")
