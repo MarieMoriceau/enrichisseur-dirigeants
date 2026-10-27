@@ -226,3 +226,22 @@ def test_source_operateur(monkeypatch):
     j = TestClient(app).get("/v3/validation/api/sirene-flex/" + "0" * 32, params={"adresse": "24 rue de Mogador 75009"}).json()
     assert j["source"].startswith("SIRENE : centre Morning") and "24 RUE DE MOGADOR" in j["source"]
     assert ecrit["Source opérateur flex"]["rich_text"][0]["text"]["content"] == j["source"]
+
+
+def test_etablissements_par_raison_sociale(monkeypatch):
+    """Yield Studio : la recherche par SIREN ne donne que le siège (Tours) ; l'établissement du 24 rue de Mogador
+    n'apparaît qu'en cherchant « YIELD » dans le 75009."""
+    S._CENTRES.clear()
+    async def chercher(api, p):
+        if p["q"] == "853327518":
+            return [{"siren": "853327518", "nom_complet": "YIELD (YIELD STUDIO)", "nom_raison_sociale": "YIELD",
+                     "siege": {"siret": "1", "adresse": "1 IMPASSE DU PALAIS 37000 TOURS", "date_creation": "2021-06-18",
+                               "est_siege": True, "etat_administratif": "A"}, "matching_etablissements": []}]
+        if p["q"] == "YIELD" and p.get("code_postal") == "75009":
+            return [{"siren": "853327518", "siege": {"siret": "1", "adresse": "1 IMPASSE DU PALAIS 37000 TOURS", "est_siege": True},
+                     "matching_etablissements": [{"siret": "2", "adresse": "24 RUE DE MOGADOR 75009 PARIS", "date_creation": "2025-01-30",
+                                                  "est_siege": False, "etat_administratif": "A"}]}]
+        return []
+    monkeypatch.setattr(S, "_chercher", chercher)
+    r = asyncio.run(S.analyser(None, "853327518", "Yield Studio", "24 rue de Mogador 75009"))
+    assert r["date"] == "2025-01-30" and r["siege"].startswith("non")
