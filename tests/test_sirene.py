@@ -203,3 +203,26 @@ def test_route_date_ecrite(monkeypatch):
     assert vu["adr"].endswith("75011") and j["date"] == "2025-10-01" and j["date_ecrite"]
     assert ecrit["Début de bail"] == {"date": {"start": "2025-10-01"}}
     assert "établissement secondaire créé à cette adresse le 01/10/2025" in ecrit["Source début de bail"]["rich_text"][0]["text"]["content"]
+
+
+def test_source_operateur(monkeypatch):
+    """Yield Studio : Morning déjà enregistré sans source → la source SIRENE est retrouvée et notée."""
+    import v3_validation as VALID
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI(); app.include_router(S.router)
+    ecrit = {}
+    async def une(p):
+        return {"siren": "853327518", "nom": "Yield Studio", "flexoffice": True, "operateur_flex": "Morning",
+                "debut_bail": "", "source_flex": ""}
+    async def analyse(api, siren, nom, adr):
+        return {"date": "", "etab": "", "siege": "", "operateur": "Morning", "sur": False,
+                "indice": "centre Morning à la même adresse (LESPACE (MORNING LAFFITE) : 24 RUE DE MOGADOR 75009 PARIS)"}
+    async def maj(p, props): ecrit.update(props); return {}
+    async def col(nom, genre="rich_text"): return True
+    monkeypatch.setattr(VALID, "_refus", lambda req, b: None); monkeypatch.setattr(VALID, "role", lambda req: "admin")
+    monkeypatch.setattr(VALID, "_une", une); monkeypatch.setattr(S, "analyser", analyse)
+    monkeypatch.setattr(VALID, "_maj", maj); monkeypatch.setattr(VALID, "assurer_colonne", col)
+    j = TestClient(app).get("/v3/validation/api/sirene-flex/" + "0" * 32, params={"adresse": "24 rue de Mogador 75009"}).json()
+    assert j["source"].startswith("SIRENE : centre Morning") and "24 RUE DE MOGADOR" in j["source"]
+    assert ecrit["Source opérateur flex"]["rich_text"][0]["text"]["content"] == j["source"]

@@ -93,6 +93,19 @@ def meme_lieu(a: str, b: str) -> bool:
     return bool(_numeros(a) & _numeros(b))
 
 
+def source_operateur(indice: str) -> str:
+    """Texte de la colonne « Source opérateur flex » à partir de l'indice SIRENE."""
+    return f"SIRENE : {indice}"[:300] if indice else "SIRENE"
+
+
+async def props_operateur(valeur: str, source: str) -> dict:
+    """Propriétés Notion de l'opérateur et de sa source (colonne créée au besoin)."""
+    props = {"Opérateur flex": MEM._txt(valeur)}
+    if await VALID.assurer_colonne("Source opérateur flex"):
+        props["Source opérateur flex"] = MEM._txt(source)
+    return props
+
+
 def completer_cp(adresse: str, autres: list) -> str:
     """Adresse sans code postal (« 1 bis avenue de la République », fiche Pipedrive) : on reprend le code postal d'une
     autre source qui donne le même numéro dans la même rue. Plusieurs codes postaux possibles : on ne devine pas."""
@@ -213,7 +226,7 @@ async def appliquer(api, page_id: str, info: dict, adresse: str) -> dict:
     if r["operateur"] and not (info.get("operateur_flex") or "").replace("(probable)", "").strip() \
             and await VALID.assurer_colonne("Opérateur flex"):
         sur = bool(r.get("sur")) or bool(info.get("flexoffice"))   # déjà coché : l'opérateur n'est plus « probable »
-        props["Opérateur flex"] = MEM._txt(r["operateur"] if sur else f"{r['operateur']} (probable)")
+        props |= await props_operateur(r["operateur"] if sur else f"{r['operateur']} (probable)", source_operateur(r["indice"]))
         if sur and not info.get("flexoffice") and await VALID.assurer_colonne("Flexoffice", "checkbox"):
             props["Flexoffice"] = {"checkbox": True}
     if props:
@@ -380,7 +393,7 @@ async def sirene_flex(page_id: str, req: Request, adresse: str = "", autres: str
     if not _cp(adresse):
         return rep | {"indice": rep["indice"] or "adresse sans code postal : SIRENE ne peut pas la comparer",
                       "sans_cp": True}
-    if op and info.get("debut_bail"):
+    if op and info.get("debut_bail") and (info.get("source_flex") or op == "(aucun)"):
         return rep                                    # rien à chercher
     async with httpx.AsyncClient(timeout=20) as api:
         r = await analyser(api, info["siren"], info.get("nom", ""), adresse)
@@ -396,11 +409,16 @@ async def sirene_flex(page_id: str, req: Request, adresse: str = "", autres: str
             await VALID._maj(page_id, props)
             rep["date_ecrite"] = True
     if not op:
-        rep.update(operateur=r["operateur"], indice=r["indice"])
+        rep.update(operateur=r["operateur"], indice=r["indice"], source=source_operateur(r["indice"]) if r["operateur"] else "")
         if r["operateur"] and info.get("flexoffice") and VALID.role(req) == "admin" \
                 and await VALID.assurer_colonne("Opérateur flex"):
-            await VALID._maj(page_id, {"Opérateur flex": MEM._txt(r["operateur"])})
+            await VALID._maj(page_id, await props_operateur(r["operateur"], rep["source"]))
             rep["enregistre"] = True
+    elif op != "(aucun)" and not info.get("source_flex") and r["operateur"] \
+            and r["operateur"].lower() == rep["operateur"].lower():
+        rep["source"] = source_operateur(r["indice"])     # opérateur enregistré avant qu'on garde sa source
+        if VALID.role(req) == "admin" and await VALID.assurer_colonne("Source opérateur flex"):
+            await VALID._maj(page_id, {"Source opérateur flex": MEM._txt(rep["source"])})
     return rep
 
 
