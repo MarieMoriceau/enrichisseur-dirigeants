@@ -514,6 +514,35 @@ function ecranSociete() {
     brancherFlex();
   };
   // SIRENE pour l'adresse cochée : opérateur de flex + début de bail (établissement déclaré à cette adresse exacte)
+  // Adresse cochée changée : ce que SIRENE avait rempli pour l'ancienne adresse est recalculé (ou effacé) ;
+  // les saisies à la main restent, la case Flexoffice n'est pas touchée
+  const relireAdresse = async () => {
+    const page = courant, adr = adresseCochee();
+    if (!adr) return;
+    $("#msgBail").className = "msg"; $("#msgBail").textContent = "lecture SIRENE pour cette adresse…";
+    if (!(info.operateur_flex && !(info.source_flex || "").toUpperCase().startsWith("SIRENE")))
+      $("#flexOp").innerHTML = `<p style="margin:0"><small>opérateur : lecture SIRENE pour cette adresse…</small></p>`;
+    try {
+      const autres = [d.adresse_google, d.adresse_linkedin, site, d.adresse_crm, d.adresse_proposee, d.adresse_notion].filter(Boolean).join("|");
+      const r = await api(`/v3/validation/api/sirene-flex/${page}?adresse=${encodeURIComponent(adr)}&autres=${encodeURIComponent(autres)}&relire=1`);
+      if (page !== courant || adr !== adresseCochee()) return;
+      const e = r.etat || {};
+      Object.assign(info, {debut_bail: e.debut_bail || "", source_bail: e.source_bail || "", operateur_flex: e.operateur_flex || "", source_flex: e.source_flex || ""});
+      $("#valBail").value = info.debut_bail || r.date || "";
+      $("#msgBail").textContent = r.bail_garde ? "date saisie à la main : gardée"
+        : r.date ? r.source_date + (info.debut_bail === r.date ? " · enregistrée" : " · enregistrée à la validation (ou « Enregistrer »)")
+        : r.sans_cp ? "adresse sans code postal : SIRENE ne peut pas la comparer (choisissez une adresse complète)"
+        : "rien à cette adresse dans SIRENE : à remplir quand vous avez l'info";
+      opSirene = info.operateur_flex ? "" : (r.operateur || ""); srcSirene = r.source || "";
+      if (info.operateur_flex) return afficherOp();
+      $("#flexOp").innerHTML = opSirene
+        ? `<p style="margin:0"><b>${esc(opSirene)}</b>${lienFlex("retirer", "retirerOp")}<br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
+        : `<p style="margin:0"><small>aucun opérateur déclaré à cette adresse (SIRENE)</small></p>`;
+      brancherFlex();
+    } catch (e) {
+      $("#msgBail").className = "msg err"; $("#msgBail").textContent = "SIRENE injoignable : " + e.message;
+    }
+  };
   const lireFlex = async () => {
     const page = courant, adr = adresseCochee(), opConnu = !!info.operateur_flex;
     if (opConnu) afficherOp();
@@ -544,8 +573,11 @@ function ecranSociete() {
       if (!info.debut_bail) $("#msgBail").textContent = "SIRENE injoignable : à remplir quand vous avez l'info";
     }
   };
-  document.querySelectorAll('input[name=adr]').forEach(x => x.addEventListener("change", lireFlex));
-  $("#saisie").addEventListener("change", lireFlex);
+  document.querySelectorAll('input[name=adr]').forEach(x => x.addEventListener("change", () => {
+    if (x.value === "Saisie" && !($("#saisie").value || "").trim()) return;   // on attend l'adresse tapée
+    relireAdresse();
+  }));
+  $("#saisie").addEventListener("change", relireAdresse);
   lireFlex();
   $("#valFlex").onchange = async () => {
     const page = courant, c = $("#valFlex").checked; $("#valFlex").disabled = true;
