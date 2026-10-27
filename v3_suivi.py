@@ -14,6 +14,8 @@ from email.mime.text import MIMEText
 
 import httpx
 
+import notion_debit as DEBIT
+
 NOTION_KEY = os.getenv("NOTION_API_KEY", "")
 NOTION_DB = "0631870b-4265-4ccf-8284-d62d0633acdb"
 SMTP_HOST = os.getenv("SMTP_HOST", "pro2.mail.ovh.net")
@@ -24,6 +26,11 @@ URL_PUBLIQUE = os.getenv("RENDER_EXTERNAL_URL", "")   # fournie automatiquement 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 RE_MAIL = re.compile(r"^[\w.+\-']+@[\w\-]+(\.[\w\-]+)+$")
 LIBELLES = {"siren": "SIREN et statut", "societes": "Sociétés", "dirigeants": "Sociétés + dirigeants", "tout": "Tout"}
+
+
+async def _n(c, methode, url, **kw):
+    """Requête Notion cadencée (débit partagé par tout le serveur)."""
+    return await DEBIT.requete(c, methode, url, **kw)
 
 
 def _h(json_=True):
@@ -58,7 +65,7 @@ async def notion_creer(job: dict) -> str:
     }
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post("https://api.notion.com/v1/pages", headers=_h(),
+            r = await _n(c, "POST", "https://api.notion.com/v1/pages", headers=_h(),
                              json={"parent": {"database_id": NOTION_DB}, "properties": props})
             if r.status_code == 200:
                 return r.json()["id"]
@@ -90,11 +97,11 @@ async def notion_finir(job: dict, excel: bytes | None, nom_fichier: str):
     try:
         async with httpx.AsyncClient(timeout=60) as c:
             if excel:
-                r1 = await c.post("https://api.notion.com/v1/file_uploads", headers=_h(),
+                r1 = await _n(c, "POST", "https://api.notion.com/v1/file_uploads", headers=_h(),
                                   json={"filename": nom_fichier, "content_type": XLSX})
                 fid = r1.json().get("id") if r1.status_code == 200 else None
                 if fid:
-                    r2 = await c.post(f"https://api.notion.com/v1/file_uploads/{fid}/send", headers=_h(False),
+                    r2 = await _n(c, "POST", f"https://api.notion.com/v1/file_uploads/{fid}/send", headers=_h(False),
                                       files={"file": (nom_fichier, excel, XLSX)})
                     if r2.status_code == 200:
                         props["Fichier Excel"] = {"files": [{"name": nom_fichier, "type": "file_upload",
@@ -103,7 +110,7 @@ async def notion_finir(job: dict, excel: bytes | None, nom_fichier: str):
                         print(f"[V3 SUIVI] Notion envoi fichier {r2.status_code} {r2.text[:200]}")
                 else:
                     print(f"[V3 SUIVI] Notion upload {r1.status_code} {r1.text[:200]}")
-            r = await c.patch(f"https://api.notion.com/v1/pages/{pid}", headers=_h(), json={"properties": props})
+            r = await _n(c, "PATCH", f"https://api.notion.com/v1/pages/{pid}", headers=_h(), json={"properties": props})
             if r.status_code != 200:
                 print(f"[V3 SUIVI] Notion fin {r.status_code} {r.text[:200]}")
     except Exception as e:
@@ -130,7 +137,7 @@ async def historique(jobs: dict, n: int = 40) -> list:
     if not NOTION_KEY:
         return []
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={
+        r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={
             "filter": {"property": "Phases", "rich_text": {"starts_with": "v3"}},
             "sorts": [{"timestamp": "created_time", "direction": "descending"}], "page_size": n})
         if r.status_code != 200:
@@ -143,7 +150,7 @@ async def historique(jobs: dict, n: int = 40) -> list:
             if statut == "EN_COURS" and rid not in jobs:
                 # le service a redémarré pendant ce lancement : il ne reprendra pas
                 statut = "ERREUR"
-                await c.patch(f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
+                await _n(c, "PATCH", f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
                     "Statut": {"select": {"name": "ERREUR"}},
                     "Erreur": _txt("Interrompu : le service a redémarré pendant le traitement")}})
             out.append({"page": pg["id"], "job": rid, "nom": _val(p, "Nom"), "statut": statut,
@@ -158,7 +165,7 @@ async def historique(jobs: dict, n: int = 40) -> list:
 async def url_fichier(page_id: str) -> str:
     """Lien de téléchargement frais (Notion ne donne que des liens valables 1 heure)."""
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.get(f"https://api.notion.com/v1/pages/{page_id}", headers=_h())
+        r = await _n(c, "GET", f"https://api.notion.com/v1/pages/{page_id}", headers=_h())
         if r.status_code != 200:
             return ""
         fs = r.json()["properties"].get("Fichier Excel", {}).get("files", [])
@@ -333,7 +340,7 @@ async def utilise_le(d, origine: str = "") -> int:
                 "page_size": 100}
             if curseur:
                 corps["start_cursor"] = curseur
-            r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
+            r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
             if r.status_code != 200:
                 print(f"[V3 QUOTA] Notion {r.status_code} {r.text[:200]}")
                 return total
@@ -403,14 +410,14 @@ async def programmer(nom: str, perimetre: str, mails: list, orgs: list, depart, 
         "Origine": {"select": {"name": ORIGINE_NOTION.get(origine, "Négos")}},
     }
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.post("https://api.notion.com/v1/pages", headers=_h(),
+        r = await _n(c, "POST", "https://api.notion.com/v1/pages", headers=_h(),
                          json={"parent": {"database_id": NOTION_DB}, "properties": props, "children": blocs[:100]})
         if r.status_code != 200:
             print(f"[V3 QUOTA] programmation {r.status_code} {r.text[:200]}")
             return ""
         pid = r.json()["id"]
         for i in range(100, len(blocs), 100):                # au-delà de 100 blocs, on complète
-            await c.patch(f"https://api.notion.com/v1/blocks/{pid}/children", headers=_h(), json={"children": blocs[i:i + 100]})
+            await _n(c, "PATCH", f"https://api.notion.com/v1/blocks/{pid}/children", headers=_h(), json={"children": blocs[i:i + 100]})
         return pid
 
 
@@ -421,7 +428,7 @@ async def a_lancer(jusqua=None) -> list:
         return []
     out = []
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+        r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
             {"property": "Phases", "rich_text": {"starts_with": "v3"}},
             {"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
             {"property": "Démarré le", "date": {"on_or_before": (jusqua or datetime.now(PARIS)).isoformat()}}]},
@@ -432,7 +439,7 @@ async def a_lancer(jusqua=None) -> list:
             p = pg["properties"]
             texte, curseur = "", None
             while True:
-                b = await c.get(f"https://api.notion.com/v1/blocks/{pg['id']}/children", headers=_h(),
+                b = await _n(c, "GET", f"https://api.notion.com/v1/blocks/{pg['id']}/children", headers=_h(),
                                 params={"page_size": 100, **({"start_cursor": curseur} if curseur else {})})
                 bj = b.json()
                 for bl in bj.get("results", []):
@@ -444,7 +451,7 @@ async def a_lancer(jusqua=None) -> list:
             try:
                 orgs = json.loads(texte)
             except ValueError:
-                await c.patch(f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
+                await _n(c, "PATCH", f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
                     "Statut": {"select": {"name": "ERREUR"}}, "Erreur": _txt("liste de sociétés illisible")}})
                 continue
             perim = next((k for k, v in LIBELLES.items() if v == _val(p, "Phases").replace("v3 · ", "")), "tout")
@@ -465,14 +472,14 @@ async def orgs_programmees() -> list:
                                                 {"property": "Statut", "select": {"equals": "SUSPENDU"}}]}]}, "page_size": 100}
             if curseur:
                 corps["start_cursor"] = curseur
-            r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
+            r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
             if r.status_code != 200:
                 raise RuntimeError(f"listes programmées illisibles (Notion {r.status_code})")
             j = r.json()
             for pg in j.get("results", []):
                 texte, cur_b = "", None
                 while True:
-                    b = (await c.get(f"https://api.notion.com/v1/blocks/{pg['id']}/children", headers=_h(),
+                    b = (await _n(c, "GET", f"https://api.notion.com/v1/blocks/{pg['id']}/children", headers=_h(),
                                      params={"page_size": 100, **({"start_cursor": cur_b} if cur_b else {})})).json()
                     texte += "".join(t.get("plain_text", "") for bl in b.get("results", []) if bl.get("type") == "code"
                                      for t in bl["code"]["rich_text"])
@@ -494,11 +501,11 @@ async def suspendre_attente(origine: str, motif: str) -> int:
         return 0
     n = 0
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+        r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
             {"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
             {"property": "Origine", "select": {"equals": ORIGINE_NOTION.get(origine, "Négos")}}]}, "page_size": 100})
         for pg in (r.json().get("results", []) if r.status_code == 200 else []):
-            rr = await c.patch(f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
+            rr = await _n(c, "PATCH", f"https://api.notion.com/v1/pages/{pg['id']}", headers=_h(), json={"properties": {
                 "Statut": {"select": {"name": "SUSPENDU"}},
                 "Erreur": _txt(f"Suspendu le {datetime.now(PARIS):%d/%m %H:%M} : {motif}. Remettre EN_ATTENTE une fois réparé.")}})
             n += rr.status_code == 200
@@ -551,7 +558,7 @@ async def journee() -> dict:
         return {"runs": [], "prochain": None}
     debut, fin = _jour(datetime.now(PARIS))
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+        r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
             {"property": "Phases", "rich_text": {"starts_with": "v3"}},
             {"property": "Statut", "select": {"does_not_equal": "EN_ATTENTE"}},
             {"property": "Démarré le", "date": {"on_or_after": debut.isoformat()}},
@@ -565,7 +572,7 @@ async def journee() -> dict:
                              "statut": _val(p, "Statut"), "motif": _val(p, "Motif d'arrêt"), "reliquat": _val(p, "Reliquat reporté"),
                              "societes": _val(p, "Nb sociétés"), "linkedin": _val(p, "Nb LinkedIn"), "par": _val(p, "Emails destinataires"),
                              "origine": _val(p, "Origine") or "Négos"})
-        r = await c.post(f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
+        r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json={"filter": {"and": [
             {"property": "Phases", "rich_text": {"starts_with": "v3"}},
             {"property": "Statut", "select": {"equals": "EN_ATTENTE"}}]},
             "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 50})
@@ -599,6 +606,6 @@ async def maj(page_id: str, props: dict):
             p[k] = _txt(v)
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            await c.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=_h(), json={"properties": p})
+            await _n(c, "PATCH", f"https://api.notion.com/v1/pages/{page_id}", headers=_h(), json={"properties": p})
     except Exception as e:
         print(f"[V3 SUIVI] maj : {e}")

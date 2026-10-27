@@ -11,13 +11,14 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+import notion_debit as DEBIT
+
 NOTION_KEY = os.getenv("NOTION_API_KEY", "")
 MEMOIRE_DB = os.getenv("NOTION_MEMOIRE_DB", "0447dcf54a344a3883be1d4170aaa692")
 DUREE_JOURS = int(os.getenv("MEMOIRE_JOURS", "183"))          # 6 mois
 RANG = {"siren": 0, "societes": 1, "dirigeants": 2, "tout": 3}
 A_JETER = {"adresses_site", "pages", "candidats", "memoire", "_page_memoire", "_lance_par", "_lancement", "_negos", "_nego_nouveau",
            "_bail_memoire", "_flex_memoire"}   # brut du scan du site, inutile à garder
-_SEM = asyncio.Semaphore(3)                                    # Notion : environ 3 requêtes par seconde
 
 
 def _h(json_=True):
@@ -52,17 +53,8 @@ def _val(p, nom):
 
 
 async def _req(c, methode, url, **kw):
-    async with _SEM:
-        for essai in range(7):                         # Notion limite à ~3 requêtes/s : on patiente (jusqu'à ~1 min)
-            r = await c.request(methode, url, headers=_h("json" in kw), **kw)
-            if r.status_code != 429:
-                return r
-            try:
-                attente = float(r.headers.get("retry-after") or 0)
-            except ValueError:
-                attente = 0
-            await asyncio.sleep(min(max(attente, 1 + essai * 2), 20))
-        return r
+    """Toutes les requêtes Notion de l'enrichisseur passent ici : débit partagé par tout le serveur (notion_debit)."""
+    return await DEBIT.requete(c, methode, url, headers=_h("json" in kw), **kw)
 
 
 async def index(journal, tout: bool = False) -> list:
