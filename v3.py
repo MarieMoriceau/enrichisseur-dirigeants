@@ -1716,7 +1716,7 @@ async def flexoffice_ecrire(page_id: str, req: Request):
         props["Opérateur flex"] = MEM._txt(op.replace("(probable)", "").strip())
     elif coche and not op.strip() and (o := str(corps.get("operateur") or "").strip()[:60]) \
             and await VALID.assurer_colonne("Opérateur flex"):   # opérateur lu dans SIRENE à l'affichage de la fiche
-        props["Opérateur flex"] = MEM._txt(o)
+        props |= await SIRENE.props_operateur(o, str(corps.get("source") or "SIRENE")[:300])
     maj = await VALID._maj(page_id, props)
     if isinstance(maj, JSONResponse):
         return maj
@@ -1741,16 +1741,17 @@ async def operateur_flex_ecrire(page_id: str, req: Request):
         return JSONResponse({"erreur": "Notion refuse de créer la colonne « Opérateur flex »"}, 502)
     if saisi:
         valeur = next((o for o in SIRENE.OPERATEURS_FLEX if o.lower() == saisi.lower()), saisi)   # orthographe de la liste
-        props = {"Opérateur flex": MEM._txt(valeur)}
+        props = await SIRENE.props_operateur(valeur, "saisi à la main")
         if await VALID.assurer_colonne("Flexoffice", "checkbox"):
             props["Flexoffice"] = {"checkbox": True}
     else:
         valeur = AUCUN_OPERATEUR if corps.get("retirer") else ""
-        props = {"Opérateur flex": MEM._txt(valeur)}
+        props = await SIRENE.props_operateur(valeur, "retiré à la main" if valeur else "")
     maj = await VALID._maj(page_id, props)
     if isinstance(maj, JSONResponse):
         return maj
-    return {"ok": True, "operateur_flex": valeur, "flexoffice": True if saisi else None}
+    return {"ok": True, "operateur_flex": valeur, "flexoffice": True if saisi else None,
+            "source_flex": "saisi à la main" if saisi else ("retiré à la main" if valeur else "")}
 
 
 @router.post("/v3/validation/api/siren/{page_id}")
