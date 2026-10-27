@@ -395,6 +395,14 @@ function ecranSociete() {
         <label style="display:flex;gap:8px;align-items:center;margin:8px 0;font-size:15px;cursor:pointer">
           <input type="checkbox" id="valFlex" ${info.flexoffice ? "checked" : ""} style="width:18px;height:18px"> en bureau flexible</label>
         <div id="flexOp">${info.operateur_flex && info.operateur_flex !== "(aucun)" ? `<p style="margin:0"><b>${esc(info.operateur_flex.replace("(probable)", ""))}</b>${info.operateur_flex.includes("(probable)") && !info.flexoffice ? `<br><small>centre de l'opérateur à la même adresse (SIRENE) : cochez pour confirmer</small>` : ""}</p>` : `<p style="margin:0"><small>opérateur : lecture SIRENE…</small></p>`}</div>
+        <div style="margin-top:8px"><button class="lien" id="ouvrirOp" type="button" style="font-size:12px">Saisir l'opérateur</button></div>
+        <div id="panOp" hidden style="margin-top:6px">
+          <input type="text" id="saisieOp" list="listeOps" placeholder="ex. Morning" aria-label="Opérateur de flex" style="margin:0 0 6px">
+          <datalist id="listeOps"></datalist>
+          <div style="display:flex;gap:6px"><button class="btn primary" id="okOp" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
+          <button class="btn ghost" id="annOp" type="button" style="padding:6px 10px;font-size:13px">Annuler</button></div>
+          <p class="msg" id="msgOp"></p>
+        </div>
         <p class="msg" id="msgFlex"></p></div>
     </div>
     ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}
@@ -433,6 +441,41 @@ function ecranSociete() {
       if (retirer) { $("#flexOp").innerHTML = `<p style="margin:0"><small>aucun opérateur (retiré à la main)</small>${lienFlex("rétablir", "retablirOp")}</p>`; brancherFlex(); }
       else lireFlex();
     } catch (e) { $("#msgFlex").className = "msg err"; $("#msgFlex").textContent = e.message; }
+  };
+  // Saisie à la main de l'opérateur (liste des opérateurs connus + suggestion tirée des adresses Google / LinkedIn / CRM)
+  let OPS = [];
+  const normOp = t => " " + norm(t) + " ";
+  const opVu = () => {
+    for (const [src, t] of [["Google", (d.adresse_google || "") + " " + (d.fiche_google || "")], ["LinkedIn", d.adresse_linkedin], ["CRM", d.adresse_crm], ["site", site]]) {
+      const o = OPS.find(o => normOp(t || "").includes(normOp(o)));
+      if (o) return [o, src];
+    }
+    return null;
+  };
+  api("/v3/validation/api/operateurs-flex").then(r => {
+    OPS = r.operateurs || [];
+    $("#listeOps").innerHTML = OPS.map(o => `<option value="${esc(o)}">`).join("");
+  }).catch(() => {});
+  $("#ouvrirOp").onclick = () => {
+    $("#panOp").hidden = false; $("#ouvrirOp").hidden = true; $("#msgOp").textContent = "";
+    const actuel = (info.operateur_flex || "").replace("(probable)", "").replace("(aucun)", "").trim(), vu = opVu();
+    $("#saisieOp").value = actuel || opSirene || (vu ? vu[0] : "");
+    if (!actuel && !opSirene && vu) $("#msgOp").textContent = `trouvé dans l'adresse ${vu[1]}`;
+    $("#saisieOp").focus();
+  };
+  $("#annOp").onclick = () => { $("#panOp").hidden = true; $("#ouvrirOp").hidden = false; };
+  $("#okOp").onclick = async () => {
+    const page = courant, o = $("#saisieOp").value.trim();
+    if (!o) { $("#msgOp").className = "msg err"; $("#msgOp").textContent = "saisissez un nom"; return; }
+    $("#okOp").disabled = true;
+    try {
+      const r = await api("/v3/validation/api/operateur-flex/" + page, {operateur: o});
+      if (page !== courant) return;
+      info.operateur_flex = r.operateur_flex; info.flexoffice = true; $("#valFlex").checked = true; opSirene = "";
+      $("#panOp").hidden = true; $("#ouvrirOp").hidden = false;
+      afficherOp(); $("#msgFlex").className = "msg"; $("#msgFlex").textContent = "enregistré";
+    } catch (e) { $("#msgOp").className = "msg err"; $("#msgOp").textContent = e.message; }
+    $("#okOp").disabled = false;
   };
   const afficherOp = () => {
     if (info.operateur_flex === "(aucun)")
