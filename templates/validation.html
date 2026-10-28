@@ -834,7 +834,8 @@ function ecranContacts() {
   const fiches = info.fiches || [];
   const ailleurs = fiches.filter(x => x.ailleurs && x.ailleurs.id);
   const choix = (opts, val) => opts.map(o => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("");
-  const defStatut = x => ({"probablement parti":"marquer parti","à vérifier":"à revoir"}[x.statut] || "garder");
+  // « garder » seulement si l'outil a vu le contact en poste ; non contrôlé (pas de page LinkedIn de la société) = à revoir
+  const defStatut = x => ({"probablement parti":"marquer parti","toujours là":"garder"}[x.statut] || "à revoir");
   // « à revoir » enregistré avant que le profil ne soit lu : le nouveau contrôle reprend la main
   const defC = x => { const a = avant[String(x.id)] || {};
     return a.action && !(a.action === "à revoir" && a.statut && a.statut !== x.statut) ? a.action : defStatut(x); };
