@@ -73,3 +73,24 @@ def test_fonction_reprise_de_linkedin_si_vide():
     LI.classer_profils([(soc, vide), (soc, pleine)], lignes, _r)
     assert vide["fonction"] == "Head of Workplace" and vide["source_fonction"] == "profil LinkedIn"
     assert pleine["fonction"] == "DAF" and "source_fonction" not in pleine          # Pipedrive prime
+
+
+def test_nom_complete_avec_linkedin():
+    p = {"nom_complet": "Menard"}
+    LI.nom_linkedin(p, "Adrien Menard", "Sales Navigator")
+    assert p["nom_complet"] == "Adrien Menard" and p["nom_pipedrive"] == "Menard"
+    q = {"nom_complet": "Menard"}
+    LI.nom_linkedin(q, "Julie Durand", "profil LinkedIn")                      # le mot n'y est pas : autre personne
+    assert q["nom_complet"] == "Menard" and "source_nom" not in q
+    r = {"nom_complet": "Alexia Ceva"}
+    LI.nom_linkedin(r, "Alexia Ceva-Martin", "profil LinkedIn")                # nom complet dans Pipedrive : on n'y touche pas
+    assert r["nom_complet"] == "Alexia Ceva"
+
+
+def test_nom_complete_a_la_lecture_du_profil():
+    soc = {"nom": "Botify", "linkedin_id": "1"}
+    p = {"nom_complet": "Menard", "statut": "à vérifier", "linkedin": "https://www.linkedin.com/in/adrienmenard", "detail": "x", "fonction": ""}
+    l = [{"profileUrl": "https://www.linkedin.com/in/adrienmenard", "fullName": "Adrien Menard", "companyName": "Botify",
+          "linkedinCompanyId": "1", "linkedinJobTitle": "Co-founder & CEO", "linkedinJobDateRange": "2012 - Present"}]
+    LI.classer_profils([(soc, p)], l, _r)
+    assert p["nom_complet"] == "Adrien Menard" and p["statut"] == "toujours là" and p["fonction"] == "Co-founder & CEO"

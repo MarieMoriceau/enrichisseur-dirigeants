@@ -734,6 +734,7 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
             if d:
                 p["statut"], p["detail"] = "toujours là", f"dans Sales Navigator : {d['fonction']}"
                 fonction_linkedin(p, d.get("fonction"), "Sales Navigator")
+                nom_linkedin(p, d.get("nom_complet"), "Sales Navigator")
                 d["dans_pipedrive"] = d.get("dans_pipedrive") or f"oui (fiche {p['id']})"
                 if p["email"] and not d.get("email"):
                     d["email"], d["source_email"] = p["email"], "Pipedrive"
@@ -782,6 +783,17 @@ def fonction_linkedin(p: dict, fonction: str, source: str):
             p["role"] = role(f)
 
 
+def nom_linkedin(p: dict, nom: str, source: str):
+    """Fiche Pipedrive réduite à un seul mot (« Menard », « Adrien ») : on complète prénom + nom avec ceux de LinkedIn,
+    à condition que ce mot s'y retrouve (sinon ce n'est sans doute pas la même personne)."""
+    n, actuel = " ".join((nom or "").split()), " ".join((p.get("nom_complet") or "").split())
+    if len(n.split()) < 2 or len(actuel.split()) >= 2:
+        return
+    if actuel and _sans_accents(actuel) not in _sans_accents(n).replace("-", " ").split() + [_sans_accents(n)]:
+        return
+    p["nom_pipedrive"], p["nom_complet"], p["source_nom"] = actuel, n, source
+
+
 def profil_a_lire(p: dict) -> bool:
     """Contact « à vérifier » avec une URL LinkedIn dont le profil n'a jamais été lu (plafond atteint, phantom absent ou
     en échec, contrôle d'avant l'étape de lecture). « profil non lu » = le phantom n'a rien rendu : on ne réessaie pas."""
@@ -806,6 +818,7 @@ def classer_profils(a_lire: list, lignes: list, ressemblance) -> int:
         if not l:
             p["detail"] += " ; profil non lu"
             continue
+        nom_linkedin(p, l.get("fullName") or " ".join(x for x in (l.get("firstName"), l.get("lastName")) if x), "profil LinkedIn")
         nom_ent, cid, poste, en_cours, periode = _entreprise_actuelle(l)
         p_nom, p_slug, p_en_cours, p_periode = _poste_precedent(l)
         nous_1 = _est_nous(r, nom_ent, cid, "", ressemblance)
