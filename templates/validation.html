@@ -857,7 +857,7 @@ function ecranContacts() {
       ${crm.map((x, i) => `<tr class="${x.statut === "probablement parti" ? "parti" : ""}">
         <td><b>${esc(x.nom_complet)}</b>${lienLi(val(x, "linkedin"), x.nom_complet, (info && info.nom) || "")}
           <div style="margin-top:4px">${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</div><small>fiche Pipedrive ${esc(x.id)}${x.fiche_doublon ? " (rattachée au doublon " + esc(x.fiche_doublon) + ")" : ""}</small></td>
-        <td>${inp(x, i, "fonction", "Fonction", "text")}</td>
+        <td>${inp(x, i, "fonction", "Fonction", "text")}${x.source_fonction && !(avant[String(x.id)] || {}).fonction ? `<small>reprise de LinkedIn (${esc(x.source_fonction)}), absente de Pipedrive</small>` : ""}</td>
         <td>${roleC(x, i)}</td>
         <td>${inp(x, i, "email", "prenom.nom@societe.fr", "email")}</td>
         <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}</td>

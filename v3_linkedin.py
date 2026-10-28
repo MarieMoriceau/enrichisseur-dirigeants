@@ -733,6 +733,7 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
             d = next((d for d in r.get("dirigeants", []) if ressemblance(p["nom_complet"], d["nom_complet"]) >= 0.9), None)
             if d:
                 p["statut"], p["detail"] = "toujours là", f"dans Sales Navigator : {d['fonction']}"
+                fonction_linkedin(p, d.get("fonction"), "Sales Navigator")
                 d["dans_pipedrive"] = d.get("dans_pipedrive") or f"oui (fiche {p['id']})"
                 if p["email"] and not d.get("email"):
                     d["email"], d["source_email"] = p["email"], "Pipedrive"
@@ -772,6 +773,15 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
 PAS_LU = "profil pas encore lu"
 
 
+def fonction_linkedin(p: dict, fonction: str, source: str):
+    """Contact « toujours là » sans poste dans Pipedrive : on reprend celui lu sur LinkedIn (le poste Pipedrive prime)."""
+    f = (fonction or "").strip()
+    if f and not (p.get("fonction") or "").strip():
+        p["fonction"], p["source_fonction"] = f, source
+        if not p.get("role"):
+            p["role"] = role(f)
+
+
 def profil_a_lire(p: dict) -> bool:
     """Contact « à vérifier » avec une URL LinkedIn dont le profil n'a jamais été lu (plafond atteint, phantom absent ou
     en échec, contrôle d'avant l'étape de lecture). « profil non lu » = le phantom n'a rien rendu : on ne réessaie pas."""
@@ -802,6 +812,7 @@ def classer_profils(a_lire: list, lignes: list, ressemblance) -> int:
         nous_2 = _est_nous(r, p_nom, "", p_slug, ressemblance)
         if nous_1 and en_cours:
             p["statut"], p["detail"] = "toujours là", f"profil LinkedIn : {poste or 'poste non lu'} chez {nom_ent}"
+            fonction_linkedin(p, poste, "profil LinkedIn")
         elif nous_1:                                 # dernier poste = chez nous, mais terminé
             p["statut"], p["detail"] = "probablement parti", f"profil LinkedIn : poste chez {nom_ent} terminé ({periode})"
             partis += 1

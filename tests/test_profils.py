@@ -62,3 +62,14 @@ def test_lancer_refuse_sans_apercu():
     P.ETAT.update(actif=False, lancement="", _apercu_le=0.0)
     r = asyncio.run(P.lancer("4097 (suite 1/9)", None, None, {}))
     assert not r["lance"] and "aperçu" in r["motif"]
+
+
+def test_fonction_reprise_de_linkedin_si_vide():
+    soc = {"nom": "Botify", "linkedin_id": "1"}
+    vide = {"statut": "à vérifier", "linkedin": "https://www.linkedin.com/in/a", "fonction": "", "role": "", "detail": "x"}
+    pleine = {"statut": "à vérifier", "linkedin": "https://www.linkedin.com/in/b", "fonction": "DAF", "role": "", "detail": "x"}
+    lignes = [{"profileUrl": f"https://www.linkedin.com/in/{k}", "companyName": "Botify", "linkedinCompanyId": "1",
+               "linkedinJobTitle": "Head of Workplace", "linkedinJobDateRange": "2021 - Present"} for k in "ab"]
+    LI.classer_profils([(soc, vide), (soc, pleine)], lignes, _r)
+    assert vide["fonction"] == "Head of Workplace" and vide["source_fonction"] == "profil LinkedIn"
+    assert pleine["fonction"] == "DAF" and "source_fonction" not in pleine          # Pipedrive prime
