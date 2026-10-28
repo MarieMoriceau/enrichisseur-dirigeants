@@ -180,6 +180,7 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
     <a class="btn ghost" id="phoning" hidden style="display:block;text-align:center;margin:0 0 8px;font-size:13px">📞 Liste de phoning de ce fichier (Excel)</a>
     <button class="btn ghost" id="profils" hidden style="display:block;width:100%;text-align:center;margin:0 0 4px;font-size:13px">🔎 Lire les profils LinkedIn restants</button>
     <div class="msg" id="profilsMsg" style="font-size:12px;margin:0 0 8px"></div>
+    <select id="tri" aria-label="Ordre de la liste" style="margin-bottom:8px;width:100%"><option value="alpha">Ordre alphabétique (repérer les doublons)</option><option value="date">Les plus récentes d'abord</option></select>
     <input type="search" id="cherche" placeholder="Chercher une société, un SIREN, un lancement…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement de la mémoire Notion…</div></div>
   </aside>
@@ -234,11 +235,17 @@ function dessinerFichiers() {
   const dernier = {};
   SOC.forEach(s => fichiersDe(s).forEach(f => { if (!dernier[f] || s.traitee > dernier[f]) dernier[f] = s.traitee; }));
   const noms = Object.keys(dernier).sort((a, b) => (dernier[b] || "").localeCompare(dernier[a] || "") || a.localeCompare(b));
-  const garde = $("#fichier").value, nb = f => SOC.filter(s => s.validation === "À valider" && fichiersDe(s).includes(f)).length;
-  $("#fichier").innerHTML = `<option value="">Tous les fichiers</option>` + noms.map(f =>
-    `<option value="${esc(f)}">${esc(f)} · ${nb(f)} à valider</option>`).join("");
-  if (noms.includes(garde)) $("#fichier").value = garde;
+  const garde = $("#fichier").value, de = f => SOC.filter(s => fichiersDe(s).includes(f));
+  const nb = (f, e) => de(f).filter(s => s.validation === e).length;
+  // fichier terminé : toutes ses sociétés ont leurs contacts validés ou sont écartées → caché (sauf s'il est choisi)
+  const fini = f => de(f).every(s => s.validation === "Contacts validés" || s.validation === "Écartée");
+  const finis = noms.filter(fini), montres = noms.filter(f => fichiersFinisVisibles || !fini(f) || f === garde);
+  $("#fichier").innerHTML = `<option value="">Tous les fichiers</option>` + montres.map(f =>
+    `<option value="${esc(f)}">${esc(f)} · ${fini(f) ? "terminé ✓" : `${nb(f, "À valider")} sociétés, ${nb(f, "Société validée")} contacts à valider`}</option>`).join("")
+    + (finis.length ? `<option value="__finis__">${fichiersFinisVisibles ? "↑ masquer" : "+ afficher"} les ${finis.length} fichiers terminés</option>` : "");
+  if (montres.includes(garde)) $("#fichier").value = garde;
 }
+let fichiersFinisVisibles = false;
 function quiOk(s, f = $("#qui").value) {
   const fi = $("#fichier").value;
   if (fi && !fichiersDe(s).includes(fi)) return false;
@@ -260,14 +267,28 @@ function dessinerFiltres() {
   $("#filtres").querySelectorAll("button").forEach(b => b.onclick = () => { filtre = b.dataset.f; dessinerFiltres(); dessinerListe(); });
 }
 
+// Ordre de la liste : alphabétique par défaut (les doublons se suivent), choix gardé dans ce navigateur
+let tri = "alpha";
+try { tri = localStorage.getItem("v3_tri") || "alpha"; } catch (e) {}
+const FORMES = /\b(sas|sasu|sarl|sa|eurl|sci|snc|groupe|group)\b/g;
+const cleNom = s => norm(s.nom).replace(FORMES, "").replace(/\s+/g, " ").trim();
 function visibles() {
   const q = norm($("#cherche").value);
-  return SOC.filter(s => quiOk(s) && (filtre === "Toutes" || s.validation === filtre)
+  const v = SOC.filter(s => quiOk(s) && (filtre === "Toutes" || s.validation === filtre)
     && (!q || norm([s.nom, s.siren, s.domaine, s.lancement].join(" ")).includes(q)));
+  return tri === "alpha" ? v.sort((a, b) => cleNom(a).localeCompare(cleNom(b), "fr") || String(a.nom).localeCompare(String(b.nom), "fr")) : v;
+}
+// Doublon probable : même nom (formes juridiques ôtées), même SIREN ou même site, parmi toutes les sociétés
+function doublons() {
+  const vu = {}, out = new Set();
+  for (const s of SOC) for (const k of [cleNom(s) && "n:" + cleNom(s), /^\d{9}$/.test(s.siren || "") && "s:" + s.siren, s.domaine && "d:" + String(s.domaine).toLowerCase()])
+    if (k) (vu[k] = vu[k] || []).push(s.page);
+  Object.values(vu).forEach(l => { if (l.length > 1) l.forEach(p => out.add(p)); });
+  return out;
 }
 
 function dessinerListe() {
-  const v = visibles();
+  const v = visibles(), dbl = doublons();
   $("#items").innerHTML = v.length ? v.map(s => `
     <button class="item" data-p="${s.page}" aria-current="${s.page === courant}">
       <b>${esc(s.nom)}</b>
@@ -275,10 +296,13 @@ function dessinerListe() {
       ${filtre === "Toutes" ? `<span class="pill ${PILL[s.validation]}">${esc(lib(s.validation))}</span>` : ""}
       ${etiquetteNego(s)}
       ${s.validation === "Écartée" ? `<span class="pill ko">à supprimer</span>` : ""}
+      ${dbl.has(s.page) ? `<span class="pill warn" title="même nom, même SIREN ou même site qu'une autre société de la base">doublon ?</span>` : ""}
     </button>`).join("") : `<div class="vide">Rien ici.</div>`;
   $("#items").querySelectorAll(".item").forEach(b => b.onclick = () => ouvrir(b.dataset.p));
 }
 $("#cherche").oninput = dessinerListe;
+$("#tri").value = tri;
+$("#tri").onchange = () => { tri = $("#tri").value; try { localStorage.setItem("v3_tri", tri); } catch (e) {} dessinerListe(); };
 $("#qui").onchange = () => { dessinerFiltres(); dessinerListe(); };
 function lienPhoning() {
   const f = $("#fichier").value, a = $("#phoning");
@@ -311,7 +335,10 @@ $("#profils").onclick = async () => {
     if (r.lance) setTimeout(() => suivreProfils(f), 3000); else $("#profils").disabled = false;
   } catch (e) { $("#profilsMsg").textContent = e.message; $("#profils").disabled = false; }
 };
-$("#fichier").onchange = () => { lienPhoning(); dessinerFiltres(); dessinerListe(); };
+$("#fichier").onchange = () => {
+  if ($("#fichier").value === "__finis__") { fichiersFinisVisibles = !fichiersFinisVisibles; $("#fichier").value = ""; dessinerFichiers(); return; }
+  lienPhoning(); dessinerFiltres(); dessinerListe();
+};
 
 async function ouvrir(page, vers) {
   courant = page; dessinerListe();
@@ -533,9 +560,11 @@ function ecranSociete() {
         : r.date ? r.source_date + (info.debut_bail === r.date ? " · enregistrée" : " · enregistrée à la validation (ou « Enregistrer »)")
         : r.sans_cp ? "adresse sans code postal : SIRENE ne peut pas la comparer (choisissez une adresse complète)"
         : "rien à cette adresse dans SIRENE : à remplir quand vous avez l'info";
+      if (r.cp_trouve === "BAN") $("#msgBail").textContent += ` (lu pour ${r.adresse_lue}, code postal de la Base Adresse Nationale)`;
       opSirene = info.operateur_flex ? "" : (r.operateur || ""); srcSirene = r.source || "";
       if (info.operateur_flex) return afficherOp();
-      $("#flexOp").innerHTML = opSirene
+      $("#flexOp").innerHTML = r.sans_cp ? `<p style="margin:0"><small>opérateur : adresse sans code postal, SIRENE ne peut pas la comparer</small></p>`
+        : opSirene
         ? `<p style="margin:0"><b>${esc(opSirene)}</b>${lienFlex("retirer", "retirerOp")}<br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
         : `<p style="margin:0"><small>aucun opérateur déclaré à cette adresse (SIRENE)</small></p>`;
       brancherFlex();
@@ -560,11 +589,13 @@ function ecranSociete() {
         $("#msgBail").textContent = r.date ? r.source_date + (r.date_ecrite ? " · enregistrée" : " · enregistrée à la validation (ou « Enregistrer »)")
           : r.sans_cp ? "adresse sans code postal : SIRENE ne peut pas la comparer (choisissez une adresse complète)"
           : "rien à cette adresse dans SIRENE : à remplir quand vous avez l'info";
+        if (r.cp_trouve === "BAN") $("#msgBail").textContent += ` (lu pour ${r.adresse_lue}, code postal de la Base Adresse Nationale)`;
       }
       if (opConnu) { if (r.source && !info.source_flex) { info.source_flex = r.source; afficherOp(); } return; }
       opSirene = r.operateur || ""; srcSirene = r.source || "";
       if (r.enregistre) { info.operateur_flex = opSirene; info.source_flex = srcSirene; return afficherOp(); }
-      $("#flexOp").innerHTML = opSirene
+      $("#flexOp").innerHTML = r.sans_cp ? `<p style="margin:0"><small>opérateur : adresse sans code postal, SIRENE ne peut pas la comparer</small></p>`
+        : opSirene
         ? `<p style="margin:0"><b>${esc(opSirene)}</b>${lienFlex("retirer", "retirerOp")}<br><small>${esc(r.indice || "SIRENE")}${$("#valFlex").checked ? "" : " : cochez pour confirmer"}</small></p>`
         : `<p style="margin:0"><small>aucun opérateur déclaré à cette adresse (SIRENE)</small></p>`;
       brancherFlex();

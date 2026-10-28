@@ -122,6 +122,49 @@ def completer_cp(adresse: str, autres: list) -> str:
     return f"{adresse} {cps.pop()}" if len(cps) == 1 else adresse
 
 
+BAN_URLS = ("https://data.geopf.fr/geocodage/search", "https://api-adresse.data.gouv.fr/search/")
+IDF = ("75", "77", "78", "91", "92", "93", "94", "95")
+
+
+async def cp_par_ban(adresse: str, autres: list) -> str:
+    """Code postal d'une adresse qui n'en a pas (« 25 rue Alphonse de Neuville », fiche Pipedrive), lu dans la Base
+    Adresse Nationale : même numéro, même rue, dans le département des autres adresses de la fiche (Île-de-France à
+    défaut). Plusieurs codes postaux possibles, ou rien de sûr : on ne devine pas (renvoie "")."""
+    k = LI.cle_adresse(f"{adresse} 00000")
+    if not (k and k[1]):
+        return ""
+    deps = {c[:2] for c in (_cp(a) for a in autres) if c} or set(IDF)
+    feats = []
+    async with httpx.AsyncClient(timeout=10) as c:
+        for url in BAN_URLS:
+            try:
+                r = await c.get(url, params={"q": adresse, "limit": 10, "type": "housenumber"})
+                if r.status_code == 200:
+                    feats = r.json().get("features", [])
+                    break
+            except (httpx.HTTPError, ValueError):
+                continue
+    cps = set()
+    for f in feats:
+        p = f.get("properties", {})
+        cp = str(p.get("postcode") or "")
+        if (p.get("score") or 0) < 0.6 or cp[:2] not in deps:
+            continue
+        kb = LI.cle_adresse(f"{p.get('housenumber', '')} {p.get('street', '')} {cp}")
+        if kb and kb[0] == k[0] and kb[1] and (k[1] in kb[1] or kb[1] in k[1] or k[1].split()[0] == kb[1].split()[0]):
+            cps.add(cp)
+    return cps.pop() if len(cps) == 1 else ""
+
+
+async def completer_adresse(adresse: str, autres: list) -> tuple:
+    """(adresse avec code postal si on peut le retrouver, d'où vient le code postal : "" / "fiche" / "BAN")."""
+    a = completer_cp(adresse, autres)
+    if _cp(a) or not a.strip():
+        return a, "" if a == adresse else "fiche"
+    cp = await cp_par_ban(a, autres)
+    return (f"{a} {cp}", "BAN") if cp else (a, "")
+
+
 def _cp(a: str) -> str:
     m = re.search(r"\b(75\d{3}|77\d{3}|78\d{3}|91\d{3}|92\d{3}|93\d{3}|94\d{3}|95\d{3}|\d{5})\b", a or "")
     return m.group(1) if m else ""
@@ -458,7 +501,7 @@ async def sirene_flex(page_id: str, req: Request, adresse: str = "", autres: str
            "date_ecrite": False, "adresse_lue": ""}
     if op and op != "(aucun)":
         rep.update(operateur=op.replace("(probable)", "").strip(), enregistre=True)
-    adresse = completer_cp(adresse.strip() or info.get("adresse_retenue", ""), autres.split("|"))
+    adresse, rep["cp_trouve"] = await completer_adresse(adresse.strip() or info.get("adresse_retenue", ""), autres.split("|"))
     rep["adresse_lue"] = adresse
     if not (re.fullmatch(r"\d{9}", info.get("siren") or "") and adresse):
         return rep | {"indice": rep["indice"] or "pas de SIREN ou pas d'adresse"}
@@ -504,8 +547,8 @@ async def _relire_adresse(page_id: str, info: dict, adresse: str, autres: str, a
     op = (info.get("operateur_flex") or "").strip()
     bail, src_bail, src_flex = info.get("debut_bail") or "", info.get("source_bail") or "", info.get("source_flex") or ""
     bail_auto, op_auto = bool(bail) and _auto(src_bail), bool(op) and op != "(aucun)" and _auto(src_flex)
-    adresse = completer_cp(adresse.strip(), autres.split("|"))
-    rep = {"relu": True, "adresse_lue": adresse, "operateur": "", "indice": "", "source": "", "date": "", "source_date": "",
+    adresse, cp_trouve = await completer_adresse(adresse.strip(), autres.split("|"))
+    rep = {"relu": True, "adresse_lue": adresse, "cp_trouve": cp_trouve, "operateur": "", "indice": "", "source": "", "date": "", "source_date": "",
            "bail_garde": bool(bail) and not bail_auto, "op_garde": bool(op) and not op_auto}
     r = {"date": "", "siege": "", "operateur": "", "indice": ""}
     if re.fullmatch(r"\d{9}", info.get("siren") or "") and adresse and _cp(adresse):
