@@ -235,11 +235,17 @@ function dessinerFichiers() {
   const dernier = {};
   SOC.forEach(s => fichiersDe(s).forEach(f => { if (!dernier[f] || s.traitee > dernier[f]) dernier[f] = s.traitee; }));
   const noms = Object.keys(dernier).sort((a, b) => (dernier[b] || "").localeCompare(dernier[a] || "") || a.localeCompare(b));
-  const garde = $("#fichier").value, nb = f => SOC.filter(s => s.validation === "À valider" && fichiersDe(s).includes(f)).length;
-  $("#fichier").innerHTML = `<option value="">Tous les fichiers</option>` + noms.map(f =>
-    `<option value="${esc(f)}">${esc(f)} · ${nb(f)} à valider</option>`).join("");
-  if (noms.includes(garde)) $("#fichier").value = garde;
+  const garde = $("#fichier").value, de = f => SOC.filter(s => fichiersDe(s).includes(f));
+  const nb = (f, e) => de(f).filter(s => s.validation === e).length;
+  // fichier terminé : toutes ses sociétés ont leurs contacts validés ou sont écartées → caché (sauf s'il est choisi)
+  const fini = f => de(f).every(s => s.validation === "Contacts validés" || s.validation === "Écartée");
+  const finis = noms.filter(fini), montres = noms.filter(f => fichiersFinisVisibles || !fini(f) || f === garde);
+  $("#fichier").innerHTML = `<option value="">Tous les fichiers</option>` + montres.map(f =>
+    `<option value="${esc(f)}">${esc(f)} · ${fini(f) ? "terminé ✓" : `${nb(f, "À valider")} sociétés, ${nb(f, "Société validée")} contacts à valider`}</option>`).join("")
+    + (finis.length ? `<option value="__finis__">${fichiersFinisVisibles ? "↑ masquer" : "+ afficher"} les ${finis.length} fichiers terminés</option>` : "");
+  if (montres.includes(garde)) $("#fichier").value = garde;
 }
+let fichiersFinisVisibles = false;
 function quiOk(s, f = $("#qui").value) {
   const fi = $("#fichier").value;
   if (fi && !fichiersDe(s).includes(fi)) return false;
@@ -329,7 +335,10 @@ $("#profils").onclick = async () => {
     if (r.lance) setTimeout(() => suivreProfils(f), 3000); else $("#profils").disabled = false;
   } catch (e) { $("#profilsMsg").textContent = e.message; $("#profils").disabled = false; }
 };
-$("#fichier").onchange = () => { lienPhoning(); dessinerFiltres(); dessinerListe(); };
+$("#fichier").onchange = () => {
+  if ($("#fichier").value === "__finis__") { fichiersFinisVisibles = !fichiersFinisVisibles; $("#fichier").value = ""; dessinerFichiers(); return; }
+  lienPhoning(); dessinerFiltres(); dessinerListe();
+};
 
 async function ouvrir(page, vers) {
   courant = page; dessinerListe();
