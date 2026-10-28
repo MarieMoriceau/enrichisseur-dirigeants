@@ -241,7 +241,7 @@ function dessinerFichiers() {
   const fini = f => de(f).every(s => s.validation === "Contacts validés" || s.validation === "Écartée");
   const finis = noms.filter(fini), montres = noms.filter(f => fichiersFinisVisibles || !fini(f) || f === garde);
   $("#fichier").innerHTML = `<option value="">Tous les fichiers</option>` + montres.map(f =>
-    `<option value="${esc(f)}">${esc(f)} · ${fini(f) ? "terminé ✓" : `${nb(f, "À valider")} sociétés, ${nb(f, "Société validée")} contacts à valider`}</option>`).join("")
+    `<option value="${esc(f)}">${esc(f)} · ${fini(f) ? "terminé ✓" : `${nb(f, "À valider")} sociétés à valider · ${nb(f, "Société validée")} en attente des contacts`}</option>`).join("")
     + (finis.length ? `<option value="__finis__">${fichiersFinisVisibles ? "↑ masquer" : "+ afficher"} les ${finis.length} fichiers terminés</option>` : "");
   if (montres.includes(garde)) $("#fichier").value = garde;
 }
