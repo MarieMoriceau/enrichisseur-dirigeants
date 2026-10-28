@@ -241,7 +241,7 @@ function dessinerFichiers() {
   const fini = f => de(f).every(s => s.validation === "Contacts validés" || s.validation === "Écartée");
   const finis = noms.filter(fini), montres = noms.filter(f => fichiersFinisVisibles || !fini(f) || f === garde);
   $("#fichier").innerHTML = `<option value="">Tous les fichiers</option>` + montres.map(f =>
-    `<option value="${esc(f)}">${esc(f)} · ${fini(f) ? "terminé ✓" : `${nb(f, "À valider")} sociétés, ${nb(f, "Société validée")} contacts à valider`}</option>`).join("")
+    `<option value="${esc(f)}">${esc(f)} · ${fini(f) ? "terminé ✓" : `${nb(f, "À valider")} sociétés à valider · ${nb(f, "Société validée")} en attente des contacts`}</option>`).join("")
     + (finis.length ? `<option value="__finis__">${fichiersFinisVisibles ? "↑ masquer" : "+ afficher"} les ${finis.length} fichiers terminés</option>` : "");
   if (montres.includes(garde)) $("#fichier").value = garde;
 }
@@ -856,7 +856,7 @@ function ecranContacts() {
       <div class="tab-wrap"><table class="saisie"><thead><tr><th>Contact et LinkedIn</th><th>Fonction</th><th>Rôle</th><th>E-mail</th><th>Téléphone</th><th>Contrôle et décision</th></tr></thead><tbody>
       ${crm.map((x, i) => `<tr class="${x.statut === "probablement parti" ? "parti" : ""}">
         <td><b>${esc(x.nom_complet)}</b>${lienLi(val(x, "linkedin"), x.nom_complet, (info && info.nom) || "")}
-          <div style="margin-top:4px">${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</div><small>fiche Pipedrive ${esc(x.id)}${x.fiche_doublon ? " (rattachée au doublon " + esc(x.fiche_doublon) + ")" : ""}</small></td>
+          <div style="margin-top:4px">${inp(x, i, "linkedin", "https://www.linkedin.com/in/…", "url")}</div><small>${x.source_nom ? `nom complété avec LinkedIn (${esc(x.source_nom)}) : « ${esc(x.nom_pipedrive || "vide")} » dans Pipedrive<br>` : ""}fiche Pipedrive ${esc(x.id)}${x.fiche_doublon ? " (rattachée au doublon " + esc(x.fiche_doublon) + ")" : ""}</small></td>
         <td>${inp(x, i, "fonction", "Fonction", "text")}${x.source_fonction && !(avant[String(x.id)] || {}).fonction ? `<small>reprise de LinkedIn (${esc(x.source_fonction)}), absente de Pipedrive</small>` : ""}</td>
         <td>${roleC(x, i)}</td>
         <td>${inp(x, i, "email", "prenom.nom@societe.fr", "email")}</td>
