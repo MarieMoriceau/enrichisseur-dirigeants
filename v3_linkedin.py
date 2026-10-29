@@ -726,6 +726,7 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
             return
         job["phase"] = f"Pipedrive : contacts déjà connus {i}/{len(avec_crm)}…"
         r["contacts_crm"] = await personnes_fiches(c, r)
+        tels_du_fichier(r)
         for p in r["contacts_crm"]:                  # URL LinkedIn ajoutée à la main dans l'écran admin (absente de Pipedrive)
             if not p["linkedin"] and (r.get("_corrections_li") or {}).get(p["id"]):
                 p["linkedin"] = r["_corrections_li"][p["id"]]
@@ -772,6 +773,22 @@ async def controler_contacts_crm(job: dict, cibles: list, pb, c, ressemblance, j
 
 
 PAS_LU = "profil pas encore lu"
+
+
+def tels_du_fichier(r: dict) -> int:
+    """Numéros de la colonne « Personne - Téléphone » du fichier déposé, rattachés aux contacts CRM de la société :
+    par ID de personne Pipedrive, sinon par le nom. Un numéro déjà connu (Pipedrive) n'est pas remplacé."""
+    n = 0
+    for t in r.get("tels_crm") or []:
+        for p in r.get("contacts_crm") or []:
+            meme = (t.get("id") and str(t["id"]) == str(p.get("id"))) or \
+                   (not t.get("id") and t.get("nom") and _sans_accents(" ".join(t["nom"].split())) == _sans_accents(" ".join((p.get("nom_complet") or "").split())))
+            if meme:
+                if not p.get("telephone"):
+                    p["telephone"], p["source_tel"] = t["telephone"], "fichier déposé"
+                    n += 1
+                break
+    return n
 
 
 def fonction_linkedin(p: dict, fonction: str, source: str):

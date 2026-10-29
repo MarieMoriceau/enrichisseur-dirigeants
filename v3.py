@@ -694,10 +694,23 @@ def lire_fichier(nom: str, data: bytes) -> list:
     c_bail = col("date debut de bail") or col("date début de bail") or col("debut de bail", exclure=("annee", "année")) \
         or col("début de bail", exclure=("annee", "année"))
     c_flex = col("operateur flex") or col("opérateur flex") or col("flexoffice")
-    c_adr = col("adresse", exclure=("verifi", "vérifi", "notion", "locaux")) or col("address")
-    out = []
+    c_adr = col("adresse", exclure=("verifi", "vérifi", "notion", "locaux", "personne")) or col("address", exclure=("personne",))
+    # export « personnes » de Pipedrive : une ligne par personne, numéro de téléphone de chaque contact
+    entetes = list(lignes[0].keys()) if lignes else []
+    c_p_tels = [h for h in entetes if "personne" in h.lower() and any(m in h.lower() for m in ("téléphone", "telephone", "phone", "mobile", "tél"))]
+    c_p_id = col("personne", "id")
+    c_p_nom = col("personne", "nom", exclure=("famille", "prénom", "prenom")) or col("personne", "name")
+    out, par_cle = [], {}
     for l in lignes:
         if not (l.get(c_nom) or "").strip():
+            continue
+        tel = next((t for h in c_p_tels if (t := VALID._telephone(l.get(h)))), "") if c_p_tels else ""
+        pers = {"id": (l.get(c_p_id) or "").replace(".0", "") if c_p_id else "", "nom": (l.get(c_p_nom) or "").strip() if c_p_nom else "",
+                "telephone": tel} if tel else None
+        cle = ((l.get(c_id) or "").replace(".0", "") if c_id else "") or norm_nom(l.get(c_nom, ""))
+        if c_p_tels and cle in par_cle:                  # même société, autre personne : on ajoute son numéro
+            if pers:
+                par_cle[cle].setdefault("tels_crm", []).append(pers)
             continue
         siren = re.sub(r"\D", "", l.get(c_siren) or "")[:9] if c_siren else ""
         out.append({"id": (l.get(c_id) or "").replace(".0", "") if c_id else "",
@@ -709,7 +722,9 @@ def lire_fichier(nom: str, data: bytes) -> list:
                     **({"adresse_notion": v} if c_notion and (v := (l.get(c_notion) or "").strip()) else {}),
                     **({"base_quali_crm": q} if c_quali and (q := str(l.get(c_quali) or "").strip()) else {}),
                     **({"debut_bail_crm": b} if c_bail and (b := date_bail(l.get(c_bail))) else {}),
-                    **({"flex_crm": x} if c_flex and (x := str(l.get(c_flex) or "").strip()) else {})})
+                    **({"flex_crm": x} if c_flex and (x := str(l.get(c_flex) or "").strip()) else {}),
+                    **({"tels_crm": [pers]} if pers else {})})
+        par_cle[cle] = out[-1]
     return out
 
 
@@ -1463,7 +1478,7 @@ async def attribuer_anciens(req: Request, mail: str = "mmoriceau@equation-sie.co
 
 # ───────────────────────── relance des sociétés traitées sans dirigeants (phantom en panne) ─────────────────────────
 CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "infos_source", "base_quali_crm",
-              "debut_bail_crm", "flex_crm")
+              "debut_bail_crm", "flex_crm", "tels_crm")
 
 
 @router.get("/v3/validation/api/relancer-vides")
