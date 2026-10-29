@@ -860,7 +860,7 @@ function ecranContacts() {
         <td>${inp(x, i, "fonction", "Fonction", "text")}${x.source_fonction && !(avant[String(x.id)] || {}).fonction ? `<small>reprise de LinkedIn (${esc(x.source_fonction)}), absente de Pipedrive</small>` : ""}</td>
         <td>${roleC(x, i)}</td>
         <td>${inp(x, i, "email", "prenom.nom@societe.fr", "email")}</td>
-        <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}</td>
+        <td>${inp(x, i, "telephone", "06 12 34 56 78", "tel")}${x.source_tel && !(avant[String(x.id)] || {}).telephone ? `<small>${esc(x.source_tel)}</small>` : ""}</td>
         <td>${pillC(x.statut)}<small>${esc(x.detail || "")}</small>
           <div style="margin-top:6px"><select class="edit" data-c="${i}" aria-label="Décision pour ${esc(x.nom_complet)}">${choix(["garder","marquer parti","à supprimer","à revoir"], defC(x))}</select></div></td></tr>`).join("")}</tbody></table></div>`
       : `<p class="msg">${sansContacts ? "" : !("contacts_crm" in d) && d.id ? "Contacts Pipedrive pas encore lus pour cette société (fiche " + esc(d.id) + ") : relancez le rattrapage des contacts CRM." : "Aucun contact Pipedrive rattaché à cette société."}</p>`}
