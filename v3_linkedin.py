@@ -865,6 +865,7 @@ def classer_profils(a_lire: list, lignes: list, ressemblance) -> int:
     return partis
 
 
+EMAILS_MAX = int(os.getenv("EMAILS_MAX", "6"))           # dirigeants enrichis en e-mail par société (4 et rôles 1 à 5 avant le 02/11)
 FULLENRICH_LOT = int(os.getenv("FULLENRICH_LOT", "100"))      # Fullenrich refuse au-delà de 100 contacts par envoi (« Too many data »)
 
 
@@ -902,8 +903,10 @@ async def _fullenrich_lot(c: httpx.AsyncClient, h: dict, datas: list, journal, n
 async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> dict:
     """contacts = [(dirigeant, société)] → {index: e-mail}. E-mails seulement (pas de téléphone) pour limiter les crédits.
     Envoyés par lots de FULLENRICH_LOT (limite de l'API)."""
-    datas = [{"firstname": d["prenom"], "lastname": d["nom"], "domain": r["domaine"], "company_name": r["nom"],
-              "linkedin_url": d["linkedin"], "enrich_fields": ["contact.emails"], "custom": {"idx": str(i)}}
+    # sans domaine connu : nom de la société + profil LinkedIn (Fullenrich accepte l'un ou l'autre)
+    datas = [{"firstname": d["prenom"], "lastname": d["nom"], **({"domain": r["domaine"]} if r.get("domaine") else {}),
+              "company_name": r.get("nom_linkedin") or r["nom"], "linkedin_url": d.get("linkedin", ""),
+              "enrich_fields": ["contact.emails"], "custom": {"idx": str(i)}}
              for i, (d, r) in enumerate(contacts)]
     h = {"Authorization": f"Bearer {FULLENRICH_KEY}", "Content-Type": "application/json"}
     lots = [datas[i:i + FULLENRICH_LOT] for i in range(0, len(datas), FULLENRICH_LOT)]
@@ -1156,11 +1159,11 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             job["phase"] = ""
             return
 
-        # 5. e-mails des dirigeants utiles (rôles 1 à 5, basés en France, 4 max par société)
+        # 5. e-mails des dirigeants (tous les rôles depuis le 02/11, basés en France, EMAILS_MAX par société)
         a_faire = []
         for r in cibles:
             ds = sorted(r.get("dirigeants", []), key=lambda d: d["role"])
-            for d in [d for d in ds if d["role"][0] in "12345"][:4]:
+            for d in [d for d in ds if d.get("role")][:EMAILS_MAX]:
                 a_faire.append((r, d))
 
         # 5a. déjà dans Pipedrive ? alors ni Kaspr ni Fullenrich (on reprend l'e-mail de la fiche s'il existe)
@@ -1187,7 +1190,7 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                 d["source_email"] = "Kaspr" if d["email"] else ""
 
         # 5c. Fullenrich en secours (crédits) pour ceux que Kaspr n'a pas trouvés
-        reste = [(r, d) for r, d in a_enrichir if not d["email"] and r.get("domaine")]
+        reste = [(r, d) for r, d in a_enrichir if not d["email"] and (r.get("domaine") or d.get("linkedin"))]
         if FULLENRICH_KEY and reste and not stop():
             job["phase"] = f"Fullenrich : {len(reste)} e-mails en secours…"
             trouves = await fullenrich_emails(c, [(d, r) for r, d in reste], journal)

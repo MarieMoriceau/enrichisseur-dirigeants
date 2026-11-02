@@ -349,6 +349,123 @@ async def _tache_fullenrich(lancements: list, confirmer: bool):
         FULLENRICH["actif"] = False
 
 
+# ───────── e-mails des contacts VALIDÉS restés sans adresse (02/11) ─────────
+# Tous rôles, sans plafond par société, société avec ou sans domaine : Kaspr d'abord (profil LinkedIn), puis Fullenrich.
+# Un contact déjà tenté par ce rattrapage (marques kaspr_tente / fullenrich_tente) n'est jamais renvoyé.
+EMAILS = {"actif": False, "phase": "", "mode": "", "societes": 0, "contacts": 0, "kaspr": 0, "fullenrich": 0,
+          "ecrites": 0, "echecs": [], "exemples": [], "_quand": 0.0, "_lignes": []}
+
+
+def contacts_valides_sans_email(s: dict, data: dict) -> list:
+    """Dirigeants validés (« prêt pour HubSpot ») de la fiche, sans e-mail (ni trouvé, ni saisi à la main)."""
+    nouveaux = VALID._json(s.get("nouveaux"), {}) if isinstance(s.get("nouveaux"), str) else (s.get("nouveaux") or {})
+    out = []
+    for d in data.get("dirigeants", []):
+        e = nouveaux.get(VALID.cle_contact(d)) or {}
+        if e.get("etat") != "prêt pour HubSpot" or VALID.fiche_nouveau(d, e).get("email"):
+            continue
+        if d.get("linkedin") and d.get("prenom") and d.get("nom") and not (d.get("kaspr_tente") and d.get("fullenrich_tente")):
+            out.append(d)
+    return out
+
+
+async def _tache_emails(confirmer: bool):
+    EMAILS.update(actif=True, phase="lecture des fiches", mode="écriture" if confirmer else "essai à blanc",
+                  societes=0, contacts=0, kaspr=0, fullenrich=0, ecrites=0, echecs=[], exemples=[], _lignes=[])
+    try:
+        socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée" and s.get("nouveaux")]
+        sem, cibles = asyncio.Semaphore(3), []
+        async def voir(s):
+            async with sem:
+                d0 = await _lire_page(s)
+            if d0 and (cs := contacts_valides_sans_email(s, d0)):
+                cibles.append((s, d0, cs))
+        await asyncio.gather(*(voir(s) for s in socs))
+        cibles.sort(key=lambda x: x[0]["nom"].lower())
+        n = sum(len(cs) for _, _, cs in cibles)
+        EMAILS.update(societes=len(cibles), contacts=n, _quand=time.time(),
+                      exemples=[f"{s['nom']} : {', '.join(d.get('nom_complet') or d['prenom'] + ' ' + d['nom'] for d in cs)}"
+                                for s, _, cs in cibles[:15]])
+        EMAILS["_lignes"] = [[s["nom"], d0.get("domaine", ""), d.get("prenom", ""), d.get("nom", ""), d.get("fonction", ""),
+                              d.get("role", ""), d.get("linkedin", ""), "", ""] for s, d0, cs in cibles for d in cs]
+        if not confirmer:
+            EMAILS["phase"] = f"essai à blanc terminé : rien n'a été envoyé ({len(socs)} sociétés lues)"
+            return
+        paires = [(d, d0, s) for s, d0, cs in cibles for d in cs]
+        quand = datetime.now(timezone.utc).date().isoformat()
+        async with httpx.AsyncClient(timeout=60) as c:
+            if LI.KASPR_KEY:                                       # 1. Kaspr, contact par contact
+                for i, (d, _, _) in enumerate(paires):
+                    if d.get("kaspr_tente"):
+                        continue
+                    EMAILS["phase"] = f"Kaspr : {i + 1}/{len(paires)}"
+                    m = await LI.kaspr_email(c, d.get("nom_complet") or f"{d['prenom']} {d['nom']}", d["linkedin"])
+                    d["kaspr_tente"] = quand
+                    if m:
+                        d["email"], d["source_email"] = m, "Kaspr"
+                        EMAILS["kaspr"] += 1
+                        EMAILS["_lignes"][i][7], EMAILS["_lignes"][i][8] = m, "Kaspr"
+            reste = [(i, d, d0) for i, (d, d0, _) in enumerate(paires) if not d.get("email") and not d.get("fullenrich_tente")]
+            if LI.FULLENRICH_KEY and reste:                        # 2. Fullenrich en secours, par lots de 100
+                EMAILS["phase"] = f"Fullenrich : {len(reste)} contacts"
+                journal = lambda m: EMAILS["echecs"].append(m) if ("refusé" in m or "échec" in m or "pas de réponse" in m) else None
+                trouves = await LI.fullenrich_emails(c, [(d, d0) for _, d, d0 in reste], journal)
+                for k, (i, d, _) in enumerate(reste):
+                    d["fullenrich_tente"] = quand
+                    if trouves.get(str(k)):
+                        d["email"], d["source_email"] = trouves[str(k)], "Fullenrich"
+                        EMAILS["fullenrich"] += 1
+                        EMAILS["_lignes"][i][7], EMAILS["_lignes"][i][8] = d["email"], "Fullenrich"
+            EMAILS["phase"] = "écriture dans Notion"
+            for s, d0, _ in cibles:
+                try:
+                    await _reecrire(c, s["page"], d0)
+                    await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
+                        "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))}}})
+                    EMAILS["ecrites"] += 1
+                except Exception as e:
+                    EMAILS["echecs"].append(f"{s['nom']} : {e}")
+        EMAILS["phase"] = "terminé"
+    except Exception as e:
+        EMAILS["phase"] = f"arrêt sur erreur : {e}"
+    finally:
+        EMAILS["actif"] = False
+
+
+@router.get("/v3/validation/api/emails-rattrapage")
+async def emails_rattrapage(req: Request, confirmer: int = 0):
+    """Admin. E-mails des contacts validés restés sans adresse, tous fichiers, tous rôles (Kaspr puis Fullenrich).
+    Sans &confirmer=1 : essai à blanc (nombre de contacts, rien n'est envoyé). Avec : envoi, possible seulement après un
+    essai à blanc de moins d'une heure. Détail : /v3/validation/api/emails-rattrapage/excel"""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    etat = {k: v for k, v in EMAILS.items() if not k.startswith("_")}
+    if EMAILS["actif"]:
+        return etat | {"conseil": "en cours : rouvrez cette adresse (sans &confirmer) dans une minute"}
+    if not confirmer and EMAILS["phase"] and time.time() - EMAILS["_quand"] < 900:
+        return etat | {"conseil": "résultat du dernier passage ; &confirmer=1 pour envoyer à Kaspr et Fullenrich (crédits)"}
+    if confirmer and not (EMAILS["mode"] == "essai à blanc" and EMAILS["phase"].startswith("essai à blanc terminé")
+                          and time.time() - EMAILS["_quand"] < 3600):
+        return JSONResponse({"erreur": "faites d'abord l'essai à blanc (sans &confirmer), il y a moins d'une heure"}, 409)
+    asyncio.create_task(_tache_emails(bool(confirmer)))
+    return {"lance": "envoi Kaspr puis Fullenrich" if confirmer else "essai à blanc",
+            "conseil": "rouvrez cette adresse (sans &confirmer) dans 2 à 3 minutes"}
+
+
+@router.get("/v3/validation/api/emails-rattrapage/excel")
+async def emails_rattrapage_excel(req: Request):
+    if (x := VALID._refus(req, "admin")):
+        return x
+    from v3 import feuille
+    wb = Workbook(); wb.remove(wb.active)
+    feuille(wb, "Contacts sans e-mail", ["Société", "Domaine", "Prénom", "Nom", "Fonction", "Rôle", "LinkedIn", "E-mail trouvé",
+                                         "Source"], EMAILS["_lignes"])
+    b = io.BytesIO(); wb.save(b)
+    nom = f"rattrapage_emails_{'essai' if EMAILS['mode'] == 'essai à blanc' else 'reel'}_{datetime.now(timezone.utc):%Y%m%d_%H%M}.xlsx"
+    return StreamingResponse(io.BytesIO(b.getvalue()), headers={"Content-Disposition": f'attachment; filename="{nom}"'},
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @router.get("/v3/validation/api/fullenrich-rattrapage")
 async def fullenrich_rattrapage(req: Request, lancement: str = "", confirmer: int = 0):
     """Admin. E-mails Fullenrich des dirigeants d'un ou plusieurs lancements (séparés par des virgules, morceau du nom
