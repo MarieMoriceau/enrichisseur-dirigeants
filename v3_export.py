@@ -10,11 +10,11 @@ et les contacts par leur e-mail, donc réimporter le même fichier met à jour a
   · Sociétés écartées
 Envoyé par mail à COPIE_FICHIER_COMPLET (Marie) ou téléchargé depuis l'écran admin.
 """
-import asyncio, io, re
+import asyncio, time, io, re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
@@ -37,14 +37,18 @@ def _prenom_nom(nom_complet: str, prenom: str = "", nom: str = "") -> tuple:
     return (m[0], m[1]) if len(m) == 2 else ("", nom_complet or "")
 
 
-async def _donnees() -> list:
+async def _donnees(suivi: dict = None) -> list:
     """Sociétés de la mémoire avec leur JSON complet (seulement celles qui ont une validation ou des contacts traités)."""
     toutes = await VALID._toutes()
     utiles = [s for s in toutes if s["validation"] != "À valider" or s["nouveaux"] or s["decisions"]]
+    if suivi is not None:
+        suivi.update(total=len(utiles), fait=0)
 
     async def lire(s):
         async with _SEM:
             s["data"] = await MEM.lire(s["page"])
+        if suivi is not None:
+            suivi["fait"] += 1
         VALID.appliquer_correction_siren(s)                 # SIREN corrigé à la main : la bonne fiche INSEE
         s["decisions"] = VALID._json(s["decisions"], [])
         s["nouveaux"] = VALID._json(s["nouveaux"], {})
@@ -188,35 +192,105 @@ def nom_fichier() -> str:
     return f"enrichisseur_v3_export_hubspot_{datetime.now(timezone.utc):%Y-%m-%d}.xlsx"
 
 
+# Export en tâche de fond : lire des centaines de fiches Notion prend plusieurs minutes (une requête Notion toutes les
+# 0,4 s pour tout le serveur), bien plus que ce qu'un navigateur attend. Le fichier prêt reste disponible une heure.
+EXPORT = {"actif": False, "fait": 0, "total": 0, "phase": "", "erreur": "", "xl": None, "resume": {}, "pret_le": 0.0,
+          "mail": False, "envoi": ""}
+EXPORT_GARDE = 3600
+
+
+def _pret() -> bool:
+    return bool(EXPORT["xl"]) and time.time() - EXPORT["pret_le"] < EXPORT_GARDE
+
+
+def _corps_mail(r: dict) -> str:
+    return "\n".join(["Bonjour,", "", "Voici l'export des validations de l'enrichisseur v3, prêt pour l'import HubSpot.", "",
+                      f"Sociétés validées : {r['societes']}", f"Contacts à créer : {r['contacts']}",
+                      f"Contacts déjà dans Pipedrive ailleurs : {r['existants']}", f"Décisions sur les contacts CRM : {r['crm']}",
+                      f"Sociétés écartées : {r['ecartees']} (dont {r.get('a_supprimer', 0)} à supprimer de Pipedrive)",
+                      f"Contacts partis retrouvés (mise à jour) : {r.get('partis', 0)}", "",
+                      "Le fichier est cumulatif : tout ce qui est validé à ce jour. Le mode d'emploi est dans l'onglet Lisez-moi.", "",
+                      "Enrichisseur v3"])
+
+
+async def _preparer():
+    EXPORT.update(actif=True, phase="lecture de la mémoire Notion", erreur="", fait=0, total=0, envoi="")
+    try:
+        xl, r = construire(await _donnees(EXPORT))
+        EXPORT.update(xl=xl, resume=r, pret_le=time.time(), phase="prêt")
+        if EXPORT["mail"]:
+            EXPORT["phase"] = "envoi du mail"
+            await asyncio.to_thread(SUIVI._envoyer, SUIVI.COPIE_COMPLETE,
+                                    f"Enrichisseur v3 · export HubSpot du {datetime.now():%d/%m/%Y}", _corps_mail(r), xl, nom_fichier())
+            EXPORT["envoi"] = f"envoyé à {', '.join(SUIVI.COPIE_COMPLETE)}"
+            EXPORT["phase"] = "prêt"
+    except Exception as e:
+        EXPORT.update(erreur=f"{type(e).__name__} : {e}", phase="erreur")
+        print(f"[V3 EXPORT] {e}")
+    finally:
+        EXPORT.update(actif=False, mail=False)
+
+
+def _lancer(mail: bool):
+    if mail:
+        EXPORT["mail"] = True
+    if not EXPORT["actif"]:
+        asyncio.create_task(_preparer())
+
+
+def _etat() -> dict:
+    return {k: EXPORT[k] for k in ("actif", "fait", "total", "phase", "erreur", "envoi")} | {
+        "pret": _pret(), "resume": EXPORT["resume"] if _pret() else {},
+        "pret_depuis_min": int((time.time() - EXPORT["pret_le"]) // 60) if _pret() else None}
+
+
 @router.get("/v3/validation/api/export")
-async def telecharger(req: Request):
+async def telecharger(req: Request, refaire: int = 0):
+    """Fichier prêt depuis moins d'une heure : téléchargé tout de suite (&refaire=1 pour en refaire un).
+    Sinon la préparation part en tâche de fond et une page d'attente se recharge toute seule."""
     if (x := VALID._refus(req, "admin")):
         return x
-    xl, _ = construire(await _donnees())
-    return StreamingResponse(io.BytesIO(xl), headers={"Content-Disposition": f'attachment; filename="{nom_fichier()}"'},
-                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if _pret() and not refaire and not EXPORT["actif"]:
+        return StreamingResponse(io.BytesIO(EXPORT["xl"]), headers={"Content-Disposition": f'attachment; filename="{nom_fichier()}"'},
+                                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if refaire and not EXPORT["actif"]:
+        EXPORT.update(xl=None, pret_le=0.0)
+    _lancer(False)
+    if EXPORT["erreur"] and not EXPORT["actif"]:
+        msg = f"La préparation a échoué : {EXPORT['erreur']}. Rechargez la page pour réessayer."
+    else:
+        avance = f"{EXPORT['fait']} / {EXPORT['total']} sociétés lues" if EXPORT["total"] else "démarrage"
+        msg = f"Préparation de l'export en cours ({avance}). Le téléchargement démarre tout seul quand le fichier est prêt."
+    return HTMLResponse(f"""<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="8;url=/v3/validation/api/export">
+<title>Export en préparation</title><body style="font:16px system-ui;margin:40px;color:#2b2233;background:#faf8f5">
+<p>{msg}</p><p style="color:#776">Cette page se recharge toutes les 8 secondes. Comptez quelques minutes.</p>
+<p><a href="/v3/validation">Retour à la validation</a></p></body>""")
+
+
+@router.get("/v3/validation/api/export/etat")
+async def export_etat(req: Request):
+    if (x := VALID._refus(req, "admin")):
+        return x
+    return _etat()
 
 
 @router.post("/v3/validation/api/export/mail")
 async def envoyer(req: Request):
+    """Prépare l'export en tâche de fond et l'envoie par mail ; répond tout de suite."""
     if (x := VALID._refus(req, "admin")):
         return x
     if not (SUIVI.SMTP_USER and SUIVI.SMTP_PASS and SUIVI.COPIE_COMPLETE):
         return JSONResponse({"erreur": "envoi de mail non configuré (SMTP_USER / SMTP_PASS / COPIE_FICHIER_COMPLET)"}, 500)
-    xl, r = construire(await _donnees())
-    corps = "\n".join(["Bonjour,", "", "Voici l'export des validations de l'enrichisseur v3, prêt pour l'import HubSpot.", "",
-                       f"Sociétés validées : {r['societes']}", f"Contacts à créer : {r['contacts']}",
-                       f"Contacts déjà dans Pipedrive ailleurs : {r['existants']}", f"Décisions sur les contacts CRM : {r['crm']}",
-                       f"Sociétés écartées : {r['ecartees']} (dont {r.get('a_supprimer', 0)} à supprimer de Pipedrive)",
-                       f"Contacts partis retrouvés (mise à jour) : {r.get('partis', 0)}", "",
-                       "Le fichier est cumulatif : tout ce qui est validé à ce jour. Le mode d'emploi est dans l'onglet Lisez-moi.", "",
-                       "Enrichisseur v3"])
-    try:
-        await asyncio.to_thread(SUIVI._envoyer, SUIVI.COPIE_COMPLETE, f"Enrichisseur v3 · export HubSpot du {datetime.now():%d/%m/%Y}",
-                                corps, xl, nom_fichier())
-    except Exception as e:
-        return JSONResponse({"erreur": f"envoi impossible : {e}"}, 502)
-    return r | {"envoye_a": SUIVI.COPIE_COMPLETE}
+    if _pret() and not EXPORT["actif"]:                   # fichier tout frais : envoyé tel quel
+        EXPORT["mail"] = False
+        try:
+            await asyncio.to_thread(SUIVI._envoyer, SUIVI.COPIE_COMPLETE, f"Enrichisseur v3 · export HubSpot du {datetime.now():%d/%m/%Y}",
+                                    _corps_mail(EXPORT["resume"]), EXPORT["xl"], nom_fichier())
+        except Exception as e:
+            return JSONResponse({"erreur": f"envoi impossible : {e}"}, 502)
+        return _etat() | {"envoye_a": SUIVI.COPIE_COMPLETE}
+    _lancer(True)
+    return _etat() | {"en_preparation": True, "envoye_a": SUIVI.COPIE_COMPLETE}
 
 
 # ───────────────────────── liste de phoning d'un fichier lancé ─────────────────────────
