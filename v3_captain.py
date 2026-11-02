@@ -32,7 +32,8 @@ CV_INTERVALLE = float(os.getenv("CAPTAINVERIFY_INTERVALLE", "1.3"))     # API : 
 TITRE_DB = "Référentiel Captain Verify"
 GARDER = {"ok"}                                                          # règle de Marie : seulement « ok »
 
-REF = {"db": os.getenv("CAPTAINVERIFY_DB", ""), "emails": {}, "charge": False, "verrou": None, "erreur": ""}
+REF = {"db": os.getenv("CAPTAINVERIFY_DB", "40e5dcdf1e3a4430a42eb7c5eedf78b1"),   # créée le 02/11 sous « Services Render »
+       "emails": {}, "charge": False, "verrou": None, "erreur": ""}
 _API = {"dernier": 0.0, "verrou": None, "credits": None, "a_sec": False}
 
 
@@ -470,7 +471,7 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:0 0 6px}
 .msg{color:var(--muted);font-size:14px;white-space:pre-line}.err{color:var(--err)}.ok{color:var(--ok)}
 button,.btn{font:600 14px system-ui;background:var(--violet);color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;text-decoration:none;display:inline-block}
 button.ghost,.btn.ghost{background:transparent;color:var(--violet);border:1px solid var(--violet)}
-button:disabled{opacity:.5;cursor:default}.ligne{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
+button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}.ligne{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
 </style>
 <main>
 <p><a href="/v3/validation">← Validation</a></p>
