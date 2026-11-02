@@ -24,6 +24,7 @@ import v3_validation as VALID
 
 router = APIRouter()
 _SEM = asyncio.Semaphore(4)
+LECTURE_MAX = 120          # secondes au plus par fiche Notion (pauses Notion comprises) avant de la sauter
 
 
 def _date(x: str) -> str:
@@ -46,7 +47,16 @@ async def _donnees(suivi: dict = None) -> list:
 
     async def lire(s):
         async with _SEM:
-            s["data"] = await MEM.lire(s["page"])
+            if suivi is not None:
+                suivi.setdefault("en_lecture", {})[s["page"]] = s["nom"]
+            try:                                         # une fiche qui ne répond pas ne bloque plus tout l'export
+                s["data"] = await asyncio.wait_for(MEM.lire(s["page"]), LECTURE_MAX)
+            except Exception as e:
+                s["data"] = {}
+                if suivi is not None:
+                    suivi.setdefault("sautees", []).append(f"{s['nom']} ({type(e).__name__})")
+            if suivi is not None:
+                suivi["en_lecture"].pop(s["page"], None)
         if suivi is not None:
             suivi["fait"] += 1
         VALID.appliquer_correction_siren(s)                 # SIREN corrigé à la main : la bonne fiche INSEE
@@ -209,14 +219,16 @@ def _corps_mail(r: dict) -> str:
                       f"Contacts déjà dans Pipedrive ailleurs : {r['existants']}", f"Décisions sur les contacts CRM : {r['crm']}",
                       f"Sociétés écartées : {r['ecartees']} (dont {r.get('a_supprimer', 0)} à supprimer de Pipedrive)",
                       f"Contacts partis retrouvés (mise à jour) : {r.get('partis', 0)}", "",
+                      *([f"Fiches Notion illisibles, absentes de ce fichier : {', '.join(r['sautees'])}", ""] if r.get("sautees") else []),
                       "Le fichier est cumulatif : tout ce qui est validé à ce jour. Le mode d'emploi est dans l'onglet Lisez-moi.", "",
                       "Enrichisseur v3"])
 
 
 async def _preparer():
-    EXPORT.update(actif=True, phase="lecture de la mémoire Notion", erreur="", fait=0, total=0, envoi="")
+    EXPORT.update(actif=True, phase="lecture de la mémoire Notion", erreur="", fait=0, total=0, envoi="", sautees=[], en_lecture={})
     try:
         xl, r = construire(await _donnees(EXPORT))
+        r = r | {"sautees": list(EXPORT.get("sautees", []))}
         EXPORT.update(xl=xl, resume=r, pret_le=time.time(), phase="prêt")
         if EXPORT["mail"]:
             EXPORT["phase"] = "envoi du mail"
@@ -238,8 +250,16 @@ def _lancer(mail: bool):
         asyncio.create_task(_preparer())
 
 
+def _notion() -> str:
+    import time as _t, notion_debit as D
+    pause = D._ETAT["pause_jusqua"] - _t.monotonic()
+    return (f"Notion demande de patienter ({int(pause)} s)" if pause > 0 else "") + \
+           (f" · {D._ETAT['refus']} refus Notion depuis le démarrage du serveur" if D._ETAT["refus"] else "")
+
+
 def _etat() -> dict:
-    return {k: EXPORT[k] for k in ("actif", "fait", "total", "phase", "erreur", "envoi")} | {
+    return {k: EXPORT.get(k) for k in ("actif", "fait", "total", "phase", "erreur", "envoi")} | {
+        "sautees": EXPORT.get("sautees", []), "en_lecture": list((EXPORT.get("en_lecture") or {}).values()), "notion": _notion(),
         "pret": _pret(), "resume": EXPORT["resume"] if _pret() else {},
         "pret_depuis_min": int((time.time() - EXPORT["pret_le"]) // 60) if _pret() else None}
 
@@ -261,6 +281,11 @@ async def telecharger(req: Request, refaire: int = 0):
     else:
         avance = f"{EXPORT['fait']} / {EXPORT['total']} sociétés lues" if EXPORT["total"] else "démarrage"
         msg = f"Préparation de l'export en cours ({avance}). Le téléchargement démarre tout seul quand le fichier est prêt."
+        enc = list((EXPORT.get("en_lecture") or {}).values())
+        if enc:
+            msg += f"<br><small>En lecture : {', '.join(enc)}. Une fiche qui ne répond pas est sautée au bout de {LECTURE_MAX // 60} min.</small>"
+        if (n := _notion()):
+            msg += f"<br><small>{n}</small>"
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="8;url=/v3/validation/api/export">
 <title>Export en préparation</title><body style="font:16px system-ui;margin:40px;color:#2b2233;background:#faf8f5">
 <p>{msg}</p><p style="color:#776">Cette page se recharge toutes les 8 secondes. Comptez quelques minutes.</p>
