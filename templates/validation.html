@@ -908,14 +908,32 @@ function suivante() {
   if (next) ouvrir(next.page); else { courant = null; $("#detail").innerHTML = `<div class="vide">Plus rien dans « ${esc(lib(filtre))} ». Bien joué.</div>`; }
 }
 
+let xTimer = null;
+async function suivreExport() {
+  clearTimeout(xTimer);
+  let e; try { e = await api("/v3/validation/api/export/etat"); } catch (er) { return; }
+  if (e.actif) {
+    $("#xMsg").className = "msg";
+    $("#xMsg").textContent = `Préparation en cours : ${e.total ? e.fait + " / " + e.total + " sociétés lues" : "démarrage"}${e.phase === "envoi du mail" ? ", envoi du mail" : ""}…`;
+    xTimer = setTimeout(suivreExport, 5000); $("#xMail").disabled = true; return;
+  }
+  $("#xMail").disabled = false;
+  if (e.erreur) { $("#xMsg").className = "msg err"; $("#xMsg").textContent = "Échec : " + e.erreur; return; }
+  if (e.pret) {
+    const r = e.resume || {};
+    $("#xMsg").className = "msg";
+    $("#xMsg").textContent = `Fichier prêt (${r.societes} sociétés, ${r.contacts} contacts à créer)${e.envoi ? ", " + e.envoi : ""} : « Télécharger l'Excel » le récupère.`;
+  }
+}
 $("#xMail").onclick = async () => {
-  $("#xMail").disabled = true; $("#xMsg").className = "msg"; $("#xMsg").textContent = "Préparation et envoi…";
+  $("#xMail").disabled = true; $("#xMsg").className = "msg"; $("#xMsg").textContent = "Lancement…";
   try {
     const r = await api("/v3/validation/api/export/mail", {});
-    $("#xMsg").textContent = `Envoyé à ${r.envoye_a.join(", ")} : ${r.societes} sociétés, ${r.contacts} contacts à créer, ${r.existants} contacts existants, ${r.crm} décisions CRM.`;
-  } catch (e) { $("#xMsg").className = "msg err"; $("#xMsg").textContent = e.message; }
-  $("#xMail").disabled = false;
+    if (r.en_preparation) { $("#xMsg").textContent = `Préparation lancée : le mail partira vers ${r.envoye_a.join(", ")} dès que le fichier est prêt.`; setTimeout(suivreExport, 3000); }
+    else { $("#xMsg").textContent = `Envoyé à ${r.envoye_a.join(", ")}.`; $("#xMail").disabled = false; }
+  } catch (e) { $("#xMsg").className = "msg err"; $("#xMsg").textContent = e.message; $("#xMail").disabled = false; }
 };
+suivreExport();
 
 /* ─────────── contacts partis : nouvelle société, poste, e-mail ─────────── */
 let PARTIS = [], pTous = false, pTimer = null;
