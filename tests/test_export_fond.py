@@ -53,4 +53,4 @@ def test_fiche_bloquee_sautee(monkeypatch):
     monkeypatch.setattr(VALID, "appliquer_correction_siren", lambda s: None)
     suivi = {}
     socs = asyncio.run(EX._donnees(suivi))
-    assert suivi["fait"] == 2 and suivi["sautees"] == ["Bloquée (TimeoutError)"] and socs[1]["data"] == {}
+    assert suivi["fait"] == 1 and suivi["sautees"] == ["Bloquée (ne répond pas)"] and socs[1]["data"] == {} and socs[0]["data"] == {"id": "1"}
