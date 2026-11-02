@@ -232,11 +232,17 @@ function dessinerQui(negos) {
 }
 // Fichiers lancés (une société reprise de la mémoire peut appartenir à plusieurs : « Liste A ; Liste B »)
 const fichiersDe = s => String(s.lancement || "").split(";").map(x => x.trim()).filter(Boolean);
+// sociétés du négo choisi (sans tenir compte du fichier) : la liste des fichiers ne montre que les siens
+function negoOk(s, f = $("#qui").value) {
+  if (!f) return true;
+  if (f === "non") return !!s.non_attribue;
+  return (s.attribue_a || []).includes(f.slice(2));
+}
 function dessinerFichiers() {
-  const dernier = {};
-  SOC.forEach(s => fichiersDe(s).forEach(f => { if (!dernier[f] || s.traitee > dernier[f]) dernier[f] = s.traitee; }));
+  const dernier = {}, miennes = SOC.filter(s => negoOk(s));
+  miennes.forEach(s => fichiersDe(s).forEach(f => { if (!dernier[f] || s.traitee > dernier[f]) dernier[f] = s.traitee; }));
   const noms = Object.keys(dernier).sort((a, b) => (dernier[b] || "").localeCompare(dernier[a] || "") || a.localeCompare(b));
-  const garde = $("#fichier").value, de = f => SOC.filter(s => fichiersDe(s).includes(f));
+  const garde = $("#fichier").value, de = f => miennes.filter(s => fichiersDe(s).includes(f));
   const nb = (f, e) => de(f).filter(s => s.validation === e).length;
   // fichier terminé : toutes ses sociétés ont leurs contacts validés ou sont écartées → caché (sauf s'il est choisi)
   const fini = f => de(f).every(s => s.validation === "Contacts validés" || s.validation === "Écartée");
@@ -245,14 +251,13 @@ function dessinerFichiers() {
     `<option value="${esc(f)}">${esc(f)} · ${fini(f) ? "terminé ✓" : `${nb(f, "À valider")} sociétés à valider · ${nb(f, "Société validée")} en attente des contacts`}</option>`).join("")
     + (finis.length ? `<option value="__finis__">${fichiersFinisVisibles ? "↑ masquer" : "+ afficher"} les ${finis.length} fichiers terminés</option>` : "");
   if (montres.includes(garde)) $("#fichier").value = garde;
+  else if (garde && garde !== "__finis__") { $("#fichier").value = ""; lienPhoning(); }   // fichier d'un autre négo : on le quitte
 }
 let fichiersFinisVisibles = false;
 function quiOk(s, f = $("#qui").value) {
   const fi = $("#fichier").value;
   if (fi && !fichiersDe(s).includes(fi)) return false;
-  if (!f) return true;
-  if (f === "non") return !!s.non_attribue;
-  return (s.attribue_a || []).includes(f.slice(2));
+  return negoOk(s, f);
 }
 function etiquetteNego(s) {
   const inc = (s.prenoms_inconnus || []).length ? ` <span class="pill warn" title="Prénom reçu absent de la table Équipe négos">prénom inconnu : ${esc(s.prenoms_inconnus.join(", "))}</span>` : "";
