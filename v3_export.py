@@ -124,6 +124,8 @@ def construire(socs: list) -> tuple:
             f = VALID.fiche_nouveau(d, e) if d else {k: e.get("final_" + k, e.get(k, "")) for k in VALID.CHAMPS_MODIFIABLES}
             prenom, nom = _prenom_nom(e.get("nom_complet") or d.get("nom_complet", ""), e.get("prenom") or d.get("prenom", ""),
                                       e.get("nom") or d.get("nom", ""))
+            # adresse passée par Captain Verify (et jugée ok) ; une adresse saisie à la main ne l'est pas
+            cv = "oui" if f.get("email") and d.get("cv_statut") == "ok" and "email" not in e.get("modifie", []) else "non"
             commun = [prenom, nom, f.get("email", ""), f.get("telephone", ""), f.get("fonction", ""), f.get("role", ""),
                       f.get("linkedin", ""), domaine_de[s["page"]], s["nom"]]
             societe_ok = "oui" if s["validation"] in ("Société validée", "Contacts validés") else "non (adresse pas encore validée)"
@@ -131,10 +133,10 @@ def construire(socs: list) -> tuple:
             if e.get("action") == "existant":
                 a = dec_a.get(str(e.get("fiche_existante")), {})
                 l_exist.append(commun + [e.get("fiche_existante", ""), (d.get("ailleurs_crm") or {}).get("org_nom", "") or a.get("societe_actuelle", ""),
-                                         a.get("action", "à décider"), _date(e.get("le")), societe_ok, saisies])
+                                         a.get("action", "à décider"), _date(e.get("le")), societe_ok, saisies, cv])
             else:
                 l_new.append(commun + [d.get("id") or (s["data"] or {}).get("id", ""), _date(e.get("le")), societe_ok, saisies,
-                                       e.get("modifie_par", "")])
+                                       e.get("modifie_par", ""), cv])
 
     # ── contacts déjà au CRM (décisions admin)
     l_crm = []
@@ -148,7 +150,7 @@ def construire(socs: list) -> tuple:
             l_crm.append([x.get("action", ""), prenom, nom, x.get("email") or p.get("email", ""), x.get("telephone") or p.get("telephone", ""),
                           x.get("fonction") or p.get("fonction", ""), x.get("role") or p.get("role", ""), x.get("linkedin") or p.get("linkedin", ""),
                           domaine_de[s["page"]], s["nom"], x.get("id", ""), x.get("statut") or p.get("statut", ""), p.get("detail", ""),
-                          _date(x.get("le") or s["validee"])])
+                          _date(x.get("le") or s["validee"]), "non"])
     ordre = {"à supprimer": 0, "marquer parti": 1, "à revoir": 2, "garder": 3}
     l_crm.sort(key=lambda l: (ordre.get(l[0], 3), l[9]))
 
@@ -169,7 +171,8 @@ def construire(socs: list) -> tuple:
               "Ordre d'import conseillé dans HubSpot : 1. Sociétés  2. Contacts à créer (associés par Company Domain Name)",
               "  3. Contacts existants et Contacts CRM : à traiter à la main ou en import de mise à jour (clé = e-mail).",
               "Propriétés HubSpot à créer avant l'import : date_validation_societe, date_validation_contact, effectif_linkedin,",
-              "  statut_activite, domiciliation, role_dirigeant. Les colonnes « Date validation » sont prévues pour elles.",
+              "  statut_activite, domiciliation, role_dirigeant, captain_verify (case à cocher). Les colonnes « Date validation » et",
+              "  « Captain Verify » (oui = e-mail vérifié et jugé ok) sont prévues pour elles.",
               "Les contacts dont la société n'est pas encore validée sont signalés (colonne « Société validée ? »)."]
     for l in lignes:
         ws.append([l])
@@ -180,12 +183,13 @@ def construire(socs: list) -> tuple:
                              "Raison sociale", "CODE NAF", "ACTIVITÉ", "SECTEUR", "DOMICILIATION", "Base quali", "Début de bail", "Flexoffice", "Opérateur flex", "ID Pipedrive", "Date validation société"], l_soc)
     feuille(wb, "Contacts à créer", ["First Name", "Last Name", "Email", "Phone Number", "Job Title", "Rôle", "LinkedIn URL",
                                      "Company Domain Name", "Société", "ID Pipedrive société", "Date validation contact", "Société validée ?",
-                                     "Champs saisis à la main", "Saisi par"], l_new)
+                                     "Champs saisis à la main", "Saisi par", "Captain Verify"], l_new)
     feuille(wb, "Contacts existants", ["First Name", "Last Name", "Email", "Phone Number", "Job Title", "Rôle", "LinkedIn URL",
                                        "Company Domain Name", "Nouvelle société", "ID personne Pipedrive", "Fiché aujourd'hui chez",
-                                       "Décision admin", "Date validation contact", "Société validée ?", "Champs saisis à la main"], l_exist)
+                                       "Décision admin", "Date validation contact", "Société validée ?", "Champs saisis à la main", "Captain Verify"], l_exist)
     feuille(wb, "Contacts CRM", ["Décision", "First Name", "Last Name", "Email", "Phone Number", "Job Title", "Rôle", "LinkedIn URL",
-                                 "Company Domain Name", "Société", "ID personne Pipedrive", "Contrôle", "Détail du contrôle", "Date validation"], l_crm)
+                                 "Company Domain Name", "Société", "ID personne Pipedrive", "Contrôle", "Détail du contrôle", "Date validation",
+                                 "Captain Verify"], l_crm)
     # ── contacts partis retrouvés et validés : mise à jour de la fiche existante (nouvelle société, poste, e-mail)
     import v3_partis as PARTIS
     partis = [x for x in PARTIS.liste(socs) if x.get("etat") == "validé"]

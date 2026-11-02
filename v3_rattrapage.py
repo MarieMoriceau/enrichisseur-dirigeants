@@ -338,7 +338,8 @@ async def _tache_fullenrich(lancements: list, confirmer: bool):
                 try:
                     await _reecrire(c, s["page"], d0)
                     await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
-                        "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))}}})
+                        "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))},
+                        **__import__("v3_captain").prop_passe(d0)}})
                     FULLENRICH["ecrites"] += 1
                 except Exception as e:
                     FULLENRICH["echecs"].append(f"{s['nom']} : {e}")
@@ -430,7 +431,8 @@ async def _tache_emails(confirmer: bool):
                 try:
                     await _reecrire(c, s["page"], d0)
                     await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
-                        "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))}}})
+                        "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))},
+                        **__import__("v3_captain").prop_passe(d0)}})
                     EMAILS["ecrites"] += 1
                 except Exception as e:
                     EMAILS["echecs"].append(f"{s['nom']} : {e}")
