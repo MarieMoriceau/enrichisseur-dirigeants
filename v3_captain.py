@@ -132,6 +132,9 @@ async def _ajouter(c, x: dict):
 
 
 # ───────────────────────── appel à Captain Verify ─────────────────────────
+_EN_COURS: dict = {}
+
+
 class CreditsEpuises(RuntimeError):
     pass
 
@@ -139,11 +142,13 @@ class CreditsEpuises(RuntimeError):
 async def _appeler(c, email: str) -> dict:
     """Une vérification payante. Crédits épuisés : Captain Verify répond « unknown » ; on s'arrête sans rien enregistrer."""
     _API["verrou"] = _API["verrou"] or asyncio.Lock()
-    async with _API["verrou"]:
-        attente = _API["dernier"] + CV_INTERVALLE - time.monotonic()
-        if attente > 0:
-            await asyncio.sleep(attente)
-        _API["dernier"] = time.monotonic()
+    _API["sem"] = _API.get("sem") or asyncio.Semaphore(2)          # API : 2 connexions simultanées au plus
+    async with _API["sem"]:
+        async with _API["verrou"]:                                   # et 50 vérifications par minute
+            attente = _API["dernier"] + CV_INTERVALLE - time.monotonic()
+            if attente > 0:
+                await asyncio.sleep(attente)
+            _API["dernier"] = time.monotonic()
         r = await c.get(CV_URL, params={"apikey": CV_KEY, "email": email}, timeout=25)
     j = r.json() if r.status_code == 200 else {}
     if r.status_code != 200 or not j.get("success", True):
@@ -166,10 +171,21 @@ async def statut(c, email: str) -> tuple:
     ref = await charger()
     if e in ref:
         return ref[e]["status"], False
-    x = await _appeler(c, e)
-    if x["status"] != "unknown":                    # « unknown » est recrédité par Captain Verify : on pourra réessayer
-        await _ajouter(c, x)
-    return x["status"], True
+    if e in _EN_COURS:                              # même adresse en cours de vérification ailleurs : on attend son résultat
+        return (await asyncio.shield(_EN_COURS[e]))["status"], False
+    _EN_COURS[e] = asyncio.get_running_loop().create_future()
+    try:
+        x = await _appeler(c, e)
+        if x["status"] != "unknown":                # « unknown » est recrédité par Captain Verify : on pourra réessayer
+            await _ajouter(c, x)
+        _EN_COURS[e].set_result(x)
+        return x["status"], True
+    except Exception as err:
+        _EN_COURS[e].set_exception(err)
+        _EN_COURS[e].exception()                    # marquée comme lue (pas d'avertissement si personne n'attend)
+        raise
+    finally:
+        _EN_COURS.pop(e, None)
 
 
 async def filtrer(c, contacts: list, journal) -> dict:
@@ -263,30 +279,33 @@ DEJA = {"actif": False, "phase": "", "mode": "", "contacts": 0, "dans_ref": 0, "
         "erreurs": [], "_quand": 0.0, "_fin": 0.0, "_lignes": []}
 
 
-def a_verifier(s: dict, data: dict) -> list:
-    """Dirigeants validés (« prêt pour HubSpot ») dont l'e-mail trouvé par l'outil n'est pas encore passé par Captain Verify.
-    Une adresse saisie à la main par un négo n'est pas touchée."""
+def a_verifier(s: dict, data: dict, tous: bool = False) -> list:
+    """Dirigeants dont l'e-mail trouvé par l'outil n'est pas encore passé par Captain Verify.
+    tous=False : seulement les validés (« prêt pour HubSpot ») ; tous=True : tous ceux des sociétés lancées, validés ou non,
+    sauf les contacts écartés. Une adresse saisie à la main par un négo n'est pas touchée."""
     nouveaux = VALID._json(s.get("nouveaux"), {}) if isinstance(s.get("nouveaux"), str) else (s.get("nouveaux") or {})
     out = []
     for d in data.get("dirigeants", []):
         e = nouveaux.get(VALID.cle_contact(d)) or {}
-        if e.get("etat") == "prêt pour HubSpot" and d.get("email") and not d.get("cv_statut") and "email" not in e.get("modifie", []):
+        ok = e.get("etat") != "écarté" if tous else e.get("etat") == "prêt pour HubSpot"
+        if ok and d.get("email") and not d.get("cv_statut") and "email" not in e.get("modifie", []):
             out.append(d)
     return out
 
 
-async def _deja(confirmer: bool):
+async def _deja(confirmer: bool, tous: bool = False):
     from v3_rattrapage import _lire_page, _reecrire
     DEJA.update(actif=True, phase="lecture du référentiel et des fiches", mode="écriture" if confirmer else "essai à blanc",
                 contacts=0, dans_ref=0, a_payer=0, compte={}, ecrites=0, erreurs=[], _lignes=[])
     try:
         ref = await charger()
-        socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée" and s.get("nouveaux")]
+        socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée" and (tous or s.get("nouveaux"))]
+        DEJA["tous"] = tous
         sem, cibles = asyncio.Semaphore(3), []
         async def voir(s):
             async with sem:
                 d0 = await _lire_page(s)
-            if d0 and (ds := a_verifier(s, d0)):
+            if d0 and (ds := a_verifier(s, d0, tous)):
                 cibles.append((s, d0, ds))
         await asyncio.gather(*(voir(s) for s in socs))
         cibles.sort(key=lambda x: x[0]["nom"].lower())
@@ -302,26 +321,34 @@ async def _deja(confirmer: bool):
             return
         journal = lambda m: DEJA["erreurs"].append(m) if ("non vérifiée" in m or "épuisés" in m) else None
         async with httpx.AsyncClient(timeout=30) as c:
-            for i, (s, d0, ds) in enumerate(cibles, 1):
-                DEJA["phase"] = f"vérification {i}/{len(cibles)} sociétés"
-                avant = {id(d): d["email"] for d in ds}
-                n = await filtrer(c, ds, journal)
-                for d in ds:
-                    DEJA["_lignes"].append([s["nom"], d.get("prenom", ""), d.get("nom", ""), avant[id(d)], d.get("cv_statut", ""),
-                                            "gardée" if d.get("email") else "écartée"])
-                DEJA["compte"] = dict(Counter(DEJA["compte"]) + Counter({k: v for k, v in n.items() if k in ("ok", "invalid", "risky", "unknown")}))
-                if any(d.get("cv_statut") for d in ds):
-                    try:
-                        await _reecrire(c, s["page"], d0)
-                        await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
-                            "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))},
-                            **prop_passe(d0)}})
-                        DEJA["ecrites"] += 1
-                    except Exception as e:
-                        DEJA["erreurs"].append(f"{s['nom']} : {e}")
-                if n.get("arret"):
-                    DEJA["phase"] = "arrêté : crédits Captain Verify épuisés (ce qui est fait est enregistré)"
-                    return
+            sem2, fini = asyncio.Semaphore(2), {"n": 0, "arret": False}       # deux sociétés à la fois
+            async def une(s, d0, ds):
+                async with sem2:
+                    if fini["arret"]:
+                        return
+                    avant = {id(d): d["email"] for d in ds}
+                    n = await filtrer(c, ds, journal)
+                    for d in ds:
+                        DEJA["_lignes"].append([s["nom"], d.get("prenom", ""), d.get("nom", ""), avant[id(d)], d.get("cv_statut", ""),
+                                                "gardée" if d.get("email") else "écartée"])
+                    DEJA["compte"] = dict(Counter(DEJA["compte"]) + Counter({k: v for k, v in n.items() if k in ("ok", "invalid", "risky", "unknown")}))
+                    if any(d.get("cv_statut") for d in ds):
+                        try:
+                            await _reecrire(c, s["page"], d0)
+                            await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
+                                "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))},
+                                **prop_passe(d0)}})
+                            DEJA["ecrites"] += 1
+                        except Exception as e:
+                            DEJA["erreurs"].append(f"{s['nom']} : {e}")
+                    fini["n"] += 1
+                    DEJA["phase"] = f"vérification {fini['n']}/{len(cibles)} sociétés"
+                    if n.get("arret"):
+                        fini["arret"] = True
+            await asyncio.gather(*(une(s, d0, ds) for s, d0, ds in cibles))
+            if fini["arret"]:
+                DEJA["phase"] = "arrêté : crédits Captain Verify épuisés (ce qui est fait est enregistré)"
+                return
         DEJA["phase"] = "terminé"
     except Exception as e:
         DEJA["phase"] = f"arrêt sur erreur : {e}"
@@ -390,13 +417,13 @@ async def captain_deja(req: Request):
     b = await req.json()
     if DEJA["actif"]:
         return JSONResponse({"erreur": "déjà en cours"}, 409)
-    confirmer = bool(b.get("confirmer"))
+    confirmer, tous = bool(b.get("confirmer")), bool(b.get("tous"))
     if confirmer and not (DEJA["mode"] == "essai à blanc" and DEJA["phase"].startswith("essai à blanc terminé")
-                          and time.time() - DEJA["_quand"] < 3600):
+                          and time.time() - DEJA["_quand"] < 3600 and DEJA.get("tous", False) == tous):
         return JSONResponse({"erreur": "faites d'abord l'essai à blanc (il y a moins d'une heure)"}, 409)
     if confirmer and IMPORT["actif"]:
         return JSONResponse({"erreur": "attendez la fin de l'import du référentiel : sinon on paierait des adresses déjà connues"}, 409)
-    asyncio.create_task(_deja(confirmer))
+    asyncio.create_task(_deja(confirmer, tous))
     return {"lance": "vérification" if confirmer else "essai à blanc"}
 
 
@@ -550,6 +577,7 @@ button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}.ligne
 
 <div class="card"><h2>3. Vérifier les e-mails déjà trouvés</h2>
 <p class="msg">Contacts validés dont l'e-mail n'est pas encore passé par Captain Verify. On ne garde que les « ok ».</p>
+<p class="msg"><label><input type="checkbox" id="tous"> Toutes les sociétés lancées depuis le début (contacts validés ou non, sauf écartés)</label></p>
 <div class="ligne"><button id="essaiDeja">Essai à blanc</button><button id="okDeja" hidden>Lancer la vérification</button>
 <a class="btn ghost" id="xlDeja" href="/v3/validation/api/captain/deja/excel" hidden>Détail (Excel)</a></div>
 <p class="msg" id="dejaMsg"></p></div>
@@ -579,7 +607,8 @@ async function etat() {
   const i = e.import, d = e.deja;
   if (i.actif || i.phase.startsWith("terminé") || i.phase.startsWith("arrêt")) $("#impMsg").textContent = i.actif ? `Import en cours : ${i.fait} adresses écrites…` : i.phase;
   if (d.phase) {
-    $("#dejaMsg").textContent = `${d.phase}\\n${d.contacts} contacts à vérifier · ${d.dans_ref} déjà dans le référentiel (gratuit) · ${d.a_payer} à payer`
+    if (d.tous !== undefined) $("#tous").checked = !!d.tous;
+    $("#dejaMsg").textContent = `${d.tous ? "[toutes les sociétés] " : "[contacts validés] "}${d.phase}\\n${d.contacts} contacts à vérifier · ${d.dans_ref} déjà dans le référentiel (gratuit) · ${d.a_payer} à payer`
       + (Object.keys(d.compte || {}).length ? `\\nStatuts : ${fmt(d.compte)}` : "") + (d.ecrites ? ` · ${d.ecrites} sociétés mises à jour` : "")
       + ((d.erreurs || []).length ? `\\nIncidents : ${d.erreurs.slice(-3).join(" ; ")}` : "");
     $("#okDeja").hidden = d.actif || !(d.mode === "essai à blanc" && d.phase.startsWith("essai à blanc terminé") && d.contacts);
@@ -612,10 +641,10 @@ async function envoyer(confirmer) {
 }
 $("#essaiImport").onclick = () => envoyer(false);
 $("#okImport").onclick = () => envoyer(true);
-$("#essaiDeja").onclick = async () => { $("#dejaMsg").textContent = "Essai à blanc lancé (2 à 3 minutes)…"; try { await api("/v3/validation/api/captain/deja", {}); setTimeout(etat, 3000); } catch (e) { $("#dejaMsg").textContent = e.message; } };
+$("#essaiDeja").onclick = async () => { $("#dejaMsg").textContent = "Essai à blanc lancé (2 à 5 minutes)…"; try { await api("/v3/validation/api/captain/deja", {tous: $("#tous").checked}); setTimeout(etat, 3000); } catch (e) { $("#dejaMsg").textContent = e.message; } };
 $("#okDeja").onclick = async () => {
   if (!confirm("Lancer la vérification ? Les adresses non « ok » seront retirées des contacts.")) return;
-  try { await api("/v3/validation/api/captain/deja", {confirmer: true}); setTimeout(etat, 3000); } catch (e) { $("#dejaMsg").textContent = e.message; }
+  try { await api("/v3/validation/api/captain/deja", {confirmer: true, tous: $("#tous").checked}); setTimeout(etat, 3000); } catch (e) { $("#dejaMsg").textContent = e.message; }
 };
 $("#essaiCoche").onclick = async () => { $("#cocheMsg").textContent = "Essai à blanc lancé (2 à 3 minutes)…"; try { await api("/v3/validation/api/captain/cocher", {}); setTimeout(etat, 3000); } catch (e) { $("#cocheMsg").textContent = e.message; } };
 $("#okCoche").onclick = async () => { try { await api("/v3/validation/api/captain/cocher", {confirmer: true}); setTimeout(etat, 2000); } catch (e) { $("#cocheMsg").textContent = e.message; } };

@@ -70,3 +70,11 @@ def test_a_verifier_ignore_saisie_main_et_deja_verifies():
     nouveaux = {"l/a": {"etat": "prêt pour HubSpot"}, "l/b": {"etat": "prêt pour HubSpot"},
                 "l/c": {"etat": "prêt pour HubSpot", "modifie": ["email"], "email": "c@x.fr"}, "l/d": {"etat": "prêt pour HubSpot"}}
     assert [d["email"] for d in CV.a_verifier({"nouveaux": json.dumps(nouveaux)}, {"dirigeants": ds})] == ["a@x.fr"]
+
+
+def test_a_verifier_tous_inclut_les_non_valides():
+    ds = [{"linkedin": "l/a", "email": "a@x.fr"}, {"linkedin": "l/b", "email": "b@x.fr"}, {"linkedin": "l/c", "email": "c@x.fr"}]
+    nouveaux = {"l/a": {"etat": "prêt pour HubSpot"}, "l/c": {"etat": "écarté"}}
+    s = {"nouveaux": json.dumps(nouveaux)}
+    assert [d["email"] for d in CV.a_verifier(s, {"dirigeants": ds})] == ["a@x.fr"]
+    assert [d["email"] for d in CV.a_verifier(s, {"dirigeants": ds}, tous=True)] == ["a@x.fr", "b@x.fr"]
