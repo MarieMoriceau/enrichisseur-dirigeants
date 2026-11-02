@@ -922,7 +922,8 @@ async function suivreExport() {
   if (e.pret) {
     const r = e.resume || {};
     $("#xMsg").className = "msg";
-    $("#xMsg").textContent = `Fichier prêt (${r.societes} sociétés, ${r.contacts} contacts à créer)${e.envoi ? ", " + e.envoi : ""} : « Télécharger l'Excel » le récupère.`;
+    $("#xMsg").textContent = `Fichier prêt (${r.societes} sociétés, ${r.contacts} contacts à créer)${e.envoi ? ", " + e.envoi : ""} : « Télécharger l'Excel » le récupère.`
+      + ((r.sautees || []).length ? ` Fiches illisibles, absentes du fichier : ${r.sautees.join(", ")}.` : "");
   }
 }
 $("#xMail").onclick = async () => {

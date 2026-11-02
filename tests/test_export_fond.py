@@ -38,3 +38,19 @@ def test_erreur_affichee(monkeypatch):
     monkeypatch.setattr(EX, "_donnees", panne)
     asyncio.run(EX._preparer())
     assert "502" in c.get("/v3/validation/api/export").text
+
+
+def test_fiche_bloquee_sautee(monkeypatch):
+    import v3_memoire as MEM
+    monkeypatch.setattr(EX, "LECTURE_MAX", 0.2)
+    async def toutes():
+        return [{"page": p, "nom": n, "validation": "Société validée", "nouveaux": "{}", "decisions": "[]"} for p, n in (("a", "Botify"), ("b", "Bloquée"))]
+    async def lire(p):
+        if p == "b":
+            await asyncio.sleep(5)
+        return {"id": "1"}
+    monkeypatch.setattr(VALID, "_toutes", toutes); monkeypatch.setattr(MEM, "lire", lire)
+    monkeypatch.setattr(VALID, "appliquer_correction_siren", lambda s: None)
+    suivi = {}
+    socs = asyncio.run(EX._donnees(suivi))
+    assert suivi["fait"] == 2 and suivi["sautees"] == ["Bloquée (TimeoutError)"] and socs[1]["data"] == {}
