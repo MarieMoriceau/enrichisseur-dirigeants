@@ -429,7 +429,7 @@ async def _tache_emails(confirmer: bool):
     except Exception as e:
         EMAILS["phase"] = f"arrêt sur erreur : {e}"
     finally:
-        EMAILS["actif"] = False
+        EMAILS["actif"], EMAILS["_fin"] = False, time.time()   # compte-rendu d'un envoi réel affiché 6 h (rechargement)
 
 
 @router.get("/v3/validation/api/emails-rattrapage")
@@ -442,7 +442,8 @@ async def emails_rattrapage(req: Request, confirmer: int = 0):
     etat = {k: v for k, v in EMAILS.items() if not k.startswith("_")}
     if EMAILS["actif"]:
         return etat | {"conseil": "en cours : rouvrez cette adresse (sans &confirmer) dans une minute"}
-    if not confirmer and EMAILS["phase"] and time.time() - EMAILS["_quand"] < 900:
+    if not confirmer and EMAILS["phase"] and (time.time() - EMAILS["_quand"] < 900
+                                            or EMAILS["mode"] == "écriture" and time.time() - EMAILS.get("_fin", 0) < 6 * 3600):
         return etat | {"conseil": "résultat du dernier passage ; &confirmer=1 pour envoyer à Kaspr et Fullenrich (crédits)"}
     if confirmer and not (EMAILS["mode"] == "essai à blanc" and EMAILS["phase"].startswith("essai à blanc terminé")
                           and time.time() - EMAILS["_quand"] < 3600):
