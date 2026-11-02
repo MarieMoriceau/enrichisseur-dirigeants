@@ -45,25 +45,47 @@ async def _donnees(suivi: dict = None) -> list:
     if suivi is not None:
         suivi.update(total=len(utiles), fait=0)
 
+    sem = asyncio.Semaphore(4)                  # propre à cet export : une lecture abandonnée ne garde pas de place
+
     async def lire(s):
-        async with _SEM:
+        s["data"] = {}
+        async with sem:
             if suivi is not None:
                 suivi.setdefault("en_lecture", {})[s["page"]] = s["nom"]
-            try:                                         # une fiche qui ne répond pas ne bloque plus tout l'export
-                s["data"] = await asyncio.wait_for(MEM.lire(s["page"]), LECTURE_MAX)
+            try:
+                s["data"] = await MEM.lire(s["page"]) or {}
             except Exception as e:
-                s["data"] = {}
                 if suivi is not None:
                     suivi.setdefault("sautees", []).append(f"{s['nom']} ({type(e).__name__})")
             if suivi is not None:
                 suivi["en_lecture"].pop(s["page"], None)
         if suivi is not None:
-            suivi["fait"] += 1
+            suivi["fait"] = suivi.get("fait", 0) + 1
+
+    # Garde-fou : si plus aucune fiche n'avance pendant LECTURE_MAX secondes, on abandonne celles qui restent
+    # (sans attendre qu'elles se terminent : une requête coincée ne doit plus bloquer l'export, 02/11).
+    taches = {asyncio.create_task(lire(s)): s for s in utiles}
+    reste, compte, depuis = set(taches), -1, time.monotonic()
+    while reste:
+        _, reste = await asyncio.wait(reste, timeout=min(5, LECTURE_MAX))
+        fait = (suivi or {}).get("fait", len(taches) - len(reste))
+        if fait != compte:
+            compte, depuis = fait, time.monotonic()
+        elif time.monotonic() - depuis > LECTURE_MAX:
+            for t in reste:
+                t.cancel()
+                s = taches[t]
+                s["data"] = s.get("data") or {}
+                if suivi is not None:
+                    suivi.setdefault("sautees", []).append(f"{s['nom']} (ne répond pas)")
+                    (suivi.get("en_lecture") or {}).pop(s["page"], None)
+            print(f"[V3 EXPORT] fiches abandonnées : {[taches[t]['nom'] for t in reste]}")
+            break
+    for s in utiles:
         VALID.appliquer_correction_siren(s)                 # SIREN corrigé à la main : la bonne fiche INSEE
         s["decisions"] = VALID._json(s["decisions"], [])
         s["nouveaux"] = VALID._json(s["nouveaux"], {})
-        return s
-    return await asyncio.gather(*(lire(s) for s in utiles))
+    return utiles
 
 
 def construire(socs: list) -> tuple:
