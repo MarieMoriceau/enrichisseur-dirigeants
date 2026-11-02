@@ -1189,6 +1189,12 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                 d["email"] = await kaspr_email(c, d["nom_complet"], d["linkedin"])
                 d["source_email"] = "Kaspr" if d["email"] else ""
 
+        # 5b'. Captain Verify sur les e-mails Kaspr : seules les adresses « ok » restent (les autres repartent vers Fullenrich)
+        import v3_captain as CAPTAIN
+        if CAPTAIN.actif() and not stop():
+            job["phase"] = "Captain Verify : e-mails Kaspr…"
+            await CAPTAIN.filtrer(c, [d for _, d in a_enrichir if d.get("email")], journal)
+
         # 5c. Fullenrich en secours (crédits) pour ceux que Kaspr n'a pas trouvés
         reste = [(r, d) for r, d in a_enrichir if not d["email"] and (r.get("domaine") or d.get("linkedin"))]
         if FULLENRICH_KEY and reste and not stop():
@@ -1197,6 +1203,10 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             for n_, (r, d) in enumerate(reste):
                 if trouves.get(str(n_)):
                     d["email"], d["source_email"] = trouves[str(n_)], "Fullenrich"
+                    d.pop("cv_statut", None)                 # nouvelle adresse : à vérifier à son tour
+            if CAPTAIN.actif() and not stop():
+                job["phase"] = "Captain Verify : e-mails Fullenrich…"
+                await CAPTAIN.filtrer(c, [d for _, d in reste if d.get("email")], journal)
         job["stats_email"] = {
             "deja_pipedrive": sum(1 for _, d in a_faire if d["dans_pipedrive"]),
             "kaspr": sum(1 for _, d in a_faire if d["source_email"] == "Kaspr"),

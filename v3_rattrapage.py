@@ -405,6 +405,11 @@ async def _tache_emails(confirmer: bool):
                         d["email"], d["source_email"] = m, "Kaspr"
                         EMAILS["kaspr"] += 1
                         EMAILS["_lignes"][i][7], EMAILS["_lignes"][i][8] = m, "Kaspr"
+            import v3_captain as CAPTAIN
+            cv_journal = lambda m: EMAILS["echecs"].append(m) if ("non vérifiée" in m or "épuisés" in m) else None
+            if CAPTAIN.actif():                                    # 1'. Captain Verify : seules les « ok » restent
+                EMAILS["phase"] = "Captain Verify : e-mails Kaspr"
+                await CAPTAIN.filtrer(c, [d for d, _, _ in paires if d.get("email") and d.get("source_email") == "Kaspr"], cv_journal)
             reste = [(i, d, d0) for i, (d, d0, _) in enumerate(paires) if not d.get("email") and not d.get("fullenrich_tente")]
             if LI.FULLENRICH_KEY and reste:                        # 2. Fullenrich en secours, par lots de 100
                 EMAILS["phase"] = f"Fullenrich : {len(reste)} contacts"
@@ -414,8 +419,12 @@ async def _tache_emails(confirmer: bool):
                     d["fullenrich_tente"] = quand
                     if trouves.get(str(k)):
                         d["email"], d["source_email"] = trouves[str(k)], "Fullenrich"
+                        d.pop("cv_statut", None)
                         EMAILS["fullenrich"] += 1
                         EMAILS["_lignes"][i][7], EMAILS["_lignes"][i][8] = d["email"], "Fullenrich"
+                if CAPTAIN.actif():
+                    EMAILS["phase"] = "Captain Verify : e-mails Fullenrich"
+                    await CAPTAIN.filtrer(c, [d for _, d, _ in reste if d.get("email")], cv_journal)
             EMAILS["phase"] = "écriture dans Notion"
             for s, d0, _ in cibles:
                 try:

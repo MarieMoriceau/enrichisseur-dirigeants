@@ -39,6 +39,8 @@ import v3_import as IMPORT
 router.include_router(IMPORT.router)             # import d'un Excel de lancement dans la mémoire
 import v3_export as EXPORT
 router.include_router(EXPORT.router)             # export des validations au format d'import HubSpot
+import v3_captain as CAPTAIN
+router.include_router(CAPTAIN.router)            # Captain Verify : référentiel, vérification des e-mails
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
