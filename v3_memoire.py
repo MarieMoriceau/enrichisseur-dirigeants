@@ -339,6 +339,7 @@ async def enregistrer(job: dict, norm_nom, journal):
                      "Lancement": _txt(fusion_lancements(" ; ".join(e.get("lancement", "") for e in meme), job.get("nom", ""))),
                      "Nb dirigeants": {"number": len(r.get("dirigeants", []))},
                      "Nb e-mails": {"number": sum(1 for d in r.get("dirigeants", []) if d.get("email"))},
+                     "Captain Verify": {"checkbox": __import__("v3_captain").passe(r)},
                      "Nb nouveaux contacts": {"number": sum(1 for d in r.get("dirigeants", []) if not d.get("dans_pipedrive"))},
                      "Effectif LinkedIn": {"number": int(r["effectif_linkedin"]) if r.get("effectif_linkedin") not in (None, "") else None},
                      "Historique effectifs": _txt(hist_txt),

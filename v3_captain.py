@@ -203,6 +203,16 @@ async def filtrer(c, contacts: list, journal) -> dict:
     return n
 
 
+def passe(data: dict) -> bool:
+    """Case « Captain Verify » de la société : au moins un e-mail trouvé, et tous passés par Captain Verify."""
+    ds = [d for d in data.get("dirigeants", []) if d.get("email") or d.get("email_ecarte")]
+    return bool(ds) and all(d.get("cv_statut") for d in ds)
+
+
+def prop_passe(data: dict) -> dict:
+    return {"Captain Verify": {"checkbox": passe(data)}}
+
+
 # ───────────────────────── import du référentiel Excel de Marie ─────────────────────────
 IMPORT = {"actif": False, "phase": "", "cle": "", "lignes": [], "nouvelles": 0, "deja": 0, "fait": 0, "erreurs": [], "_quand": 0.0}
 
@@ -304,7 +314,8 @@ async def _deja(confirmer: bool):
                     try:
                         await _reecrire(c, s["page"], d0)
                         await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
-                            "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))}}})
+                            "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))},
+                            **prop_passe(d0)}})
                         DEJA["ecrites"] += 1
                     except Exception as e:
                         DEJA["erreurs"].append(f"{s['nom']} : {e}")
@@ -326,7 +337,8 @@ async def captain_etat(req: Request):
     return {"cle": actif(), "credits": _API["credits"], "referentiel": len(REF["emails"]) if REF["charge"] else None,
             "base": REF["db"], "erreur": REF["erreur"],
             "import": {k: v for k, v in IMPORT.items() if k not in ("lignes", "cle") and not k.startswith("_")},
-            "deja": {k: v for k, v in DEJA.items() if not k.startswith("_")}}
+            "deja": {k: v for k, v in DEJA.items() if not k.startswith("_")},
+            "coche": {k: v for k, v in COCHE.items() if not k.startswith("_")}}
 
 
 @router.post("/v3/validation/api/captain/charger")
@@ -386,6 +398,52 @@ async def captain_deja(req: Request):
         return JSONResponse({"erreur": "attendez la fin de l'import du référentiel : sinon on paierait des adresses déjà connues"}, 409)
     asyncio.create_task(_deja(confirmer))
     return {"lance": "vérification" if confirmer else "essai à blanc"}
+
+
+COCHE = {"actif": False, "phase": "", "a_cocher": 0, "fait": 0, "_quand": 0.0, "_pages": []}
+
+
+async def _cocher(confirmer: bool):
+    from v3_rattrapage import _lire_page
+    COCHE.update(actif=True, phase="lecture des fiches", fait=0)
+    try:
+        if not confirmer:
+            socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée"]
+            sem, pages = asyncio.Semaphore(3), []
+            async def voir(s):
+                async with sem:
+                    d0 = await _lire_page(s)
+                if d0 and passe(d0):
+                    pages.append(s["page"])
+            await asyncio.gather(*(voir(s) for s in socs))
+            COCHE.update(_pages=pages, a_cocher=len(pages), _quand=time.time(),
+                         phase=f"essai à blanc terminé : {len(pages)} sociétés à cocher sur {len(socs)} lues, rien n'est écrit")
+            return
+        async with httpx.AsyncClient(timeout=30) as c:
+            for p in COCHE["_pages"]:
+                await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{p}", json={"properties": {"Captain Verify": {"checkbox": True}}})
+                COCHE["fait"] += 1
+                COCHE["phase"] = f"écriture {COCHE['fait']}/{len(COCHE['_pages'])}"
+        COCHE["phase"] = f"terminé : {COCHE['fait']} sociétés cochées"
+    except Exception as e:
+        COCHE["phase"] = f"arrêt sur erreur : {e}"
+    finally:
+        COCHE["actif"] = False
+
+
+@router.post("/v3/validation/api/captain/cocher")
+async def captain_cocher(req: Request):
+    """Coche « Captain Verify » dans Notion pour les sociétés déjà vérifiées. Corps {"confirmer": true} après l'essai."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    b = await req.json()
+    if COCHE["actif"]:
+        return JSONResponse({"erreur": "déjà en cours"}, 409)
+    confirmer = bool(b.get("confirmer"))
+    if confirmer and not (COCHE["phase"].startswith("essai à blanc terminé") and time.time() - COCHE["_quand"] < 3600):
+        return JSONResponse({"erreur": "faites d'abord l'essai à blanc (il y a moins d'une heure)"}, 409)
+    asyncio.create_task(_cocher(confirmer))
+    return {"lance": True}
 
 
 @router.get("/v3/validation/api/captain/deja/excel")
@@ -495,6 +553,11 @@ button:disabled{opacity:.5;cursor:default}[hidden]{display:none!important}.ligne
 <div class="ligne"><button id="essaiDeja">Essai à blanc</button><button id="okDeja" hidden>Lancer la vérification</button>
 <a class="btn ghost" id="xlDeja" href="/v3/validation/api/captain/deja/excel" hidden>Détail (Excel)</a></div>
 <p class="msg" id="dejaMsg"></p></div>
+
+<div class="card"><h2>4. Cocher « Captain Verify » dans Notion</h2>
+<p class="msg">Pour les sociétés déjà vérifiées avant l'ajout de la case. Ensuite, la case se coche toute seule.</p>
+<div class="ligne"><button id="essaiCoche">Essai à blanc</button><button id="okCoche" hidden>Cocher</button></div>
+<p class="msg" id="cocheMsg"></p></div>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -523,7 +586,11 @@ async function etat() {
     $("#xlDeja").hidden = !(d.mode === "écriture");
   }
   $("#essaiDeja").disabled = d.actif;
-  if (i.actif || d.actif) timer = setTimeout(etat, 5000);
+  const k = e.coche || {};
+  if (k.phase) $("#cocheMsg").textContent = k.phase;
+  $("#okCoche").hidden = k.actif || !(k.phase || "").startsWith("essai à blanc terminé") || !k.a_cocher;
+  $("#essaiCoche").disabled = k.actif;
+  if (i.actif || d.actif || k.actif) timer = setTimeout(etat, 5000);
 }
 $("#charger").onclick = async () => {
   $("#refMsg").textContent = "Lecture (une minute pour 10 000 adresses)…";
@@ -550,5 +617,7 @@ $("#okDeja").onclick = async () => {
   if (!confirm("Lancer la vérification ? Les adresses non « ok » seront retirées des contacts.")) return;
   try { await api("/v3/validation/api/captain/deja", {confirmer: true}); setTimeout(etat, 3000); } catch (e) { $("#dejaMsg").textContent = e.message; }
 };
+$("#essaiCoche").onclick = async () => { $("#cocheMsg").textContent = "Essai à blanc lancé (2 à 3 minutes)…"; try { await api("/v3/validation/api/captain/cocher", {}); setTimeout(etat, 3000); } catch (e) { $("#cocheMsg").textContent = e.message; } };
+$("#okCoche").onclick = async () => { try { await api("/v3/validation/api/captain/cocher", {confirmer: true}); setTimeout(etat, 2000); } catch (e) { $("#cocheMsg").textContent = e.message; } };
 etat();
 </script></html>"""
