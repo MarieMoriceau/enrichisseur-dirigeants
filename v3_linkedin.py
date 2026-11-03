@@ -163,9 +163,31 @@ def verdict_domiciliation(r: dict, dec: dict) -> dict:
     return {"verdict_domiciliation": "🔍 À vérifier", "raison_domiciliation": "siège ≠ adresse trouvée, mais celle-ci n'est pas confirmée"}
 
 
+STATUT = None          # branché par v3.py : recalcule statut et confiance quand de nouvelles adresses arrivent
+
+
+def siege_confirme(r: dict) -> str:
+    """Sources (site, LinkedIn, Google) dont l'adresse est celle du siège INSEE. "" si aucune."""
+    siege = (r.get("siege_insee") or "").strip()
+    if not cle_adresse(siege) or str(r.get("controle_nom", "")).startswith("⚠️"):
+        return ""
+    li = (r.get("adresse_linkedin") or "").strip()
+    if li and li.rsplit(",", 1)[-1].strip().upper() not in ("FR", "FRANCE", ""):
+        li = ""
+    src = [("site", a) for a in (r.get("adresses_site_liste") or [r.get("adresse_site") or ""])]
+    src += [("LinkedIn", li), ("Google", r.get("adresse_google") or "")]
+    noms = []
+    for n, a in src:
+        if a and n not in noms and meme_adresse(siege, a):
+            noms.append(n)
+    return " + ".join(noms)
+
+
 def decider_adresse(r: dict) -> dict:
     d = _decider_adresse(r)
     d.update(verdict_domiciliation(r, d))
+    if STATUT and r.get("siren_nom") and not r.get("siren_site") and not r.get("siren_crm"):
+        d["statut"], d["action"], d["confiance"] = STATUT(r)
     return d
 
 

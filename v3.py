@@ -614,6 +614,9 @@ def statut(row: dict) -> tuple:
     return st, act, conf
 
 
+LI.STATUT = statut
+
+
 def _statut(row: dict) -> tuple:
     sp, ss = row["siren_crm"], row["siren_site"]
     if row.get("mode", "").startswith("SIREN déjà"):
@@ -627,8 +630,16 @@ def _statut(row: dict) -> tuple:
         return "", "📍 SIREN déjà connu, introuvable à l'INSEE : à vérifier", "moyenne"
     if not ss and not sp and row.get("siren_nom"):
         e = row.get("etat_nom", "")
-        return ("Active" if e == "active" else "Radiée, à vérifier" if e == "fermée" else ""), \
-               f"🔎 SIREN trouvé par le nom dans SIRENE ({row.get('nb_homonymes', 1)} correspondance(s)) : à vérifier", "moyenne"
+        st = "Active" if e == "active" else "Radiée, à vérifier" if e == "fermée" else ""
+        # « le nom colle » : raison sociale = nom de la société ET siège INSEE = adresse du site, de LinkedIn ou de Google
+        rs = row.get("raison_sociale", "")
+        n, c = norm_nom(row.get("nom", "")).replace(" ", ""), nom_court(row.get("nom", "")).replace(" ", "")
+        r_ = norm_nom(rs).replace(" ", "")
+        colle = bool(r_) and (r_ in (n, c) or SequenceMatcher(None, r_, n).ratio() >= 0.9)   # « Ludovic Georgen » ≠ « Georgen »
+        ou = LI.siege_confirme(row) if colle and e == "active" else ""
+        if ou:
+            return st, f"✅ SIREN trouvé par le nom, confirmé : même raison sociale et siège = adresse {ou}", "haute"
+        return st, f"🔎 SIREN trouvé par le nom dans SIRENE ({row.get('nb_homonymes', 1)} correspondance(s)) : à vérifier", "moyenne"
     e_crm, e_site = row.get("etat_crm", ""), row.get("etat_site", "")
     if ss and e_site == "active":
         if sp and sp != ss:
