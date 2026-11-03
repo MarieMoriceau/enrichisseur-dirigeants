@@ -127,12 +127,13 @@ footer a{color:var(--tag-ink)}
 .discret{color:var(--muted);font-size:13px;margin-left:10px;white-space:nowrap;display:inline-block;padding:6px 0}
 .discret:hover{color:var(--ink)}
 .kpi3{grid-template-columns:repeat(3,1fr)}
+.kpi5{grid-template-columns:repeat(5,1fr)}
 .detail{margin-top:12px}
 .detail summary{cursor:pointer;color:var(--muted);font-size:13px}
 .detail summary:hover{color:var(--ink)}
 .detail .journal{max-height:260px;overflow-y:auto}
 .suite{margin-top:12px;font-size:14px;background:var(--tag);color:var(--tag-ink);border-radius:6px;padding:9px 12px}
-@media (max-width:720px){.kpi3{grid-template-columns:1fr 1fr 1fr}.kpi b{font-size:22px}}
+@media (max-width:720px){.kpi3,.kpi5{grid-template-columns:1fr 1fr 1fr}.kpi b{font-size:22px}}
 </style>
 </head>
 <body>
@@ -197,8 +198,10 @@ footer a{color:var(--tag-ink)}
         <div class="status" id="msg">Démarrage…</div>
         <div class="bar"><i id="bar"></i></div>
       </div>
-      <div class="kpi kpi3">
+      <div class="kpi kpi5">
         <div><b id="k1">0</b><span>sociétés traitées</span></div>
+        <div><b id="k4">0</b><span>SIREN trouvés</span></div>
+        <div><b id="k5">0</b><span>pages LinkedIn trouvées</span></div>
         <div><b id="k2">0</b><span>dirigeants trouvés</span></div>
         <div><b id="k3">0</b><span>e-mails trouvés</span></div>
       </div>
@@ -289,7 +292,7 @@ $("f").onsubmit=async e=>{
 };
 function ouvrirSuivi(){
   $("suivi").hidden=false;$("fini").hidden=true;$("suite").hidden=true;$("enCours").hidden=false;$("actions").hidden=false;
-  $("bar").style.width="0";["k1","k2","k3"].forEach(k=>$(k).textContent="0");
+  $("bar").style.width="0";["k1","k2","k3","k4","k5"].forEach(k=>$(k).textContent="0");
 }
 function suivre(id){
   jid=id;try{localStorage.setItem("v3job",id)}catch(_){}
@@ -312,7 +315,7 @@ async function poll(){
   try{r=await fetch("/v3/status/"+jid);s=await r.json()}catch(_){return}
   if(!r.ok){$("msg").textContent="Ce lancement n'est plus suivi ici (l'outil a redémarré). Retrouvez-le dans « Mes lancements ».";clearInterval(timer);return}
   $("bar").style.width=(s.total?100*s.fait/s.total:0)+"%";
-  $("k1").textContent=s.fait+" / "+s.total;$("k2").textContent=s.dirigeants;$("k3").textContent=s.emails;
+  $("k1").textContent=s.fait+" / "+s.total;$("k2").textContent=s.dirigeants;$("k3").textContent=s.emails;$("k4").textContent=s.siren??0;$("k5").textContent=s.linkedin??0;
   $("chrono").textContent=Math.floor(s.secondes/60)+" min";
   if(s.report_simple){$("suite").hidden=false;$("suite").textContent=s.report_simple}
   $("journal").textContent=(s.phase?s.phase+"\n":"")+(s.journal||[]).join("\n");

@@ -2083,7 +2083,7 @@ async def status(jid: str):
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
             "emails": sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email")),
-            "siren": sum(1 for r in res if r["siren_site"] or r["siren_crm"] or r["siren_nom"]), "linkedin": sum(1 for r in res if r["linkedin_site"]),
+            "siren": sum(1 for r in res if r["siren_site"] or r["siren_crm"] or r["siren_nom"]), "linkedin": sum(1 for r in res if r.get("linkedin") or r["linkedin_site"]),
             "radiees": sum(1 for r in res if r["statut"].startswith("Radiée")),
             "secondes": int((j["fin"] or time.time()) - j["debut"])}
 
