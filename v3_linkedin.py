@@ -167,20 +167,24 @@ STATUT = None          # branché par v3.py : recalcule statut et confiance quan
 
 
 def siege_confirme(r: dict) -> str:
-    """Sources (site, LinkedIn, Google) dont l'adresse est celle du siège INSEE. "" si aucune."""
-    siege = (r.get("siege_insee") or "").strip()
-    if not cle_adresse(siege) or str(r.get("controle_nom", "")).startswith("⚠️"):
+    """« siège = adresse site + terrain », « établissement = adresse terrain »… ; "" si rien ne concorde.
+    Siège INSEE d'abord, puis les établissements SIRENE trouvés par la recherche du nom."""
+    if str(r.get("controle_nom", "")).startswith("⚠️"):
         return ""
     li = (r.get("adresse_linkedin") or "").strip()
     if li and li.rsplit(",", 1)[-1].strip().upper() not in ("FR", "FRANCE", ""):
         li = ""
     src = [("site", a) for a in (r.get("adresses_site_liste") or [r.get("adresse_site") or ""])]
     src += [("LinkedIn", li), ("Google", r.get("adresse_google") or ""), ("terrain", r.get("adresse_notion") or "")]
-    noms = []
-    for n, a in src:
-        if a and n not in noms and meme_adresse(siege, a):
-            noms.append(n)
-    return " + ".join(noms)
+    siege = (r.get("siege_insee") or "").strip()
+    for quoi, lieux in (("siège", [siege]), ("établissement", r.get("adresses_sirene") or [])):
+        noms = []
+        for n, a in src:
+            if a and n not in noms and any(cle_adresse(l) and meme_adresse(l, a) for l in lieux):
+                noms.append(n)
+        if noms:
+            return f"{quoi} = adresse {' + '.join(noms)}"
+    return ""
 
 
 def decider_adresse(r: dict) -> dict:

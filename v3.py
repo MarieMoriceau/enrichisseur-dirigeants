@@ -577,30 +577,36 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
 
 async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str, adresse: str = "") -> dict:
     """SIREN par recherche du nom dans SIRENE (API recherche-entreprises, gratuite).
-    Rien avec le nom complet : nouvel essai avec le nom sans mots de métier (« M141 production » → « M141 »)."""
+    Essais : nom complet puis nom sans mots de métier (« M141 production » → « M141 »), avec le code postal d'abord.
+    Adresse connue (terrain, CRM) : on continue de chercher tant qu'aucune société n'y a son siège ou un établissement
+    (PCE : siège à Aix, établissement au 6 rue d'Amboise ; « Gibert avocats » : raison sociale « Victoire Gibert »)."""
     try:
-        bons, court = [], nom_court(nom)
+        court = nom_court(nom)
         raison = lambda x: x.get("nom_raison_sociale") or x.get("nom_complet") or ""
-        for q in [nom] + ([court] if court else []):
-            for code in ([cp, ""] if cp else [""]):     # d'abord avec le code postal, puis sans (société qui a déménagé)
-                p = {"q": q, "per_page": 5}
-                if code:
-                    p["code_postal"] = code
-                r = await _insee_get(api, p)
-                res = r.json().get("results", []) if r is not None and r.status_code == 200 else []
-                bons = [x for x in res if ressemblance(q, raison(x)) >= (0.85 if q == nom else 0.9)]
-                if bons:
-                    break
-            if bons:
+        adresses = lambda x: [(x.get("siege") or {}).get("adresse") or ""] + \
+                             [e.get("adresse") or "" for e in (x.get("matching_etablissements") or [])]
+        au_bon_endroit = lambda x: bool(adresse) and any(LI.meme_adresse(adresse, a) for a in adresses(x) if a)
+        essais = [(q, code) for code in ([cp, ""] if cp else [""]) for q in [nom] + ([court] if court else [])]
+        premiers, bons = [], []
+        for q, code in essais:
+            p = {"q": q, "per_page": 10 if adresse else 5}
+            if code:
+                p["code_postal"] = code
+            r = await _insee_get(api, p)
+            res = r.json().get("results", []) if r is not None and r.status_code == 200 else []
+            ok = [x for x in res if ressemblance(q, raison(x)) >= (0.85 if q == nom else 0.9)]
+            premiers = premiers or ok
+            bons = [x for x in ok if au_bon_endroit(x)]
+            if bons or (ok and not adresse):
                 break
+        bons = bons or premiers
         # raison sociale identique au nom cherché d'abord (« M141 » avant « M141 DIGITAL LAB »), puis sociétés actives
         cible = {norm_nom(nom), court}
-        # homonymes : celui dont le siège est à l'adresse connue (terrain, CRM) passe devant
-        au_bon_endroit = lambda x: bool(adresse) and LI.meme_adresse(adresse, (x.get("siege") or {}).get("adresse") or "")
         bons.sort(key=lambda x: (not au_bon_endroit(x), norm_nom(raison(x)) not in cible, x.get("etat_administratif") != "A"))
         if bons:
-            return {"siren": bons[0].get("siren", ""), "nb": len(bons),
-                    "raison": bons[0].get("nom_raison_sociale") or bons[0].get("nom_complet") or ""}
+            x = bons[0]
+            return {"siren": x.get("siren", ""), "nb": len(bons), "raison": raison(x),
+                    "adresses": [a for a in adresses(x) if a]}
     except Exception:
         pass
     return {}
@@ -640,9 +646,12 @@ def _statut(row: dict) -> tuple:
         n, c = norm_nom(row.get("nom", "")).replace(" ", ""), nom_court(row.get("nom", "")).replace(" ", "")
         r_, rc = norm_nom(rs).replace(" ", ""), nom_court(rs).replace(" ", "")
         colle = bool(r_) and (bool({r_, rc} & {n, c} - {""}) or SequenceMatcher(None, r_, n).ratio() >= 0.9)   # « Ludovic Georgen » ≠ « Georgen »
-        ou = LI.siege_confirme(row) if colle and e == "active" else ""
+        ou = LI.siege_confirme(row) if e == "active" else ""
+        if ou and not colle:          # adresse vue sur le terrain : le mot de la plaque dans la raison sociale suffit
+            colle = "terrain" in ou and ressemblance(nom_court(row.get("nom", "")) or row.get("nom", ""), rs) >= 0.9
+        ou = ou if colle else ""
         if ou:
-            return st, f"✅ SIREN trouvé par le nom, confirmé : même raison sociale et siège = adresse {ou}", "haute"
+            return st, f"✅ SIREN trouvé par le nom, confirmé : même raison sociale et {ou}", "haute"
         return st, f"🔎 SIREN trouvé par le nom dans SIRENE ({row.get('nb_homonymes', 1)} correspondance(s)) : à vérifier", "moyenne"
     e_crm, e_site = row.get("etat_crm", ""), row.get("etat_site", "")
     if ss and e_site == "active":
@@ -999,6 +1008,7 @@ async def _traiter(job_id: str, orgs: list):
                     if sirene.get("siren") and not s["siren_site"]:
                         i_nom = await insee(api, sirene["siren"])
                         row.update({"siren_nom": sirene["siren"], "etat_nom": i_nom.get("etat", ""),
+                                    "adresses_sirene": sirene.get("adresses", []),
                                     "nb_homonymes": sirene.get("nb", 1)})
                 row["etat_site"] = i_site.get("etat", "")
                 row["etat_crm"] = i_crm.get("etat", "")

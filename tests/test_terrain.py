@@ -42,3 +42,43 @@ def test_page_linkedin_du_fichier():
          "Pce;6 rue d'Amboise;75002;Paris;https://www.linkedin.com/in/quelquun\n").encode()
     o = v3.lire_fichier("relance.csv", f)
     assert o[0]["linkedin_fichier"].endswith("/company/m141/home/") and "linkedin_fichier" not in o[1]
+
+
+def _r(**k):
+    return {"siren_crm": "", "siren_site": "", "siren_nom": "1", "etat_nom": "active", "mode": "complet",
+            "site_joignable": "non", "controle_nom": "", **k}
+
+
+def test_pce_etablissement_au_terrain():
+    r = _r(nom="Pce", raison_sociale="PCE.", siege_insee="645 RUE MAYOR DE MONTRICHER 13290 AIX-EN-PROVENCE",
+           adresses_sirene=["645 RUE MAYOR DE MONTRICHER 13290 AIX-EN-PROVENCE", "6 RUE D'AMBOISE 75002 PARIS"],
+           adresse_notion="6 rue d'Amboise 75002 Paris")
+    st, act, conf = v3.statut(r)
+    assert conf == "haute" and "établissement = adresse terrain" in act
+
+
+def test_gibert_mot_de_la_plaque_suffit_au_terrain():
+    r = _r(nom="Gibert avocats", raison_sociale="VICTOIRE GIBERT", siege_insee="14 RUE FAVART 75002 PARIS",
+           adresse_notion="14 rue Favart 75002 Paris")
+    assert v3.statut(r)[2] == "haute"
+    r2 = _r(nom="Gibert avocats", raison_sociale="VICTOIRE GIBERT", siege_insee="14 RUE FAVART 75002 PARIS",
+            adresse_google="14 rue Favart 75002 Paris")             # sans terrain : on reste prudent
+    assert v3.statut(r2)[2] == "moyenne"
+
+
+def test_recherche_continue_jusqu_a_l_adresse(monkeypatch):
+    class R:
+        status_code = 200
+        def __init__(self, res): self.res = res
+        def json(self): return {"results": self.res}
+    vus = []
+    async def get(api, p):
+        vus.append((p["q"], p.get("code_postal", "")))
+        if p["q"] == "gibert" and p.get("code_postal") == "75002":
+            return R([{"siren": "999999999", "nom_complet": "VICTOIRE GIBERT", "etat_administratif": "A",
+                       "siege": {"adresse": "14 RUE FAVART 75002 PARIS"}}])
+        return R([{"siren": "788559300", "nom_raison_sociale": "GIBERT AVOCAT", "etat_administratif": "C",
+                   "siege": {"adresse": "39 RUE DE LA BOURSE 69002 LYON"}}] if not p.get("code_postal") else [])
+    monkeypatch.setattr(v3, "_insee_get", get)
+    r = asyncio.run(v3.insee_par_nom(None, "Gibert avocats", "75002", "14 rue Favart 75002 Paris"))
+    assert r["siren"] == "999999999" and vus[:2] == [("Gibert avocats", "75002"), ("gibert", "75002")]

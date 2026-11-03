@@ -28,7 +28,7 @@ def test_insee_par_nom_m141(monkeypatch):
         return _R([])
     monkeypatch.setattr(v3, "_insee_get", get)
     r = asyncio.run(v3.insee_par_nom(None, "M141 production", "75002"))
-    assert r["siren"] == "439405218" and r["nb"] == 2 and vus[:2] == ["M141 production", "M141 production"]
+    assert r["siren"] == "439405218" and r["nb"] == 2 and vus[:2] == ["M141 production", "m141"]          # code postal d'abord, pour les deux noms
 
 
 def test_mot_de_metier_au_milieu_garde():
