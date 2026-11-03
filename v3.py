@@ -733,6 +733,7 @@ def lire_fichier(nom: str, data: bytes) -> list:
     c_notion = (col("adresse notion") or col("adresse des locaux") or col("adresse locaux")
                 or col("adresse physique") or col("terrain", exclure=("personne",)))     # fichier de prospection terrain
     c_quali = col("base quali")
+    c_li = col("linkedin", exclure=("personne", "contact", "dirigeant"))     # page LinkedIn de la société, saisie à la main
     c_bail = col("date debut de bail") or col("date début de bail") or col("debut de bail", exclure=("annee", "année")) \
         or col("début de bail", exclure=("annee", "année"))
     c_flex = col("operateur flex") or col("opérateur flex") or col("flexoffice")
@@ -764,6 +765,8 @@ def lire_fichier(nom: str, data: bytes) -> list:
                     "adresse_crm": avec_cp((l.get(c_adr) or "").strip() if c_adr else ""),
                     "cp": cp_l, "ville": ville_l,
                     **({"adresse_notion": avec_cp(v)} if c_notion and (v := (l.get(c_notion) or "").strip()) else {}),
+                    **({"linkedin_fichier": u} if c_li and re.search(r"linkedin\.com/(company|school|showcase)/",
+                                                                     u := str(l.get(c_li) or "").strip()) else {}),
                     **({"base_quali_crm": q} if c_quali and (q := str(l.get(c_quali) or "").strip()) else {}),
                     **({"debut_bail_crm": b} if c_bail and (b := date_bail(l.get(c_bail))) else {}),
                     **({"flex_crm": x} if c_flex and (x := str(l.get(c_flex) or "").strip()) else {}),
@@ -1524,7 +1527,7 @@ async def attribuer_anciens(req: Request, mail: str = "mmoriceau@equation-sie.co
 
 
 # ───────────────────────── relance des sociétés traitées sans dirigeants (phantom en panne) ─────────────────────────
-CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "infos_source", "base_quali_crm",
+CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "linkedin_fichier", "infos_source", "base_quali_crm",
               "debut_bail_crm", "flex_crm", "tels_crm")
 
 

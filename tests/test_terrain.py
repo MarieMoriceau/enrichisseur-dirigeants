@@ -34,3 +34,11 @@ def test_homonyme_au_bon_endroit_choisi(monkeypatch):
     monkeypatch.setattr(v3, "_insee_get", get)
     r = asyncio.run(v3.insee_par_nom(None, "Georgen", "75002", "3 rue d'Amboise 75002 Paris"))
     assert r["siren"] == "123456789"
+
+
+def test_page_linkedin_du_fichier():
+    f = ("Société;Adresse physique (terrain);Code postal;Ville;LinkedIn\n"
+         "M141 production;1 place Boieldieu;75002;Paris;https://www.linkedin.com/company/m141/home/\n"
+         "Pce;6 rue d'Amboise;75002;Paris;https://www.linkedin.com/in/quelquun\n").encode()
+    o = v3.lire_fichier("relance.csv", f)
+    assert o[0]["linkedin_fichier"].endswith("/company/m141/home/") and "linkedin_fichier" not in o[1]

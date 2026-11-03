@@ -992,21 +992,25 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         # 3a. page LinkedIn : celle du site d'abord, sinon Company URL Finder
         for r in res:
             r["linkedin"], r["source_linkedin"] = (r.get("linkedin_site") or ""), ("site web" if r.get("linkedin_site") else "")
+            if not r["linkedin"] and r.get("linkedin_fichier"):       # page ajoutée à la main dans le fichier : prioritaire
+                r["linkedin"] = re.sub(r"/(home|about|people|posts|jobs)/?$", "/", r["linkedin_fichier"].split("?")[0])
+                r["source_linkedin"] = "fichier"
         manquants = [r for r in res if not r["linkedin"]]
         if manquants and PB_URL_FINDER:
             job["phase"] = f"Recherche des pages LinkedIn manquantes ({len(manquants)})…"
             try:
                 from v3 import nom_court
                 # nom sans mots de métier (« M141 production » → « m141 ») : le URL Finder cherche une page à ce nom
-                cherche = {id(r): (nom_court(r["nom"]) or r["nom"]) for r in manquants}
+                # on envoie aussi le nom complet : si le nom court ne donne rien, le nom complet peut donner la page
+                cherche = {id(r): [x for x in dict.fromkeys([nom_court(r["nom"]), r["nom"]]) if x] for r in manquants}
                 lignes = await pb.executer(c, PB_URL_FINDER, f"v3_{jid}_urlfinder", stop,
-                                           valeurs=list(dict.fromkeys(cherche.values())), colonne="Société")
+                                           valeurs=list(dict.fromkeys(v for vs in cherche.values() for v in vs)), colonne="Société")
                 par_nom = {}
                 for l in lignes:
                     if l.get("linkedinUrl"):
                         par_nom.setdefault((l.get("query") or "").strip().lower(), l["linkedinUrl"])
                 for r in manquants:
-                    u = par_nom.get(cherche[id(r)].strip().lower())
+                    u = next((par_nom[k] for k in (v.strip().lower() for v in cherche[id(r)]) if k in par_nom), "")
                     if u:
                         r["linkedin"], r["source_linkedin"] = u, "URL Finder (à contrôler)"
             except Exception as e:
@@ -1059,6 +1063,8 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         r["linkedin"] = ""
                         continue
                     r["controle_linkedin"] = "✅ page vérifiée (site ou nom)"
+                elif r["source_linkedin"] == "fichier":
+                    r["controle_linkedin"] = "✅ page indiquée dans le fichier"
                 else:
                     r["controle_linkedin"] = "✅ lien du site officiel"
                 r["linkedin_id"] = re.sub(r"\D", "", str(l.get("linkedinID") or l.get("mainCompanyID") or ""))
