@@ -179,13 +179,10 @@ footer a{color:var(--tag-ink)}
         <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(l'Excel vous y sera envoyé à la fin)</span></label>
         <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
         <div class="row">
-          <div>
-            <label for="limite">Lignes à traiter</label>
-            <input type="number" id="limite" name="limite" value="50" min="0">
-          </div>
+          <input type="hidden" name="limite" value="0">
           <button class="btn primary" type="submit">Lancer</button>
         </div>
-        <div class="hint">0 = tout le fichier. « SIREN et statut » : environ 1 minute pour 50 sociétés. Les autres choix : 150 sociétés maximum par lancement, comptez 20 à 40 minutes (les phantoms tournent chez PhantomBuster).</div>
+        <div class="hint">Tout le fichier est traité. Au-delà de 150 sociétés, la suite part toute seule les jours suivants. Comptez 20 à 40 minutes par lot de 150 (« SIREN et statut » : environ 1 minute pour 50 sociétés).</div>
       </form>
     </div>
   </section>

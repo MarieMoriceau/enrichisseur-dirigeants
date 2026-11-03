@@ -1328,7 +1328,7 @@ def excel_nego(job: dict) -> bytes:
 
 # ───────────────────────── routes ─────────────────────────
 @router.post("/v3/run")
-async def run(req: Request, fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(50),
+async def run(req: Request, fichier: UploadFile | None = File(None), liste: str = Form(""), limite: int = Form(0),
               linkedin: str = Form(""), perimetre: str = Form(""), mail: str = Form(""), forcer: str = Form(""),
               origine: str = Form("auto")):
     mails = SUIVI.mails_valides(mail)
