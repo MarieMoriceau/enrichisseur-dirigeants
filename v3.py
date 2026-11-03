@@ -502,6 +502,8 @@ async def insee(client: httpx.AsyncClient, siren: str) -> dict:
                 "naf": naf,
                 "activite": NAF.libelle(naf),       # libellé exact du code (69.10Z → Activités juridiques)
                 "secteur": SECTIONS_NAF.get(x.get("section_activite_principale") or "", ""),
+                "dirigeants": [{"nom": d.get("nom") or "", "prenom": d.get("prenoms") or "", "qualite": d.get("qualite") or ""}
+                               for d in (x.get("dirigeants") or []) if d.get("type_dirigeant") == "personne physique"],
             }
         except Exception:
             await asyncio.sleep(1)
@@ -575,30 +577,36 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
 
 async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str, adresse: str = "") -> dict:
     """SIREN par recherche du nom dans SIRENE (API recherche-entreprises, gratuite).
-    Rien avec le nom complet : nouvel essai avec le nom sans mots de métier (« M141 production » → « M141 »)."""
+    Essais : nom complet puis nom sans mots de métier (« M141 production » → « M141 »), avec le code postal d'abord.
+    Adresse connue (terrain, CRM) : on continue de chercher tant qu'aucune société n'y a son siège ou un établissement
+    (PCE : siège à Aix, établissement au 6 rue d'Amboise ; « Gibert avocats » : raison sociale « Victoire Gibert »)."""
     try:
-        bons, court = [], nom_court(nom)
+        court = nom_court(nom)
         raison = lambda x: x.get("nom_raison_sociale") or x.get("nom_complet") or ""
-        for q in [nom] + ([court] if court else []):
-            for code in ([cp, ""] if cp else [""]):     # d'abord avec le code postal, puis sans (société qui a déménagé)
-                p = {"q": q, "per_page": 5}
-                if code:
-                    p["code_postal"] = code
-                r = await _insee_get(api, p)
-                res = r.json().get("results", []) if r is not None and r.status_code == 200 else []
-                bons = [x for x in res if ressemblance(q, raison(x)) >= (0.85 if q == nom else 0.9)]
-                if bons:
-                    break
-            if bons:
+        adresses = lambda x: [(x.get("siege") or {}).get("adresse") or ""] + \
+                             [e.get("adresse") or "" for e in (x.get("matching_etablissements") or [])]
+        au_bon_endroit = lambda x: bool(adresse) and any(LI.meme_adresse(adresse, a) for a in adresses(x) if a)
+        essais = [(q, code) for code in ([cp, ""] if cp else [""]) for q in [nom] + ([court] if court else [])]
+        premiers, bons = [], []
+        for q, code in essais:
+            p = {"q": q, "per_page": 10 if adresse else 5}
+            if code:
+                p["code_postal"] = code
+            r = await _insee_get(api, p)
+            res = r.json().get("results", []) if r is not None and r.status_code == 200 else []
+            ok = [x for x in res if ressemblance(q, raison(x)) >= (0.85 if q == nom else 0.9)]
+            premiers = premiers or ok
+            bons = [x for x in ok if au_bon_endroit(x)]
+            if bons or (ok and not adresse):
                 break
+        bons = bons or premiers
         # raison sociale identique au nom cherché d'abord (« M141 » avant « M141 DIGITAL LAB »), puis sociétés actives
         cible = {norm_nom(nom), court}
-        # homonymes : celui dont le siège est à l'adresse connue (terrain, CRM) passe devant
-        au_bon_endroit = lambda x: bool(adresse) and LI.meme_adresse(adresse, (x.get("siege") or {}).get("adresse") or "")
         bons.sort(key=lambda x: (not au_bon_endroit(x), norm_nom(raison(x)) not in cible, x.get("etat_administratif") != "A"))
         if bons:
-            return {"siren": bons[0].get("siren", ""), "nb": len(bons),
-                    "raison": bons[0].get("nom_raison_sociale") or bons[0].get("nom_complet") or ""}
+            x = bons[0]
+            return {"siren": x.get("siren", ""), "nb": len(bons), "raison": raison(x),
+                    "adresses": [a for a in adresses(x) if a]}
     except Exception:
         pass
     return {}
@@ -638,9 +646,12 @@ def _statut(row: dict) -> tuple:
         n, c = norm_nom(row.get("nom", "")).replace(" ", ""), nom_court(row.get("nom", "")).replace(" ", "")
         r_, rc = norm_nom(rs).replace(" ", ""), nom_court(rs).replace(" ", "")
         colle = bool(r_) and (bool({r_, rc} & {n, c} - {""}) or SequenceMatcher(None, r_, n).ratio() >= 0.9)   # « Ludovic Georgen » ≠ « Georgen »
-        ou = LI.siege_confirme(row) if colle and e == "active" else ""
+        ou = LI.siege_confirme(row) if e == "active" else ""
+        if ou and not colle:          # adresse vue sur le terrain : le mot de la plaque dans la raison sociale suffit
+            colle = "terrain" in ou and ressemblance(nom_court(row.get("nom", "")) or row.get("nom", ""), rs) >= 0.9
+        ou = ou if colle else ""
         if ou:
-            return st, f"✅ SIREN trouvé par le nom, confirmé : même raison sociale et siège = adresse {ou}", "haute"
+            return st, f"✅ SIREN trouvé par le nom, confirmé : même raison sociale et {ou}", "haute"
         return st, f"🔎 SIREN trouvé par le nom dans SIRENE ({row.get('nb_homonymes', 1)} correspondance(s)) : à vérifier", "moyenne"
     e_crm, e_site = row.get("etat_crm", ""), row.get("etat_site", "")
     if ss and e_site == "active":
@@ -731,6 +742,7 @@ def lire_fichier(nom: str, data: bytes) -> list:
     c_notion = (col("adresse notion") or col("adresse des locaux") or col("adresse locaux")
                 or col("adresse physique") or col("terrain", exclure=("personne",)))     # fichier de prospection terrain
     c_quali = col("base quali")
+    c_li = col("linkedin", exclure=("personne", "contact", "dirigeant"))     # page LinkedIn de la société, saisie à la main
     c_bail = col("date debut de bail") or col("date début de bail") or col("debut de bail", exclure=("annee", "année")) \
         or col("début de bail", exclure=("annee", "année"))
     c_flex = col("operateur flex") or col("opérateur flex") or col("flexoffice")
@@ -762,6 +774,8 @@ def lire_fichier(nom: str, data: bytes) -> list:
                     "adresse_crm": avec_cp((l.get(c_adr) or "").strip() if c_adr else ""),
                     "cp": cp_l, "ville": ville_l,
                     **({"adresse_notion": avec_cp(v)} if c_notion and (v := (l.get(c_notion) or "").strip()) else {}),
+                    **({"linkedin_fichier": u} if c_li and re.search(r"linkedin\.com/(company|school|showcase)/",
+                                                                     u := str(l.get(c_li) or "").strip()) else {}),
                     **({"base_quali_crm": q} if c_quali and (q := str(l.get(c_quali) or "").strip()) else {}),
                     **({"debut_bail_crm": b} if c_bail and (b := date_bail(l.get(c_bail))) else {}),
                     **({"flex_crm": x} if c_flex and (x := str(l.get(c_flex) or "").strip()) else {}),
@@ -994,13 +1008,15 @@ async def _traiter(job_id: str, orgs: list):
                     if sirene.get("siren") and not s["siren_site"]:
                         i_nom = await insee(api, sirene["siren"])
                         row.update({"siren_nom": sirene["siren"], "etat_nom": i_nom.get("etat", ""),
+                                    "adresses_sirene": sirene.get("adresses", []),
                                     "nb_homonymes": sirene.get("nb", 1)})
                 row["etat_site"] = i_site.get("etat", "")
                 row["etat_crm"] = i_crm.get("etat", "")
                 ref = i_site or i_crm or i_nom
                 row.update({"raison_sociale": ref.get("raison_sociale", ""), "date_fermeture": ref.get("date_fermeture", ""),
                             "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", ""),
-                            "naf": ref.get("naf", ""), "activite": ref.get("activite", ""), "secteur": ref.get("secteur", "")})
+                            "naf": ref.get("naf", ""), "activite": ref.get("activite", ""), "secteur": ref.get("secteur", ""),
+                            "dirigeants_insee": ref.get("dirigeants", [])})
                 # le site est-il bien celui de cette société ? (vaut aussi pour les sites du CRM, souvent faux)
                 if dom and s["site_joignable"] == "oui" and not adresse_seule:
                     compact = norm_nom(o["nom"]).replace(" ", "")
@@ -1189,6 +1205,8 @@ def excel(job) -> bytes:
         "  (domiciliation ou ancien siège). 🏢 siège en région. ✅ cohérent : siège = bureaux. 🔍 à vérifier : bureaux non confirmés.",
         "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
         "  Seuls les dirigeants basés en France sont gardés (lieu LinkedIn), pour la liste comme pour les e-mails.",
+        "  Les directeurs sont gardés (rôle « 8 Autre »). Société sûre sans aucun dirigeant LinkedIn : ses représentants légaux SIRENE",
+        "  (président, gérant, DG) sont repris, et leur e-mail est cherché par Fullenrich (nom + site).",
         "  Niveaux recherchés : C-level, propriétaires et associés, VP, et directeurs jusqu'à 200 salariés LinkedIn. Tous les rôles",
         f"  sont enrichis en e-mail ({LI.EMAILS_MAX} dirigeants au plus par société, les rôles 1 à 5 d'abord).",
         "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",
@@ -1226,6 +1244,12 @@ def excel(job) -> bytes:
     if li_:
         cols += [("Effectif LinkedIn", "effectif_linkedin"), ("Évolution effectif LinkedIn", "evolution_effectif"),
                  ("Croissance effectif (%)", "croissance_effectif"), ("Tranche déclarée", "tranche_linkedin"), ("Statut activité", "statut_activite")]
+    if li_:
+        for r in res:
+            r["pourquoi_contact"] = LI.pourquoi_pas_de_contact(r, job)
+        cols[2:2] = [("Dirigeants trouvés", "nb_dirigeants_xl"), ("Pourquoi pas de contact", "pourquoi_contact")]   # bien visible
+        for r in res:
+            r["nb_dirigeants_xl"] = len(r.get("dirigeants") or [])
     feuille(wb, "Résultats", [c for c, _ in cols], [[r.get(k_, "") for _, k_ in cols] for r in res])
 
     hub = [r for r in res if r["statut"] == "Active" and r["confiance"] == "haute" and r["domaine"]]
@@ -1519,7 +1543,7 @@ async def attribuer_anciens(req: Request, mail: str = "mmoriceau@equation-sie.co
 
 
 # ───────────────────────── relance des sociétés traitées sans dirigeants (phantom en panne) ─────────────────────────
-CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "infos_source", "base_quali_crm",
+CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "linkedin_fichier", "infos_source", "base_quali_crm",
               "debut_bail_crm", "flex_crm", "tels_crm")
 
 
@@ -2083,7 +2107,7 @@ async def status(jid: str):
             "effectifs": sum(1 for r in res if r.get("effectif_linkedin") not in (None, "")),
             "dirigeants": sum(len(r.get("dirigeants", [])) for r in res),
             "emails": sum(1 for r in res for d in r.get("dirigeants", []) if d.get("email")),
-            "siren": sum(1 for r in res if r["siren_site"] or r["siren_crm"] or r["siren_nom"]), "linkedin": sum(1 for r in res if r["linkedin_site"]),
+            "siren": sum(1 for r in res if r["siren_site"] or r["siren_crm"] or r["siren_nom"]), "linkedin": sum(1 for r in res if r.get("linkedin") or r["linkedin_site"]),
             "radiees": sum(1 for r in res if r["statut"].startswith("Radiée")),
             "secondes": int((j["fin"] or time.time()) - j["debut"])}
 

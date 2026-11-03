@@ -167,20 +167,24 @@ STATUT = None          # branché par v3.py : recalcule statut et confiance quan
 
 
 def siege_confirme(r: dict) -> str:
-    """Sources (site, LinkedIn, Google) dont l'adresse est celle du siège INSEE. "" si aucune."""
-    siege = (r.get("siege_insee") or "").strip()
-    if not cle_adresse(siege) or str(r.get("controle_nom", "")).startswith("⚠️"):
+    """« siège = adresse site + terrain », « établissement = adresse terrain »… ; "" si rien ne concorde.
+    Siège INSEE d'abord, puis les établissements SIRENE trouvés par la recherche du nom."""
+    if str(r.get("controle_nom", "")).startswith("⚠️"):
         return ""
     li = (r.get("adresse_linkedin") or "").strip()
     if li and li.rsplit(",", 1)[-1].strip().upper() not in ("FR", "FRANCE", ""):
         li = ""
     src = [("site", a) for a in (r.get("adresses_site_liste") or [r.get("adresse_site") or ""])]
     src += [("LinkedIn", li), ("Google", r.get("adresse_google") or ""), ("terrain", r.get("adresse_notion") or "")]
-    noms = []
-    for n, a in src:
-        if a and n not in noms and meme_adresse(siege, a):
-            noms.append(n)
-    return " + ".join(noms)
+    siege = (r.get("siege_insee") or "").strip()
+    for quoi, lieux in (("siège", [siege]), ("établissement", r.get("adresses_sirene") or [])):
+        noms = []
+        for n, a in src:
+            if a and n not in noms and any(cle_adresse(l) and meme_adresse(l, a) for l in lieux):
+                noms.append(n)
+        if noms:
+            return f"{quoi} = adresse {' + '.join(noms)}"
+    return ""
 
 
 def decider_adresse(r: dict) -> dict:
@@ -280,12 +284,16 @@ def role(titre: str) -> str:
                  r"directrice administrative|responsable administratif et financier|responsable administrative et financiere|"
                  r"finance director|financial director|director of finance|head of finance|vp finance)\b", x):
         return "4 CFO / DAF"
-    if re.search(r"\b(associe|associee|partner|gerant|gerante)\b", x):
+    if re.search(r"\b(associe|associee|partner|gerant|gerante|owner|co-owner|proprietaire)\b", x):
         return "5 Associé / Gérant"
     if re.search(r"immobili|real estate|workplace|facilit|services generaux|environnement de travail|office manager", x):
         return "6 Immobilier / Services généraux"
     if re.search(r"\b(cto|cmo|chro|drh|chief|vp|vice[- ]president)\b", x):
         return "7 Autre C-level / VP"
+    # avant le 03/11, les directeurs renvoyés par Sales Navigator étaient écartés ici (Sombrero films : 0 contact)
+    if re.search(r"\b(directeur|directrice|director|head of)\b", x) \
+            and not re.search(r"\b(adjoint|adjointe|junior|stagiaire|intern)\b", x):
+        return "8 Autre"
     return ""
 
 
@@ -940,6 +948,74 @@ async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> di
     return out
 
 
+def pourquoi_pas_de_contact(r: dict, job: dict) -> str:
+    """Colonne « Pourquoi pas de contact » de l'Excel : vide quand la société a au moins un dirigeant avec e-mail."""
+    ds = r.get("dirigeants") or []
+    if any(d.get("email") for d in ds):
+        return ""
+    if r.get("memoire"):
+        return "reprise de la mémoire (traitée il y a moins de 6 mois) : contacts déjà proposés à l'époque"
+    perim = job.get("perimetre") or ("tout" if job.get("linkedin") else "siren")
+    if perim in ("siren", "societes"):
+        return "choix de lancement sans dirigeants"
+    if ds:
+        if all(d.get("dans_pipedrive") for d in ds):
+            return f"{len(ds)} dirigeant(s) trouvé(s), tous déjà dans Pipedrive"
+        if perim == "dirigeants":
+            return f"{len(ds)} dirigeant(s) trouvé(s), pas de recherche d'e-mail (choix de lancement)"
+        return f"{len(ds)} dirigeant(s) trouvé(s), aucun e-mail (ni Kaspr ni Fullenrich, ou adresse refusée par Captain Verify)"
+    if r.get("statut") == "Radiée" or str(r.get("statut", "")).startswith("Radiée"):
+        return "société fermée à l'INSEE"
+    if str(r.get("controle_nom", "")).startswith("⚠️ le site appartient"):
+        return "le site trouvé est celui d'une autre société"
+    if not r.get("linkedin_id"):
+        quoi = "page LinkedIn écartée (autre société)" if str(r.get("controle_linkedin", "")).startswith("❌") \
+            else "page LinkedIn non lue" if r.get("controle_linkedin") == "page non lue par le phantom" \
+            else "aucune page LinkedIn trouvée"
+        if r.get("confiance") != "haute":
+            return f"{quoi}, et société pas identifiée avec certitude (SIREN à vérifier) : pas de représentants SIRENE"
+        return f"{quoi}, et aucun président ou gérant (personne physique) dans SIRENE"
+    vus, ecartes, ailleurs = r.get("sn_vus", 0), r.get("sn_ecartes") or [], r.get("sn_hors_france", 0)
+    if not vus:
+        return "page LinkedIn trouvée, mais aucun dirigeant dans Sales Navigator"
+    morceaux = []
+    if ecartes:
+        morceaux.append(f"{len(ecartes)} poste(s) non retenu(s) : {', '.join(ecartes[:3])}")
+    if ailleurs:
+        morceaux.append(f"{ailleurs} basé(s) hors de France")
+    return f"Sales Navigator : {vus} personne(s) vue(s), " + " ; ".join(morceaux or ["aucune retenue"])
+
+
+QUALITES_SIRENE = [(r"president|directeur general|directrice generale", "1 CEO / Président / DG"),
+                   (r"gerant|gerante|associe", "5 Associé / Gérant")]
+
+
+def dirigeants_sirene(res: list) -> list:
+    """Sociétés actives de confiance haute sans aucun dirigeant LinkedIn : on reprend leurs représentants légaux
+    (personnes physiques) de SIRENE. Pas de profil LinkedIn : l'e-mail est cherché par Fullenrich (nom + domaine)."""
+    out = []
+    for r in res:
+        if r.get("dirigeants") or r.get("statut") != "Active" or r.get("confiance") != "haute":
+            continue
+        ds = []
+        for p in r.get("dirigeants_insee") or []:
+            q = _sans_accents(p.get("qualite", ""))
+            rl = next((v for m, v in QUALITES_SIRENE if re.search(m, q) and "delegue" not in q), "")
+            if not rl and "delegue" in q:
+                rl = "1 CEO / Président / DG"
+            if not rl or not p.get("nom"):
+                continue
+            prenom = (p.get("prenom") or "").split()[0].title() if p.get("prenom") else ""
+            nom = p["nom"].title()
+            ds.append({"prenom": prenom, "nom": nom, "nom_complet": f"{prenom} {nom}".strip(),
+                       "fonction": f"{p.get('qualite', '')} (SIRENE)", "role": rl, "lieu": "", "idf": False,
+                       "linkedin": "", "email": "", "source_email": "", "dans_pipedrive": "", "source": "SIRENE"})
+        if ds:
+            r["dirigeants"] = ds[:3]
+            out.append(r)
+    return out
+
+
 # ───────────────────────── orchestration des étapes 3 à 5 ─────────────────────────
 async def etapes_linkedin(job: dict, ressemblance, domaine):
     res = [r for r in job["resultats"] if r.get("statut") not in ("Radiée",) and not r.get("memoire")
@@ -958,21 +1034,25 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         # 3a. page LinkedIn : celle du site d'abord, sinon Company URL Finder
         for r in res:
             r["linkedin"], r["source_linkedin"] = (r.get("linkedin_site") or ""), ("site web" if r.get("linkedin_site") else "")
+            if not r["linkedin"] and r.get("linkedin_fichier"):       # page ajoutée à la main dans le fichier : prioritaire
+                r["linkedin"] = re.sub(r"/(home|about|people|posts|jobs)/?$", "/", r["linkedin_fichier"].split("?")[0])
+                r["source_linkedin"] = "fichier"
         manquants = [r for r in res if not r["linkedin"]]
         if manquants and PB_URL_FINDER:
             job["phase"] = f"Recherche des pages LinkedIn manquantes ({len(manquants)})…"
             try:
                 from v3 import nom_court
                 # nom sans mots de métier (« M141 production » → « m141 ») : le URL Finder cherche une page à ce nom
-                cherche = {id(r): (nom_court(r["nom"]) or r["nom"]) for r in manquants}
+                # on envoie aussi le nom complet : si le nom court ne donne rien, le nom complet peut donner la page
+                cherche = {id(r): [x for x in dict.fromkeys([nom_court(r["nom"]), r["nom"]]) if x] for r in manquants}
                 lignes = await pb.executer(c, PB_URL_FINDER, f"v3_{jid}_urlfinder", stop,
-                                           valeurs=list(dict.fromkeys(cherche.values())), colonne="Société")
+                                           valeurs=list(dict.fromkeys(v for vs in cherche.values() for v in vs)), colonne="Société")
                 par_nom = {}
                 for l in lignes:
                     if l.get("linkedinUrl"):
                         par_nom.setdefault((l.get("query") or "").strip().lower(), l["linkedinUrl"])
                 for r in manquants:
-                    u = par_nom.get(cherche[id(r)].strip().lower())
+                    u = next((par_nom[k] for k in (v.strip().lower() for v in cherche[id(r)]) if k in par_nom), "")
                     if u:
                         r["linkedin"], r["source_linkedin"] = u, "URL Finder (à contrôler)"
             except Exception as e:
@@ -1025,6 +1105,8 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         r["linkedin"] = ""
                         continue
                     r["controle_linkedin"] = "✅ page vérifiée (site ou nom)"
+                elif r["source_linkedin"] == "fichier":
+                    r["controle_linkedin"] = "✅ page indiquée dans le fichier"
                 else:
                     r["controle_linkedin"] = "✅ lien du site officiel"
                 r["linkedin_id"] = re.sub(r"\D", "", str(l.get("linkedinID") or l.get("mainCompanyID") or ""))
@@ -1134,10 +1216,15 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                     cid = re.sub(r"\D", "", str(l.get("companyId") or ""))[:12]
                     r = par_id.get(cid)                     # les homonymes (même nom, autre société) sont écartés ici
                     rl = role(l.get("title", ""))
-                    if not r or not rl:
+                    if not r:
+                        continue
+                    r["sn_vus"] = r.get("sn_vus", 0) + 1
+                    if not rl:
+                        r.setdefault("sn_ecartes", []).append(l.get("title", "") or "sans titre")
                         continue
                     if not en_france(l.get("location", "")):      # consigne : dirigeants basés en France uniquement
                         job["hors_france"] = job.get("hors_france", 0) + 1
+                        r["sn_hors_france"] = r.get("sn_hors_france", 0) + 1
                         continue
                     url_p = (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "")
                     if url_p and any(d["linkedin"].endswith(url_p.split("linkedin.com", 1)[-1]) for d in r.get("dirigeants", [])):
@@ -1149,6 +1236,13 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         "idf": bool(RE_IDF.search(l.get("location", "") or "")),
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),
                         "email": "", "source_email": "", "dans_pipedrive": ""})
+
+        # 3c. aucun dirigeant LinkedIn (pas de page, ou Sales Navigator vide) : représentants légaux SIRENE en secours
+        sirene = dirigeants_sirene(res)
+        if sirene:
+            journal(f"SIRENE : {sum(len(r['dirigeants']) for r in sirene)} représentants légaux repris pour {len(sirene)} société(s) "
+                    f"sans dirigeant LinkedIn ({', '.join(r['nom'] for r in sirene[:6])}{'…' if len(sirene) > 6 else ''})")
+        cibles = cibles + [r for r in sirene if r not in cibles]
 
         # 4a. plafond par code NAF (avocats : 5 dirigeants au plus), avant les contrôles CRM et la recherche d'e-mails
         ecartes = [(r["nom"], plafonner_dirigeants(r)) for r in cibles]
