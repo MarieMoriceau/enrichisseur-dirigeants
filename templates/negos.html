@@ -169,17 +169,7 @@ footer a{color:var(--tag-ink)}
         </label>
         <div class="or">ou collez une liste de sociétés, une par ligne</div>
         <textarea id="liste" name="liste" rows="4" placeholder="Poiscaille&#10;Easy Partner&#10;Je Rêve d'une Maison"></textarea>
-        <fieldset class="choix">
-          <legend>Ce que vous voulez</legend>
-          <label><input type="radio" name="perimetre" value="tout" checked>
-            <span><b>Dirigeants et e-mails</b><small>Le plus utile pour prospecter.</small></span></label>
-          <label><input type="radio" name="perimetre" value="dirigeants">
-            <span><b>Dirigeants, sans e-mails</b><small>Pour voir qui est qui avant de choisir.</small></span></label>
-          <label><input type="radio" name="perimetre" value="societes">
-            <span><b>Sociétés seulement</b><small>Adresse des bureaux et effectif réel.</small></span></label>
-          <label><input type="radio" name="perimetre" value="siren">
-            <span><b>Vérification rapide</b><small>SIREN, société active ou fermée. Une minute pour 50 sociétés.</small></span></label>
-        </fieldset>
+        <input type="hidden" name="perimetre" value="tout">      <!-- les négos veulent toujours la totale : dirigeants et e-mails -->
         <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(pour être prévenu quand c'est prêt)</span></label>
         <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
         <div class="row">
