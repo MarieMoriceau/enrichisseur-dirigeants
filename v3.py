@@ -1192,7 +1192,7 @@ def excel(job) -> bytes:
         "  (domiciliation ou ancien siège). 🏢 siège en région. ✅ cohérent : siège = bureaux. 🔍 à vérifier : bureaux non confirmés.",
         "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
         "  Seuls les dirigeants basés en France sont gardés (lieu LinkedIn), pour la liste comme pour les e-mails.",
-        "  Directeurs et producteurs sont gardés (rôle « 8 Autre »). Société sûre sans aucun dirigeant LinkedIn : ses représentants légaux SIRENE",
+        "  Les directeurs sont gardés (rôle « 8 Autre »). Société sûre sans aucun dirigeant LinkedIn : ses représentants légaux SIRENE",
         "  (président, gérant, DG) sont repris, et leur e-mail est cherché par Fullenrich (nom + site).",
         "  Niveaux recherchés : C-level, propriétaires et associés, VP, et directeurs jusqu'à 200 salariés LinkedIn. Tous les rôles",
         f"  sont enrichis en e-mail ({LI.EMAILS_MAX} dirigeants au plus par société, les rôles 1 à 5 d'abord).",

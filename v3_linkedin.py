@@ -286,8 +286,8 @@ def role(titre: str) -> str:
         return "6 Immobilier / Services généraux"
     if re.search(r"\b(cto|cmo|chro|drh|chief|vp|vice[- ]president)\b", x):
         return "7 Autre C-level / VP"
-    # avant le 03/11, les directeurs et producteurs renvoyés par Sales Navigator étaient écartés ici (Sombrero films : 0 contact)
-    if re.search(r"\b(directeur|directrice|director|head of|producteur|productrice|producer)\b", x) \
+    # avant le 03/11, les directeurs renvoyés par Sales Navigator étaient écartés ici (Sombrero films : 0 contact)
+    if re.search(r"\b(directeur|directrice|director|head of)\b", x) \
             and not re.search(r"\b(adjoint|adjointe|junior|stagiaire|intern)\b", x):
         return "8 Autre"
     return ""

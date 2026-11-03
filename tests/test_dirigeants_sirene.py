@@ -5,7 +5,7 @@ import v3_linkedin as LI
 
 
 def test_roles_elargis():
-    assert LI.role("Productrice") == "8 Autre" and LI.role("Directeur de production") == "8 Autre"
+    assert LI.role("Productrice") == "" and LI.role("Directeur de production") == "8 Autre"
     assert LI.role("Owner") == "5 Associé / Gérant"
     assert LI.role("Assistante de production") == "" and LI.role("Directeur adjoint") == ""
     assert LI.role("CEO") == "1 CEO / Président / DG"
