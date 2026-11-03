@@ -1244,6 +1244,12 @@ def excel(job) -> bytes:
     if li_:
         cols += [("Effectif LinkedIn", "effectif_linkedin"), ("Évolution effectif LinkedIn", "evolution_effectif"),
                  ("Croissance effectif (%)", "croissance_effectif"), ("Tranche déclarée", "tranche_linkedin"), ("Statut activité", "statut_activite")]
+    if li_:
+        for r in res:
+            r["pourquoi_contact"] = LI.pourquoi_pas_de_contact(r, job)
+        cols[2:2] = [("Dirigeants trouvés", "nb_dirigeants_xl"), ("Pourquoi pas de contact", "pourquoi_contact")]   # bien visible
+        for r in res:
+            r["nb_dirigeants_xl"] = len(r.get("dirigeants") or [])
     feuille(wb, "Résultats", [c for c, _ in cols], [[r.get(k_, "") for _, k_ in cols] for r in res])
 
     hub = [r for r in res if r["statut"] == "Active" and r["confiance"] == "haute" and r["domaine"]]

@@ -27,3 +27,14 @@ def test_pas_de_secours_si_linkedin_a_trouve():
     r = {"statut": "Active", "confiance": "haute", "dirigeants": [{"nom": "a"}],
          "dirigeants_insee": [{"nom": "B", "prenom": "C", "qualite": "Président"}]}
     assert LI.dirigeants_sirene([r]) == [] and len(r["dirigeants"]) == 1
+
+
+def test_pourquoi_pas_de_contact():
+    job = {"perimetre": "tout"}
+    p = LI.pourquoi_pas_de_contact
+    assert p({"dirigeants": [{"email": "a@b.fr"}]}, job) == ""
+    assert "Productrice" in p({"statut": "Active", "linkedin_id": "1", "sn_vus": 1, "sn_ecartes": ["Productrice"]}, job)
+    assert "aucune page LinkedIn" in p({"statut": "Active", "confiance": "moyenne"}, job)
+    assert "fermée" in p({"statut": "Radiée, à vérifier"}, job)
+    assert "déjà dans Pipedrive" in p({"dirigeants": [{"dans_pipedrive": "oui"}]}, job)
+    assert "sans dirigeants" in p({}, {"perimetre": "societes"})

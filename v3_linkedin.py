@@ -948,6 +948,44 @@ async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> di
     return out
 
 
+def pourquoi_pas_de_contact(r: dict, job: dict) -> str:
+    """Colonne « Pourquoi pas de contact » de l'Excel : vide quand la société a au moins un dirigeant avec e-mail."""
+    ds = r.get("dirigeants") or []
+    if any(d.get("email") for d in ds):
+        return ""
+    if r.get("memoire"):
+        return "reprise de la mémoire (traitée il y a moins de 6 mois) : contacts déjà proposés à l'époque"
+    perim = job.get("perimetre") or ("tout" if job.get("linkedin") else "siren")
+    if perim in ("siren", "societes"):
+        return "choix de lancement sans dirigeants"
+    if ds:
+        if all(d.get("dans_pipedrive") for d in ds):
+            return f"{len(ds)} dirigeant(s) trouvé(s), tous déjà dans Pipedrive"
+        if perim == "dirigeants":
+            return f"{len(ds)} dirigeant(s) trouvé(s), pas de recherche d'e-mail (choix de lancement)"
+        return f"{len(ds)} dirigeant(s) trouvé(s), aucun e-mail (ni Kaspr ni Fullenrich, ou adresse refusée par Captain Verify)"
+    if r.get("statut") == "Radiée" or str(r.get("statut", "")).startswith("Radiée"):
+        return "société fermée à l'INSEE"
+    if str(r.get("controle_nom", "")).startswith("⚠️ le site appartient"):
+        return "le site trouvé est celui d'une autre société"
+    if not r.get("linkedin_id"):
+        quoi = "page LinkedIn écartée (autre société)" if str(r.get("controle_linkedin", "")).startswith("❌") \
+            else "page LinkedIn non lue" if r.get("controle_linkedin") == "page non lue par le phantom" \
+            else "aucune page LinkedIn trouvée"
+        if r.get("confiance") != "haute":
+            return f"{quoi}, et société pas identifiée avec certitude (SIREN à vérifier) : pas de représentants SIRENE"
+        return f"{quoi}, et aucun président ou gérant (personne physique) dans SIRENE"
+    vus, ecartes, ailleurs = r.get("sn_vus", 0), r.get("sn_ecartes") or [], r.get("sn_hors_france", 0)
+    if not vus:
+        return "page LinkedIn trouvée, mais aucun dirigeant dans Sales Navigator"
+    morceaux = []
+    if ecartes:
+        morceaux.append(f"{len(ecartes)} poste(s) non retenu(s) : {', '.join(ecartes[:3])}")
+    if ailleurs:
+        morceaux.append(f"{ailleurs} basé(s) hors de France")
+    return f"Sales Navigator : {vus} personne(s) vue(s), " + " ; ".join(morceaux or ["aucune retenue"])
+
+
 QUALITES_SIRENE = [(r"president|directeur general|directrice generale", "1 CEO / Président / DG"),
                    (r"gerant|gerante|associe", "5 Associé / Gérant")]
 
@@ -1178,10 +1216,15 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                     cid = re.sub(r"\D", "", str(l.get("companyId") or ""))[:12]
                     r = par_id.get(cid)                     # les homonymes (même nom, autre société) sont écartés ici
                     rl = role(l.get("title", ""))
-                    if not r or not rl:
+                    if not r:
+                        continue
+                    r["sn_vus"] = r.get("sn_vus", 0) + 1
+                    if not rl:
+                        r.setdefault("sn_ecartes", []).append(l.get("title", "") or "sans titre")
                         continue
                     if not en_france(l.get("location", "")):      # consigne : dirigeants basés en France uniquement
                         job["hors_france"] = job.get("hors_france", 0) + 1
+                        r["sn_hors_france"] = r.get("sn_hors_france", 0) + 1
                         continue
                     url_p = (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "")
                     if url_p and any(d["linkedin"].endswith(url_p.split("linkedin.com", 1)[-1]) for d in r.get("dirigeants", [])):
