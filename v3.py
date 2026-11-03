@@ -502,6 +502,8 @@ async def insee(client: httpx.AsyncClient, siren: str) -> dict:
                 "naf": naf,
                 "activite": NAF.libelle(naf),       # libellé exact du code (69.10Z → Activités juridiques)
                 "secteur": SECTIONS_NAF.get(x.get("section_activite_principale") or "", ""),
+                "dirigeants": [{"nom": d.get("nom") or "", "prenom": d.get("prenoms") or "", "qualite": d.get("qualite") or ""}
+                               for d in (x.get("dirigeants") or []) if d.get("type_dirigeant") == "personne physique"],
             }
         except Exception:
             await asyncio.sleep(1)
@@ -1000,7 +1002,8 @@ async def _traiter(job_id: str, orgs: list):
                 ref = i_site or i_crm or i_nom
                 row.update({"raison_sociale": ref.get("raison_sociale", ""), "date_fermeture": ref.get("date_fermeture", ""),
                             "siege_insee": ref.get("siege", ""), "tranche_insee": ref.get("tranche_insee", ""),
-                            "naf": ref.get("naf", ""), "activite": ref.get("activite", ""), "secteur": ref.get("secteur", "")})
+                            "naf": ref.get("naf", ""), "activite": ref.get("activite", ""), "secteur": ref.get("secteur", ""),
+                            "dirigeants_insee": ref.get("dirigeants", [])})
                 # le site est-il bien celui de cette société ? (vaut aussi pour les sites du CRM, souvent faux)
                 if dom and s["site_joignable"] == "oui" and not adresse_seule:
                     compact = norm_nom(o["nom"]).replace(" ", "")
@@ -1189,6 +1192,8 @@ def excel(job) -> bytes:
         "  (domiciliation ou ancien siège). 🏢 siège en région. ✅ cohérent : siège = bureaux. 🔍 à vérifier : bureaux non confirmés.",
         "  Dirigeants : Sales Navigator filtré par l'identifiant LinkedIn de la société (les homonymes sont écartés).",
         "  Seuls les dirigeants basés en France sont gardés (lieu LinkedIn), pour la liste comme pour les e-mails.",
+        "  Directeurs et producteurs sont gardés (rôle « 8 Autre »). Société sûre sans aucun dirigeant LinkedIn : ses représentants légaux SIRENE",
+        "  (président, gérant, DG) sont repris, et leur e-mail est cherché par Fullenrich (nom + site).",
         "  Niveaux recherchés : C-level, propriétaires et associés, VP, et directeurs jusqu'à 200 salariés LinkedIn. Tous les rôles",
         f"  sont enrichis en e-mail ({LI.EMAILS_MAX} dirigeants au plus par société, les rôles 1 à 5 d'abord).",
         "  E-mails : un dirigeant déjà présent dans Pipedrive (même société) n'est pas enrichi ; sinon Kaspr, puis Fullenrich en secours.",

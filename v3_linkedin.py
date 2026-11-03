@@ -280,12 +280,16 @@ def role(titre: str) -> str:
                  r"directrice administrative|responsable administratif et financier|responsable administrative et financiere|"
                  r"finance director|financial director|director of finance|head of finance|vp finance)\b", x):
         return "4 CFO / DAF"
-    if re.search(r"\b(associe|associee|partner|gerant|gerante)\b", x):
+    if re.search(r"\b(associe|associee|partner|gerant|gerante|owner|co-owner|proprietaire)\b", x):
         return "5 Associé / Gérant"
     if re.search(r"immobili|real estate|workplace|facilit|services generaux|environnement de travail|office manager", x):
         return "6 Immobilier / Services généraux"
     if re.search(r"\b(cto|cmo|chro|drh|chief|vp|vice[- ]president)\b", x):
         return "7 Autre C-level / VP"
+    # avant le 03/11, les directeurs et producteurs renvoyés par Sales Navigator étaient écartés ici (Sombrero films : 0 contact)
+    if re.search(r"\b(directeur|directrice|director|head of|producteur|productrice|producer)\b", x) \
+            and not re.search(r"\b(adjoint|adjointe|junior|stagiaire|intern)\b", x):
+        return "8 Autre"
     return ""
 
 
@@ -940,6 +944,36 @@ async def fullenrich_emails(c: httpx.AsyncClient, contacts: list, journal) -> di
     return out
 
 
+QUALITES_SIRENE = [(r"president|directeur general|directrice generale", "1 CEO / Président / DG"),
+                   (r"gerant|gerante|associe", "5 Associé / Gérant")]
+
+
+def dirigeants_sirene(res: list) -> list:
+    """Sociétés actives de confiance haute sans aucun dirigeant LinkedIn : on reprend leurs représentants légaux
+    (personnes physiques) de SIRENE. Pas de profil LinkedIn : l'e-mail est cherché par Fullenrich (nom + domaine)."""
+    out = []
+    for r in res:
+        if r.get("dirigeants") or r.get("statut") != "Active" or r.get("confiance") != "haute":
+            continue
+        ds = []
+        for p in r.get("dirigeants_insee") or []:
+            q = _sans_accents(p.get("qualite", ""))
+            rl = next((v for m, v in QUALITES_SIRENE if re.search(m, q) and "delegue" not in q), "")
+            if not rl and "delegue" in q:
+                rl = "1 CEO / Président / DG"
+            if not rl or not p.get("nom"):
+                continue
+            prenom = (p.get("prenom") or "").split()[0].title() if p.get("prenom") else ""
+            nom = p["nom"].title()
+            ds.append({"prenom": prenom, "nom": nom, "nom_complet": f"{prenom} {nom}".strip(),
+                       "fonction": f"{p.get('qualite', '')} (SIRENE)", "role": rl, "lieu": "", "idf": False,
+                       "linkedin": "", "email": "", "source_email": "", "dans_pipedrive": "", "source": "SIRENE"})
+        if ds:
+            r["dirigeants"] = ds[:3]
+            out.append(r)
+    return out
+
+
 # ───────────────────────── orchestration des étapes 3 à 5 ─────────────────────────
 async def etapes_linkedin(job: dict, ressemblance, domaine):
     res = [r for r in job["resultats"] if r.get("statut") not in ("Radiée",) and not r.get("memoire")
@@ -1149,6 +1183,13 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                         "idf": bool(RE_IDF.search(l.get("location", "") or "")),
                         "linkedin": (l.get("defaultProfileUrl") or l.get("linkedInProfileUrl") or "").replace("https://linkedin.com", "https://www.linkedin.com"),
                         "email": "", "source_email": "", "dans_pipedrive": ""})
+
+        # 3c. aucun dirigeant LinkedIn (pas de page, ou Sales Navigator vide) : représentants légaux SIRENE en secours
+        sirene = dirigeants_sirene(res)
+        if sirene:
+            journal(f"SIRENE : {sum(len(r['dirigeants']) for r in sirene)} représentants légaux repris pour {len(sirene)} société(s) "
+                    f"sans dirigeant LinkedIn ({', '.join(r['nom'] for r in sirene[:6])}{'…' if len(sirene) > 6 else ''})")
+        cibles = cibles + [r for r in sirene if r not in cibles]
 
         # 4a. plafond par code NAF (avocats : 5 dirigeants au plus), avant les contrôles CRM et la recherche d'e-mails
         ecartes = [(r["nom"], plafonner_dirigeants(r)) for r in cibles]
