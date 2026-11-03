@@ -940,14 +940,17 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         if manquants and PB_URL_FINDER:
             job["phase"] = f"Recherche des pages LinkedIn manquantes ({len(manquants)})…"
             try:
+                from v3 import nom_court
+                # nom sans mots de métier (« M141 production » → « m141 ») : le URL Finder cherche une page à ce nom
+                cherche = {id(r): (nom_court(r["nom"]) or r["nom"]) for r in manquants}
                 lignes = await pb.executer(c, PB_URL_FINDER, f"v3_{jid}_urlfinder", stop,
-                                           valeurs=[r["nom"] for r in manquants], colonne="Société")
+                                           valeurs=list(dict.fromkeys(cherche.values())), colonne="Société")
                 par_nom = {}
                 for l in lignes:
                     if l.get("linkedinUrl"):
                         par_nom.setdefault((l.get("query") or "").strip().lower(), l["linkedinUrl"])
                 for r in manquants:
-                    u = par_nom.get(r["nom"].strip().lower())
+                    u = par_nom.get(cherche[id(r)].strip().lower())
                     if u:
                         r["linkedin"], r["source_linkedin"] = u, "URL Finder (à contrôler)"
             except Exception as e:

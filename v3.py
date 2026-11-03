@@ -516,6 +516,23 @@ def norm_nom(x: str) -> str:
     return " ".join(x.split())
 
 
+# Mots de métier souvent ajoutés au nom dans le CRM (« M141 production », « Gibert avocats ») mais absents de la raison
+# sociale : on les retire pour chercher dans SIRENE et dans le URL Finder si le nom complet ne donne rien.
+MOTS_METIER = r"(production|productions|prod|films?|cabinet|avocats?|conseils?|consulting|agence|societe|cie|compagnie)"
+
+
+def nom_court(x: str) -> str:
+    """Nom sans formes juridiques ni mots de métier en début ou en fin (« Cabinet Perazzone Brun », « M141 production ») ;
+    un mot de métier au milieu fait partie du nom (« Les films du losange »). Vide si rien de distinctif ne reste."""
+    mots, metier = norm_nom(x).split(), re.compile(MOTS_METIER)
+    while mots and metier.fullmatch(mots[0]):
+        mots.pop(0)
+    while mots and metier.fullmatch(mots[-1]):
+        mots.pop()
+    c = " ".join(mots)
+    return c if len(c.replace(" ", "")) >= 2 and c != norm_nom(x) else ""
+
+
 def ressemblance(a: str, b: str) -> float:
     a, b = norm_nom(a), norm_nom(b)
     if not a or not b:
@@ -557,19 +574,26 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
 
 
 async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
-    """SIREN par recherche du nom dans SIRENE (API recherche-entreprises, gratuite)."""
+    """SIREN par recherche du nom dans SIRENE (API recherche-entreprises, gratuite).
+    Rien avec le nom complet : nouvel essai avec le nom sans mots de métier (« M141 production » → « M141 »)."""
     try:
-        bons = []
-        for code in ([cp, ""] if cp else [""]):     # d'abord avec le code postal, puis sans (société qui a déménagé)
-            p = {"q": nom, "per_page": 5}
-            if code:
-                p["code_postal"] = code
-            r = await _insee_get(api, p)
-            res = r.json().get("results", []) if r is not None and r.status_code == 200 else []
-            bons = [x for x in res if ressemblance(nom, x.get("nom_raison_sociale") or x.get("nom_complet") or "") >= 0.85]
+        bons, court = [], nom_court(nom)
+        raison = lambda x: x.get("nom_raison_sociale") or x.get("nom_complet") or ""
+        for q in [nom] + ([court] if court else []):
+            for code in ([cp, ""] if cp else [""]):     # d'abord avec le code postal, puis sans (société qui a déménagé)
+                p = {"q": q, "per_page": 5}
+                if code:
+                    p["code_postal"] = code
+                r = await _insee_get(api, p)
+                res = r.json().get("results", []) if r is not None and r.status_code == 200 else []
+                bons = [x for x in res if ressemblance(q, raison(x)) >= (0.85 if q == nom else 0.9)]
+                if bons:
+                    break
             if bons:
                 break
-        bons.sort(key=lambda x: (x.get("etat_administratif") != "A",))
+        # raison sociale identique au nom cherché d'abord (« M141 » avant « M141 DIGITAL LAB »), puis sociétés actives
+        cible = {norm_nom(nom), court}
+        bons.sort(key=lambda x: (norm_nom(raison(x)) not in cible, x.get("etat_administratif") != "A"))
         if bons:
             return {"siren": bons[0].get("siren", ""), "nb": len(bons),
                     "raison": bons[0].get("nom_raison_sociale") or bons[0].get("nom_complet") or ""}
