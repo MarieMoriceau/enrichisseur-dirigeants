@@ -13,6 +13,10 @@ TERRAIN = [{"nom": "Kearney", "nom_pd": "", "id": "", "adresse": "8 rue Lamennai
 def test_adresse_complete():
     assert T.adresse_complete({"adresse": "8 rue Lamennais", "cp": "75008"}) == "8 rue Lamennais 75008 Paris"
     assert T.adresse_complete({"adresse": "1 rue X 92100 Boulogne", "cp": "92100"}) == "1 rue X 92100 Boulogne"
+    assert T.adresse_complete({"adresse": "2 rue des Italiens, 2ème arrondissement", "cp": ""}) == "2 rue des Italiens 75002 Paris"
+    assert T.adresse_complete({"adresse": "8 rue d'Athènes, 8e", "cp": ""}) == "8 rue d'Athènes 75008 Paris"
+    assert T.adresse_complete({"adresse": "8 rue de Choiseul Paris", "cp": ""}) == "8 rue de Choiseul"
+    assert T.adresse_complete({"adresse": "27 boulevard des Italiens", "cp": ""}) == "27 boulevard des Italiens"
 
 
 def test_appariement():
@@ -23,3 +27,8 @@ def test_appariement():
     t, c = T.apparier("Sweet", "", TERRAIN, v3.ressemblance)
     assert t is None and "plusieurs adresses" in c
     assert T.apparier("Splio", "", TERRAIN, v3.ressemblance) == (None, "absente de Prospection terrain")
+
+
+def test_pas_d_inclusion_de_mots():
+    assert not T.meme_nom("Gibert avocats", "Avocats") and not T.meme_nom("Briand avocats", "Avocats")
+    assert T.meme_nom("Rubix consulting", "Rubix") and T.meme_nom("Hermès", "HERMES") and T.meme_nom("Mgtech", "MG Tech")

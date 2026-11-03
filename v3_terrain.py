@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 import v3_linkedin as LI
 import v3_memoire as MEM
+import v3_sirene as SIRENE
 import v3_validation as VALID
 
 router = APIRouter()
@@ -47,10 +48,18 @@ async def lire_terrain(c: httpx.AsyncClient) -> list:
 
 
 def adresse_complete(t: dict) -> str:
+    """Adresse terrain avec code postal : celui de la fiche, sinon l'arrondissement écrit en toutes lettres
+    (« 2ème arrondissement », « 8e ») ; sans rien de tout ça, le code postal est cherché ensuite dans la BAN."""
     a = re.sub(r"\s+", " ", t.get("adresse") or "").strip(" ,")
     cp = (t.get("cp") or "").strip()
     if not a:
         return ""
+    arr = re.search(r",?\s*\b(\d{1,2})\s*(?:e|er|ème|eme|è)\b(?:\s*arrondissement)?\s*$", a, re.I)
+    if not cp and arr and 1 <= int(arr.group(1)) <= 20:
+        cp = f"750{int(arr.group(1)):02d}"
+    if arr and cp:
+        a = a[:arr.start()].strip(" ,")
+    a = re.sub(r"\s+paris$", "", a, flags=re.I)
     if cp and not re.search(r"\b\d{5}\b", a):
         a += f" {cp}"
     m = re.search(r"\b(75|92|93|94)\d{3}\b", a)
@@ -59,13 +68,25 @@ def adresse_complete(t: dict) -> str:
     return a
 
 
+def meme_nom(a: str, b: str) -> bool:
+    """Même société : noms identiques (sans accents, espaces ni mots de métier) ou presque (fautes de frappe).
+    Pas d'inclusion de mots : « Gibert avocats » ne doit pas prendre la fiche « Avocats »."""
+    from v3 import norm_nom, nom_court
+    from difflib import SequenceMatcher
+    if not a or not b:
+        return False
+    ca, cb = norm_nom(a).replace(" ", ""), norm_nom(b).replace(" ", "")
+    ka, kb = nom_court(a).replace(" ", "") or ca, nom_court(b).replace(" ", "") or cb
+    return bool(ca) and (ca == cb or ka == kb or SequenceMatcher(None, ca, cb).ratio() >= 0.9)
+
+
 def apparier(nom: str, id_pd: str, terrain: list, ressemblance) -> tuple:
     """(fiche terrain, comment) ; (None, raison) si rien ou plusieurs adresses différentes."""
     if id_pd:
         par_id = [t for t in terrain if t["id"] == id_pd and t["adresse"]]
         if par_id:
             return max(par_id, key=lambda t: t["date"]), "ID Pipedrive"
-    proches = [t for t in terrain if t["adresse"] and max(ressemblance(nom, t["nom"]), ressemblance(nom, t["nom_pd"] or "")) >= 0.92]
+    proches = [t for t in terrain if t["adresse"] and (meme_nom(nom, t["nom"]) or meme_nom(nom, t["nom_pd"]))]
     if not proches:
         return None, "absente de Prospection terrain"
     adresses = {LI.cle_adresse(adresse_complete(t)) or adresse_complete(t).lower() for t in proches}
@@ -97,9 +118,15 @@ async def _tourner(lancements: list, confirmer: bool):
                         ligne["action"] = comment
                     else:
                         a = adresse_complete(t)
+                        if a and not re.search(r"\b\d{5}\b", a):     # pas de code postal : BAN, guidée par les autres adresses connues
+                            autres = [x for x in (data.get("adresse_crm"), data.get("adresse_site"), data.get("adresse_linkedin"),
+                                                  data.get("adresse_google"), data.get("siege_insee")) if x]
+                            a, _ = await SIRENE.completer_adresse(a, autres + ["1 rue de la Paix 75002 Paris"])   # prospection terrain : Paris
                         ligne.update(adresse_terrain=a, trouvee_par=f"{comment} ({t['nego']}, visite du {t['date'] or '?'})")
-                        if LI.meme_adresse(a, data.get("adresse_notion") or "") or a == data.get("adresse_notion"):
+                        if data.get("adresse_notion"):                 # déjà donnée par le fichier : on n'y touche pas
                             ligne["action"] = "déjà renseignée"
+                        elif not re.search(r"\b\d{5}\b", a):
+                            ligne["action"] = "code postal introuvable : non reportée"
                         else:
                             ligne["action"] = "à reporter" if not confirmer else "reportée"
                             if confirmer:
