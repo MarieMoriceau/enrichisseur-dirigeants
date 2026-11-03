@@ -41,6 +41,8 @@ import v3_export as EXPORT
 router.include_router(EXPORT.router)             # export des validations au format d'import HubSpot
 import v3_captain as CAPTAIN
 router.include_router(CAPTAIN.router)            # Captain Verify : référentiel, vérification des e-mails
+import v3_terrain as TERRAIN
+router.include_router(TERRAIN.router)            # adresse physique reprise de la base Prospection terrain
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
