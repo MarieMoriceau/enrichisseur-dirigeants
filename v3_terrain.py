@@ -47,24 +47,83 @@ async def lire_terrain(c: httpx.AsyncClient) -> list:
         curseur = j.get("next_cursor")
 
 
-def adresse_complete(t: dict) -> str:
-    """Adresse terrain avec code postal : celui de la fiche, sinon l'arrondissement écrit en toutes lettres
-    (« 2ème arrondissement », « 8e ») ; sans rien de tout ça, le code postal est cherché ensuite dans la BAN."""
+def rue_et_cp(t: dict) -> tuple:
+    """(« 8 rue d'Athènes », code postal écrit par le négo ou déduit de « 8e » / « 2ème arrondissement »)."""
     a = re.sub(r"\s+", " ", t.get("adresse") or "").strip(" ,")
     cp = (t.get("cp") or "").strip()
-    if not a:
-        return ""
+    m = re.search(r"\b(\d{5})\b", a)
+    if m:
+        cp, a = cp or m.group(1), (a[:m.start()] + a[m.end():]).strip(" ,")
     arr = re.search(r",?\s*\b(\d{1,2})\s*(?:e|er|ème|eme|è)\b(?:\s*arrondissement)?\s*$", a, re.I)
-    if not cp and arr and 1 <= int(arr.group(1)) <= 20:
-        cp = f"750{int(arr.group(1)):02d}"
-    if arr and cp:
-        a = a[:arr.start()].strip(" ,")
-    a = re.sub(r"\s+paris$", "", a, flags=re.I)
-    if cp and not re.search(r"\b\d{5}\b", a):
-        a += f" {cp}"
-    m = re.search(r"\b(75|92|93|94)\d{3}\b", a)
-    if m and m.group(1) == "75" and "paris" not in a.lower():
-        a += " Paris"
+    if arr and 1 <= int(arr.group(1)) <= 20:
+        cp, a = cp or f"750{int(arr.group(1)):02d}", a[:arr.start()].strip(" ,")
+    a = re.sub(r"[\s,]+paris$", "", a, flags=re.I).strip(" ,")
+    return a, cp
+
+
+def adresse_complete(t: dict) -> str:
+    """Adresse avec le code postal écrit (ou l'arrondissement) ; sans code postal, la rue seule."""
+    brut = re.sub(r"\s+", " ", t.get("adresse") or "").strip(" ,")
+    if re.search(r"\b\d{5}\b", brut):                  # adresse déjà complète : telle quelle
+        return brut
+    rue, cp = rue_et_cp(t)
+    if not rue:
+        return ""
+    return f"{rue} {cp}" + (" Paris" if cp.startswith("75") else "") if cp else rue
+
+
+_BAN: dict = {}
+
+
+async def ban_paris(rue: str) -> str:
+    """Adresse officielle (BAN) d'un numéro + rue à Paris : corrige le code postal (« 8 rue d'Athènes, 8e » → 75009)
+    et les fautes (« rue d'Ambroise » → Rue d'Amboise). "" si la BAN hésite ou ne répond pas."""
+    from difflib import SequenceMatcher
+    if rue in _BAN:
+        return _BAN[rue]
+    num = re.match(r"\s*(\d+)", rue)
+    if not num:
+        return ""
+    voie = LI._sans_accents(rue[num.end():]).strip(" ,")
+    feats = None
+    async with httpx.AsyncClient(timeout=10) as c:
+        for essai in range(3):                         # la BAN refuse parfois une rafale : on réessaie
+            for url in SIRENE.BAN_URLS:
+                try:
+                    r = await c.get(url, params={"q": f"{rue} Paris", "limit": 10, "type": "housenumber"})
+                    if r.status_code == 200:
+                        feats = r.json().get("features", [])
+                        break
+                except (httpx.HTTPError, ValueError):
+                    continue
+            if feats is not None:
+                break
+            await asyncio.sleep(1 + essai)
+    if feats is None:
+        return ""                                      # BAN muette : pas mis en cache, on retentera
+    bons = {}
+    for f in feats:
+        p = f.get("properties", {})
+        cp = str(p.get("postcode") or "")
+        if not cp.startswith("75") or str(p.get("housenumber", "")).split()[0:1] != [num.group(1)]:
+            continue
+        if SequenceMatcher(None, voie, LI._sans_accents(p.get("street", ""))).ratio() >= 0.75:
+            bons.setdefault(cp, f"{p.get('housenumber')} {p.get('street')} {cp} Paris")
+    _BAN[rue] = next(iter(bons.values())) if len(bons) == 1 else ""
+    return _BAN[rue]
+
+
+async def adresse_paris(t: dict, autres: list) -> str:
+    """Adresse terrain complète : BAN d'abord (code postal juste, fautes corrigées), sinon le code postal écrit par le négo,
+    sinon le code postal des autres adresses connues de la même rue."""
+    rue, cp = rue_et_cp(t)
+    if not rue:
+        return ""
+    if (officielle := await ban_paris(rue)):
+        return officielle
+    if cp:
+        return adresse_complete(t)
+    a, _ = await SIRENE.completer_adresse(rue, autres + ["1 rue de la Paix 75002 Paris"])
     return a
 
 
@@ -77,7 +136,9 @@ def meme_nom(a: str, b: str) -> bool:
         return False
     ca, cb = norm_nom(a).replace(" ", ""), norm_nom(b).replace(" ", "")
     ka, kb = nom_court(a).replace(" ", "") or ca, nom_court(b).replace(" ", "") or cb
-    return bool(ca) and (ca == cb or ka == kb or SequenceMatcher(None, ca, cb).ratio() >= 0.9)
+    if ca == cb or (ka and ka == kb):
+        return bool(ca)
+    return min(len(ca), len(cb)) >= 8 and SequenceMatcher(None, ca, cb).ratio() >= 0.9   # « ERMES » ≠ « Hermès »
 
 
 def apparier(nom: str, id_pd: str, terrain: list, ressemblance) -> tuple:
@@ -117,11 +178,9 @@ async def _tourner(lancements: list, confirmer: bool):
                     if not t:
                         ligne["action"] = comment
                     else:
-                        a = adresse_complete(t)
-                        if a and not re.search(r"\b\d{5}\b", a):     # pas de code postal : BAN, guidée par les autres adresses connues
-                            autres = [x for x in (data.get("adresse_crm"), data.get("adresse_site"), data.get("adresse_linkedin"),
-                                                  data.get("adresse_google"), data.get("siege_insee")) if x]
-                            a, _ = await SIRENE.completer_adresse(a, autres + ["1 rue de la Paix 75002 Paris"])   # prospection terrain : Paris
+                        autres = [x for x in (data.get("adresse_crm"), data.get("adresse_site"), data.get("adresse_linkedin"),
+                                              data.get("adresse_google"), data.get("siege_insee")) if x]
+                        a = await adresse_paris(t, autres)
                         ligne.update(adresse_terrain=a, trouvee_par=f"{comment} ({t['nego']}, visite du {t['date'] or '?'})")
                         if data.get("adresse_notion"):                 # déjà donnée par le fichier : on n'y touche pas
                             ligne["action"] = "déjà renseignée"
