@@ -163,9 +163,31 @@ def verdict_domiciliation(r: dict, dec: dict) -> dict:
     return {"verdict_domiciliation": "🔍 À vérifier", "raison_domiciliation": "siège ≠ adresse trouvée, mais celle-ci n'est pas confirmée"}
 
 
+STATUT = None          # branché par v3.py : recalcule statut et confiance quand de nouvelles adresses arrivent
+
+
+def siege_confirme(r: dict) -> str:
+    """Sources (site, LinkedIn, Google) dont l'adresse est celle du siège INSEE. "" si aucune."""
+    siege = (r.get("siege_insee") or "").strip()
+    if not cle_adresse(siege) or str(r.get("controle_nom", "")).startswith("⚠️"):
+        return ""
+    li = (r.get("adresse_linkedin") or "").strip()
+    if li and li.rsplit(",", 1)[-1].strip().upper() not in ("FR", "FRANCE", ""):
+        li = ""
+    src = [("site", a) for a in (r.get("adresses_site_liste") or [r.get("adresse_site") or ""])]
+    src += [("LinkedIn", li), ("Google", r.get("adresse_google") or ""), ("terrain", r.get("adresse_notion") or "")]
+    noms = []
+    for n, a in src:
+        if a and n not in noms and meme_adresse(siege, a):
+            noms.append(n)
+    return " + ".join(noms)
+
+
 def decider_adresse(r: dict) -> dict:
     d = _decider_adresse(r)
     d.update(verdict_domiciliation(r, d))
+    if STATUT and r.get("siren_nom") and not r.get("siren_site") and not r.get("siren_crm"):
+        d["statut"], d["action"], d["confiance"] = STATUT(r)
     return d
 
 
@@ -940,14 +962,17 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         if manquants and PB_URL_FINDER:
             job["phase"] = f"Recherche des pages LinkedIn manquantes ({len(manquants)})…"
             try:
+                from v3 import nom_court
+                # nom sans mots de métier (« M141 production » → « m141 ») : le URL Finder cherche une page à ce nom
+                cherche = {id(r): (nom_court(r["nom"]) or r["nom"]) for r in manquants}
                 lignes = await pb.executer(c, PB_URL_FINDER, f"v3_{jid}_urlfinder", stop,
-                                           valeurs=[r["nom"] for r in manquants], colonne="Société")
+                                           valeurs=list(dict.fromkeys(cherche.values())), colonne="Société")
                 par_nom = {}
                 for l in lignes:
                     if l.get("linkedinUrl"):
                         par_nom.setdefault((l.get("query") or "").strip().lower(), l["linkedinUrl"])
                 for r in manquants:
-                    u = par_nom.get(r["nom"].strip().lower())
+                    u = par_nom.get(cherche[id(r)].strip().lower())
                     if u:
                         r["linkedin"], r["source_linkedin"] = u, "URL Finder (à contrôler)"
             except Exception as e:
