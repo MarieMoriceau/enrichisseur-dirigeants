@@ -518,7 +518,7 @@ def norm_nom(x: str) -> str:
 
 # Mots de métier souvent ajoutés au nom dans le CRM (« M141 production », « Gibert avocats ») mais absents de la raison
 # sociale : on les retire pour chercher dans SIRENE et dans le URL Finder si le nom complet ne donne rien.
-MOTS_METIER = r"(production|productions|prod|films?|cabinet|avocats?|conseils?|consulting|agence|societe|cie|compagnie)"
+MOTS_METIER = r"(production|productions|prod|films?|cabinet|avocats?|conseils?|consulting|agence|societe|cie|compagnie|immobilier|groupe)"
 
 
 def nom_court(x: str) -> str:
@@ -573,7 +573,7 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
     return "", "recherche web indisponible (clé API absente)"
 
 
-async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
+async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str, adresse: str = "") -> dict:
     """SIREN par recherche du nom dans SIRENE (API recherche-entreprises, gratuite).
     Rien avec le nom complet : nouvel essai avec le nom sans mots de métier (« M141 production » → « M141 »)."""
     try:
@@ -593,7 +593,9 @@ async def insee_par_nom(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
                 break
         # raison sociale identique au nom cherché d'abord (« M141 » avant « M141 DIGITAL LAB »), puis sociétés actives
         cible = {norm_nom(nom), court}
-        bons.sort(key=lambda x: (norm_nom(raison(x)) not in cible, x.get("etat_administratif") != "A"))
+        # homonymes : celui dont le siège est à l'adresse connue (terrain, CRM) passe devant
+        au_bon_endroit = lambda x: bool(adresse) and LI.meme_adresse(adresse, (x.get("siege") or {}).get("adresse") or "")
+        bons.sort(key=lambda x: (not au_bon_endroit(x), norm_nom(raison(x)) not in cible, x.get("etat_administratif") != "A"))
         if bons:
             return {"siren": bons[0].get("siren", ""), "nb": len(bons),
                     "raison": bons[0].get("nom_raison_sociale") or bons[0].get("nom_complet") or ""}
@@ -634,8 +636,8 @@ def _statut(row: dict) -> tuple:
         # « le nom colle » : raison sociale = nom de la société ET siège INSEE = adresse du site, de LinkedIn ou de Google
         rs = row.get("raison_sociale", "")
         n, c = norm_nom(row.get("nom", "")).replace(" ", ""), nom_court(row.get("nom", "")).replace(" ", "")
-        r_ = norm_nom(rs).replace(" ", "")
-        colle = bool(r_) and (r_ in (n, c) or SequenceMatcher(None, r_, n).ratio() >= 0.9)   # « Ludovic Georgen » ≠ « Georgen »
+        r_, rc = norm_nom(rs).replace(" ", ""), nom_court(rs).replace(" ", "")
+        colle = bool(r_) and (bool({r_, rc} & {n, c} - {""}) or SequenceMatcher(None, r_, n).ratio() >= 0.9)   # « Ludovic Georgen » ≠ « Georgen »
         ou = LI.siege_confirme(row) if colle and e == "active" else ""
         if ou:
             return st, f"✅ SIREN trouvé par le nom, confirmé : même raison sociale et siège = adresse {ou}", "haute"
@@ -726,12 +728,13 @@ def lire_fichier(nom: str, data: bytes) -> list:
     c_site = col("site internet") or col("site web") or col("website") or col("site")
     c_site2 = col("site web") if c_site and "internet" in c_site.lower() else None
     c_siren = col("siren")
-    c_notion = col("adresse notion") or col("adresse des locaux") or col("adresse locaux")
+    c_notion = (col("adresse notion") or col("adresse des locaux") or col("adresse locaux")
+                or col("adresse physique") or col("terrain", exclure=("personne",)))     # fichier de prospection terrain
     c_quali = col("base quali")
     c_bail = col("date debut de bail") or col("date début de bail") or col("debut de bail", exclure=("annee", "année")) \
         or col("début de bail", exclure=("annee", "année"))
     c_flex = col("operateur flex") or col("opérateur flex") or col("flexoffice")
-    c_adr = col("adresse", exclure=("verifi", "vérifi", "notion", "locaux", "personne")) or col("address", exclure=("personne",))
+    c_adr = col("adresse", exclure=("verifi", "vérifi", "notion", "locaux", "personne", "physique", "terrain")) or col("address", exclure=("personne",))
     # export « personnes » de Pipedrive : une ligne par personne, numéro de téléphone de chaque contact
     entetes = list(lignes[0].keys()) if lignes else []
     c_p_tels = [h for h in entetes if "personne" in h.lower() and any(m in h.lower() for m in ("téléphone", "telephone", "phone", "mobile", "tél"))]
@@ -750,13 +753,15 @@ def lire_fichier(nom: str, data: bytes) -> list:
                 par_cle[cle].setdefault("tels_crm", []).append(pers)
             continue
         siren = re.sub(r"\D", "", l.get(c_siren) or "")[:9] if c_siren else ""
+        cp_l, ville_l = _cp(l, c_cp, c_adr), (l.get(c_ville) or "").strip() if c_ville else ""
+        avec_cp = lambda a: a if not a or re.search(r"\b\d{5}\b", a) else " ".join(x for x in (a, cp_l, ville_l) if x)
         out.append({"id": (l.get(c_id) or "").replace(".0", "") if c_id else "",
                     "nom": l.get(c_nom, "").strip(),
                     "site_crm": ((l.get(c_site) or "").strip() or (l.get(c_site2) or "").strip()) if c_site else "",
                     "siren_crm": siren if luhn_ok(siren) else "",
-                    "adresse_crm": (l.get(c_adr) or "").strip() if c_adr else "",
-                    "cp": _cp(l, c_cp, c_adr), "ville": (l.get(c_ville) or "").strip() if c_ville else "",
-                    **({"adresse_notion": v} if c_notion and (v := (l.get(c_notion) or "").strip()) else {}),
+                    "adresse_crm": avec_cp((l.get(c_adr) or "").strip() if c_adr else ""),
+                    "cp": cp_l, "ville": ville_l,
+                    **({"adresse_notion": avec_cp(v)} if c_notion and (v := (l.get(c_notion) or "").strip()) else {}),
                     **({"base_quali_crm": q} if c_quali and (q := str(l.get(c_quali) or "").strip()) else {}),
                     **({"debut_bail_crm": b} if c_bail and (b := date_bail(l.get(c_bail))) else {}),
                     **({"flex_crm": x} if c_flex and (x := str(l.get(c_flex) or "").strip()) else {}),
@@ -951,7 +956,7 @@ async def _traiter(job_id: str, orgs: list):
                 sirene = {}
                 if not dom and not o["siren_crm"]:
                     async with api_sem:
-                        sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""))
+                        sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""), o.get("adresse_notion") or o.get("adresse_crm", ""))
                 if not dom and not adresse_seule:
                     dom, src = await chercher_domaine(api, o["nom"], o.get("cp", ""), o.get("ville", ""),
                                                       sirene.get("raison", ""), sirene.get("siren", "") or o["siren_crm"])
@@ -985,7 +990,7 @@ async def _traiter(job_id: str, orgs: list):
                         i_crm = await insee(api, o["siren_crm"])
                     i_nom = {}
                     if not s["siren_site"] and not o["siren_crm"] and not sirene and not adresse_seule:
-                        sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""))
+                        sirene = await insee_par_nom(api, o["nom"], o.get("cp", ""), o.get("adresse_notion") or o.get("adresse_crm", ""))
                     if sirene.get("siren") and not s["siren_site"]:
                         i_nom = await insee(api, sirene["siren"])
                         row.update({"siren_nom": sirene["siren"], "etat_nom": i_nom.get("etat", ""),

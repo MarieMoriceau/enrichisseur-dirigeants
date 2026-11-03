@@ -175,7 +175,7 @@ def siege_confirme(r: dict) -> str:
     if li and li.rsplit(",", 1)[-1].strip().upper() not in ("FR", "FRANCE", ""):
         li = ""
     src = [("site", a) for a in (r.get("adresses_site_liste") or [r.get("adresse_site") or ""])]
-    src += [("LinkedIn", li), ("Google", r.get("adresse_google") or "")]
+    src += [("LinkedIn", li), ("Google", r.get("adresse_google") or ""), ("terrain", r.get("adresse_notion") or "")]
     noms = []
     for n, a in src:
         if a and n not in noms and meme_adresse(siege, a):
