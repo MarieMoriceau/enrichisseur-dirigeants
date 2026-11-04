@@ -166,6 +166,8 @@ ALIAS_FLEX = {"lnb": "Les Nouveaux Bureaux", "come work": "Come and Work", "come
               "come and work": "Come and Work", "wework": "WeWork", "we work": "WeWork", "reflexe": "Reflex"}
 # Doute du négo (« je ne sais pas s'ils ont un plateau de Deskeo ») : sans « flex » dans Type de société, on ne retient pas l'opérateur
 DOUTES = ("sais pas", "sait pas", "peut etre", "pas sur", "pas sure")
+# Classée flex mais ce n'est peut-être pas un opérateur (sous-location, « soit c'est un opérateur soit… ») : on ne coche rien
+PAS_FLEX_SUR = ("sous loc", "sous location", "soit c est", "soit cest")
 
 
 def operateur_remarque(texte: str) -> str:
@@ -192,7 +194,12 @@ def flex_terrain(t: dict, terrain: list) -> tuple:
             continue
         return True, op, x
     x = next((x for x in memes if (x.get("type") or "").strip().lower() == "flex"), None)
+    if x and any(f" {d} " in f" {SIRENE._norm(x.get('remarques', ''))} " for d in PAS_FLEX_SUR):
+        return False, "", None
     return (True, "", x) if x else (False, "", None)
+
+
+AUCUN = "(aucun)"      # même valeur que « retiré à la main » : SIRENE ne repropose plus d'opérateur
 
 
 def _canon(op: str) -> str:
@@ -216,8 +223,10 @@ def decision_flex(s: dict, flex: bool, op: str, source: str) -> tuple:
             props["Opérateur flex"] = op
             props["_source"] = source
             faits.append(f"opérateur {op}" + (f" (remplace {actuel})" if actuel else ""))
-        elif _canon(actuel) != _canon(op):
-            faits.append(f"opérateur déjà noté ({actuel}) : non touché, le terrain dit {op}")
+        elif _canon(actuel) != _canon(op):           # la fiche et le terrain se contredisent : on laisse vide (décision Marie)
+            props["Opérateur flex"] = AUCUN
+            props["_source"] = f"vidé : la fiche disait {actuel}, le terrain dit {op} ({source})"
+            faits.append(f"conflit : opérateur vidé (fiche {actuel}, terrain {op})")
     return props, " ; ".join(faits) or "déjà à jour"
 
 
@@ -287,9 +296,10 @@ async def _tourner(lancements: list, confirmer: bool):
     finally:
         n = sum(1 for l in ETAT["lignes"] if l["action"] in ("à reporter", "reportée"))
         f = sum(1 for l in ETAT["lignes"] if l.get("flex") and l["flex"] != "déjà à jour" and "non touché" not in l["flex"])
+        f_conflits = sum(1 for l in ETAT["lignes"] if "conflit" in (l.get("flex") or ""))
         ETAT.update(en_cours=False, phase="", fini=time.strftime("%H:%M"),
                     resume=f"{len(ETAT['lignes'])} sociétés lues, {n} adresses {'reportées' if confirmer else 'à reporter'}, "
-                           f"{f} fiches flex {'mises à jour' if confirmer else 'à mettre à jour'}")
+                           f"{f} fiches flex {'mises à jour' if confirmer else 'à mettre à jour'} (dont {f_conflits} opérateurs vidés pour conflit)")
 
 
 def _rapport() -> dict:
