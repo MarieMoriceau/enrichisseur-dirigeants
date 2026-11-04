@@ -56,3 +56,19 @@ def test_hierarchie_des_sources():
     props, action = T.decision_flex({"flexoffice": True, "operateur_flex": "(aucun)"}, True, "Klam", "src")
     assert props == {} and "retiré à la main" in action
     assert T.decision_flex({"flexoffice": True, "operateur_flex": "Come and Work"}, True, "Come and Work", "s") == ({}, "déjà à jour")
+
+
+def test_cas_du_premier_essai_a_blanc():
+    # « réflexe » = Reflex
+    assert T.operateur_remarque("Ils sont chez réflexe, ils n’ont pas de projet") == "Reflex"
+    # LNB déjà noté = Les Nouveaux Bureaux : rien à faire
+    assert T.decision_flex({"flexoffice": True, "operateur_flex": "LNB"}, True, "Les Nouveaux Bureaux", "s") == ({}, "déjà à jour")
+    # doute du négo sur une société non classée flex : pas d'opérateur, pas de case cochée
+    aeg = V("Aeg", "Sont la depuis 5/6 ans, en revanche je ne sais pas s’ils ont un plateau de deskeo comme extension ou pas!", "Yes")
+    assert T.flex_terrain(aeg, [aeg]) == (False, "", None)
+    # société classée « Yes » mais chez un opérateur affirmé : retenue
+    monks = V("Monks", "Fin de contrat chez LNB en juillet 2027", "Yes")
+    assert T.flex_terrain(monks, [monks])[:2] == (True, "Les Nouveaux Bureaux")
+    # doute mais classée flex par le négo : retenue
+    sek = V("Sekoia", "Bah ici on sait pas, immeuble morning", "flex")
+    assert T.flex_terrain(sek, [sek])[:2] == (True, "Morning")

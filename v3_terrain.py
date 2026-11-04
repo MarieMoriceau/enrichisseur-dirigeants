@@ -163,7 +163,9 @@ def apparier(nom: str, id_pd: str, terrain: list, ressemblance) -> tuple:
 
 # Abréviations des négos → nom de la liste des opérateurs (v3_sirene.OPERATEURS_FLEX)
 ALIAS_FLEX = {"lnb": "Les Nouveaux Bureaux", "come work": "Come and Work", "comeandwork": "Come and Work",
-              "come and work": "Come and Work", "wework": "WeWork", "we work": "WeWork"}
+              "come and work": "Come and Work", "wework": "WeWork", "we work": "WeWork", "reflexe": "Reflex"}
+# Doute du négo (« je ne sais pas s'ils ont un plateau de Deskeo ») : sans « flex » dans Type de société, on ne retient pas l'opérateur
+DOUTES = ("sais pas", "sait pas", "peut etre", "pas sur", "pas sure")
 
 
 def operateur_remarque(texte: str) -> str:
@@ -182,10 +184,20 @@ def flex_terrain(t: dict, terrain: list) -> tuple:
              or (t["nom_pd"] and meme_nom(t["nom_pd"], x["nom_pd"] or x["nom"]))]
     memes = sorted(memes or [t], key=lambda x: x["date"] or "", reverse=True)
     for x in memes:
-        if (op := operateur_remarque(x.get("remarques", ""))):
-            return True, op, x
+        rem = x.get("remarques", "")
+        if not (op := operateur_remarque(rem)):
+            continue
+        n = f" {SIRENE._norm(rem)} "
+        if (x.get("type") or "").strip().lower() != "flex" and any(f" {d} " in n for d in DOUTES):
+            continue
+        return True, op, x
     x = next((x for x in memes if (x.get("type") or "").strip().lower() == "flex"), None)
     return (True, "", x) if x else (False, "", None)
+
+
+def _canon(op: str) -> str:
+    """Nom comparable d'un opérateur : « LNB » = « Les Nouveaux Bureaux »."""
+    return SIRENE._norm(operateur_remarque(op) or op)
 
 
 def decision_flex(s: dict, flex: bool, op: str, source: str) -> tuple:
@@ -204,7 +216,7 @@ def decision_flex(s: dict, flex: bool, op: str, source: str) -> tuple:
             props["Opérateur flex"] = op
             props["_source"] = source
             faits.append(f"opérateur {op}" + (f" (remplace {actuel})" if actuel else ""))
-        elif SIRENE._norm(actuel) != SIRENE._norm(op):
+        elif _canon(actuel) != _canon(op):
             faits.append(f"opérateur déjà noté ({actuel}) : non touché, le terrain dit {op}")
     return props, " ; ".join(faits) or "déjà à jour"
 
