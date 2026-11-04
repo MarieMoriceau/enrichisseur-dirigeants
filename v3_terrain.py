@@ -3,10 +3,14 @@
 Les négos lancent parfois l'enrichisseur sur des sociétés vues sur le terrain sans mettre l'adresse dans le fichier.
 Cette route va la chercher dans la base Notion « 🚶🏻‍♂️ Prospection terrain » et la reporte dans le JSON de la mémoire
 (champ adresse_notion = « Prospection physique » dans l'écran de validation), puis recalcule l'adresse proposée.
+Elle reporte aussi le bureau flexible vu sur place : colonne « Type de société » = flex, ou opérateur nommé dans
+« Remarques » (« Come and work », « Klam », « occupant morning », « Lnb »…) → case Flexoffice et Opérateur flex.
+Une saisie à la main dans la validation n'est jamais remplacée ; un opérateur SIRENE « (probable) » l'est.
 
   /v3/validation/api/adresses-terrain?lancement=Prosp terrain,Office national   → essai à blanc (rien n'est écrit)
   … &confirmer=1                                                                  → écriture
   … &etat=1                                                                       → avancement / rapport
+  ?lancement=*                                                                    → tous les lancements
 La base terrain doit être partagée avec l'intégration Notion de l'outil (comme la mémoire).
 """
 import asyncio, os, re, time
@@ -41,7 +45,8 @@ async def lire_terrain(c: httpx.AsyncClient) -> list:
             p = pg.get("properties") or {}
             out.append({"nom": _v(p, "Société"), "nom_pd": _v(p, "Nom Pipedrive"), "id": re.sub(r"\D", "", _v(p, "ID Pipedrive")),
                         "adresse": _v(p, "Adresse"), "cp": _v(p, "CP"), "nego": _v(p, "Négo"),
-                        "date": _v(p, "Date de visite")[:10]})
+                        "date": _v(p, "Date de visite")[:10], "remarques": _v(p, "Remarques"),
+                        "type": _v(p, "Type de société")})
         if not j.get("has_more"):
             return out
         curseur = j.get("next_cursor")
@@ -156,6 +161,74 @@ def apparier(nom: str, id_pd: str, terrain: list, ressemblance) -> tuple:
     return max(proches, key=lambda t: t["date"]), "nom"
 
 
+# Abréviations des négos → nom de la liste des opérateurs (v3_sirene.OPERATEURS_FLEX)
+ALIAS_FLEX = {"lnb": "Les Nouveaux Bureaux", "come work": "Come and Work", "comeandwork": "Come and Work",
+              "come and work": "Come and Work", "wework": "WeWork", "we work": "WeWork"}
+
+
+def operateur_remarque(texte: str) -> str:
+    """Opérateur de flex nommé dans une remarque de négo ; "" sinon."""
+    a = f" {SIRENE._norm(texte)} "
+    for k, v in ALIAS_FLEX.items():
+        if f" {k} " in a:
+            return v
+    return SIRENE.operateur_cite(texte)
+
+
+def flex_terrain(t: dict, terrain: list) -> tuple:
+    """(bureau flexible vu sur place, opérateur, fiche qui le dit) à partir de toutes les visites de la même société
+    (plusieurs passages : « Lokki — Come and work » puis « Lokki — viennent d'arriver »). La visite la plus récente d'abord."""
+    memes = [x for x in terrain if (t["id"] and x["id"] == t["id"]) or meme_nom(t["nom"], x["nom"])
+             or (t["nom_pd"] and meme_nom(t["nom_pd"], x["nom_pd"] or x["nom"]))]
+    memes = sorted(memes or [t], key=lambda x: x["date"] or "", reverse=True)
+    for x in memes:
+        if (op := operateur_remarque(x.get("remarques", ""))):
+            return True, op, x
+    x = next((x for x in memes if (x.get("type") or "").strip().lower() == "flex"), None)
+    return (True, "", x) if x else (False, "", None)
+
+
+def decision_flex(s: dict, flex: bool, op: str, source: str) -> tuple:
+    """(propriétés Notion à écrire, action pour le rapport) d'après la fiche de validation s."""
+    if not flex:
+        return {}, ""
+    props, faits = {}, []
+    if not s.get("flexoffice"):
+        props["Flexoffice"] = {"checkbox": True}
+        faits.append("Flexoffice cochée")
+    actuel = (s.get("operateur_flex") or "").strip()
+    if op:
+        if actuel == "(aucun)":
+            faits.append("opérateur retiré à la main : non touché")
+        elif not actuel or actuel.endswith("(probable)"):
+            props["Opérateur flex"] = op
+            props["_source"] = source
+            faits.append(f"opérateur {op}" + (f" (remplace {actuel})" if actuel else ""))
+        elif SIRENE._norm(actuel) != SIRENE._norm(op):
+            faits.append(f"opérateur déjà noté ({actuel}) : non touché, le terrain dit {op}")
+    return props, " ; ".join(faits) or "déjà à jour"
+
+
+async def _flex(s: dict, t: dict, terrain: list, ligne: dict, confirmer: bool):
+    flex, op, x = flex_terrain(t, terrain)
+    if not flex:
+        return
+    ligne["remarque"] = f"{x.get('type') or ''} | {x.get('remarques') or ''}".strip(" |")[:200]
+    source = f"Prospection terrain ({x.get('nego') or '?'}, visite du {x.get('date') or '?'})"
+    props, action = decision_flex(s, flex, op, source)
+    ligne["flex"] = action
+    if not confirmer or not props:
+        return
+    ecrire = {}
+    if "Flexoffice" in props and await VALID.assurer_colonne("Flexoffice", "checkbox"):
+        ecrire["Flexoffice"] = props["Flexoffice"]
+    if "Opérateur flex" in props and await VALID.assurer_colonne("Opérateur flex"):
+        ecrire |= await SIRENE.props_operateur(props["Opérateur flex"], props["_source"])
+    r = await VALID._maj(s["page"], ecrire) if ecrire else None
+    if isinstance(r, JSONResponse):
+        ligne["flex"] = "écriture refusée par Notion : " + action
+
+
 async def _tourner(lancements: list, confirmer: bool):
     from v3 import ressemblance                        # import tardif (v3 importe ce module)
     ETAT.update(en_cours=True, mode="réel" if confirmer else "essai à blanc", phase="Lecture de Prospection terrain…",
@@ -164,13 +237,14 @@ async def _tourner(lancements: list, confirmer: bool):
         async with httpx.AsyncClient(timeout=30) as c:
             terrain = await lire_terrain(c)
             ETAT["phase"] = "Lecture de la mémoire…"
-            pages = [s for s in await VALID._toutes() if any(l.lower() in (s.get("lancement") or "").lower() for l in lancements)]
+            pages = [s for s in await VALID._toutes()
+                     if lancements == ["*"] or any(l.lower() in (s.get("lancement") or "").lower() for l in lancements)]
             ETAT["total"] = len(pages)
             for s in pages:
                 ETAT["phase"] = f"{s['nom']}…"
                 data = await MEM.lire(s["page"])
                 ligne = {"societe": s["nom"], "lancement": s.get("lancement", "")[:80], "adresse_terrain": "", "trouvee_par": "",
-                         "avant": (data or {}).get("adresse_notion", ""), "action": ""}
+                         "avant": (data or {}).get("adresse_notion", ""), "action": "", "flex": "", "remarque": ""}
                 if not data:
                     ligne["action"] = "page illisible"
                 else:
@@ -193,14 +267,17 @@ async def _tourner(lancements: list, confirmer: bool):
                                 data.update(LI.decider_adresse(data))
                                 from v3_rattrapage import _reecrire
                                 await _reecrire(c, s["page"], data)
+                        await _flex(s, t, terrain, ligne, confirmer)
                 ETAT["lignes"].append(ligne)
                 ETAT["fait"] += 1
     except Exception as e:
         ETAT["erreur"] = str(e)
     finally:
         n = sum(1 for l in ETAT["lignes"] if l["action"] in ("à reporter", "reportée"))
+        f = sum(1 for l in ETAT["lignes"] if l.get("flex") and l["flex"] != "déjà à jour" and "non touché" not in l["flex"])
         ETAT.update(en_cours=False, phase="", fini=time.strftime("%H:%M"),
-                    resume=f"{len(ETAT['lignes'])} sociétés lues, {n} adresses {'reportées' if confirmer else 'à reporter'}")
+                    resume=f"{len(ETAT['lignes'])} sociétés lues, {n} adresses {'reportées' if confirmer else 'à reporter'}, "
+                           f"{f} fiches flex {'mises à jour' if confirmer else 'à mettre à jour'}")
 
 
 def _rapport() -> dict:
