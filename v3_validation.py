@@ -504,7 +504,10 @@ async def valider_contacts_crm(page_id: str, req: Request):
         t = d.get("type") or "crm"
         if t not in ("crm", "ailleurs") or d.get("action") not in (ACTIONS_CRM if t == "crm" else ACTIONS_AILLEURS):
             return JSONResponse({"erreur": f"décision invalide : {t} / {d.get('action')}"}, 400)
-        propres, erreur = verifier_saisie({k: d.get(k) for k in ("email", "telephone", "linkedin", "fonction", "role") if d.get(k)})
+        # e-mail repris tel quel du CRM (« jffellmann@oceaneconsulting », sans .com) : pas une saisie, on ne bloque pas
+        tel_quel = t == "ailleurs" or (d.get("email") or "").strip().lower() == str(d.get("email_crm") or "").strip().lower()
+        propres, erreur = verifier_saisie({k: d.get(k) for k in ("email", "telephone", "linkedin", "fonction", "role")
+                                           if d.get(k) and not (k == "email" and tel_quel)})
         if erreur:
             return JSONResponse({"erreur": f"{d.get('nom_complet', '')} : {erreur}"}, 400)
         d = {**d, **propres, "le": datetime.now(timezone.utc).isoformat(timespec="seconds")}
