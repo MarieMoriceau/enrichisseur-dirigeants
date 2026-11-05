@@ -539,3 +539,100 @@ async def fullenrich_rattrapage_excel(req: Request, lancement: str = ""):
     nom = f"rattrapage_fullenrich_{'essai' if FULLENRICH['mode'] == 'essai à blanc' else 'reel'}_{datetime.now(timezone.utc):%Y%m%d_%H%M}.xlsx"
     return StreamingResponse(io.BytesIO(b.getvalue()), headers={"Content-Disposition": f'attachment; filename="{nom}"'},
                              media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ───────── représentants SIRENE déjà en validation : profil LinkedIn, vrai poste, e-mail Kaspr (05/11) ─────────
+# Essai à blanc : la recherche des profils est faite (recherche web Claude, pas de crédits PhantomBuster ni Kaspr) et montrée,
+# rien n'est écrit. Confirmation (moins d'une heure après, mêmes lancements) : profils écrits, puis Kaspr et Captain Verify.
+# Un contact sur lequel une décision a déjà été prise (validé, écarté, modifié) n'est jamais touché.
+SIRENE_P = {"actif": False, "phase": "", "mode": "", "lancement": "", "societes": 0, "cherches": 0, "trouves": 0,
+            "emails": 0, "ecrites": 0, "echecs": [], "lignes": [], "_quand": 0.0, "_cibles": []}
+
+
+def representants_a_chercher(s: dict, data: dict) -> list:
+    decides = VALID._json(s.get("nouveaux"), {}) if isinstance(s.get("nouveaux"), str) else (s.get("nouveaux") or {})
+    return [d for d in data.get("dirigeants", []) if d.get("source") == "SIRENE" and not d.get("linkedin")
+            and not d.get("dans_pipedrive") and VALID.cle_contact(d) not in decides]
+
+
+async def _tache_profils_sirene(lancements: list, confirmer: bool):
+    SIRENE_P.update(actif=True, mode="écriture" if confirmer else "essai à blanc", phase="lecture des fiches", echecs=[])
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            if not confirmer:
+                socs = [s for s in await VALID._toutes() if s["validation"] != "Écartée"
+                        and (lancements == ["*"] or _du_lancement(s, lancements))]
+                sem, cibles = asyncio.Semaphore(3), []
+                async def voir(s):
+                    async with sem:
+                        d0 = await _lire_page(s)
+                    if d0 and (ds := representants_a_chercher(s, d0)):
+                        cibles.append((s, d0, ds))
+                await asyncio.gather(*(voir(s) for s in socs))
+                cibles.sort(key=lambda x: x[0]["nom"].lower())
+                paires = [(d0, d) for _, d0, ds in cibles for d in ds]
+                SIRENE_P.update(societes=len(cibles), cherches=len(paires), phase=f"recherche de {len(paires)} profils LinkedIn")
+                trouves = await LI.profils_representants(c, paires)
+                SIRENE_P.update(trouves=trouves, _cibles=cibles, _quand=time.time(), lignes=[
+                    {"societe": s["nom"], "representant": d.get("nom_complet", ""), "qualite": d.get("fonction_sirene") or d.get("fonction", ""),
+                     "profil": d.get("linkedin", ""), "poste_actuel": d.get("fonction", "") if d.get("linkedin") else ""}
+                    for s, _, ds in cibles for d in ds])
+                SIRENE_P["phase"] = f"essai à blanc terminé : {trouves} profils trouvés sur {len(paires)}, rien n'a été écrit"
+                return
+            cibles = SIRENE_P["_cibles"]
+            avec = [(d0, d) for _, d0, ds in cibles for d in ds if d.get("linkedin")]
+            if LI.KASPR_KEY:
+                for i, (_, d) in enumerate(avec, 1):
+                    SIRENE_P["phase"] = f"Kaspr : e-mails {i}/{len(avec)}"
+                    d["email"] = await LI.kaspr_email(c, d.get("nom_complet", ""), d["linkedin"])
+                    d["source_email"] = "Kaspr" if d["email"] else ""
+                    d["kaspr_tente"] = time.strftime("%Y-%m-%d")
+            import v3_captain as CAPTAIN
+            if CAPTAIN.actif():
+                SIRENE_P["phase"] = "Captain Verify"
+                await CAPTAIN.filtrer(c, [d for _, d in avec if d.get("email")], lambda m: None)
+            SIRENE_P["emails"] = sum(1 for _, d in avec if d.get("email"))
+            for s, d0, ds in cibles:
+                SIRENE_P["phase"] = f"écriture : {s['nom']}"
+                try:
+                    await _reecrire(c, s["page"], d0)
+                    await MEM._req(c, "PATCH", f"https://api.notion.com/v1/pages/{s['page']}", json={"properties": {
+                        "Nb e-mails": {"number": sum(1 for d in d0.get("dirigeants", []) if d.get("email"))},
+                        **__import__("v3_captain").prop_passe(d0)}})
+                    SIRENE_P["ecrites"] += 1
+                except Exception as e:
+                    SIRENE_P["echecs"].append(f"{s['nom']} : {e}")
+            par_cle = {(s["nom"], d.get("nom_complet", "")): d for s, _, ds in cibles for d in ds}
+            for l in SIRENE_P["lignes"]:
+                l["email"] = (par_cle.get((l["societe"], l["representant"])) or {}).get("email", "")
+            SIRENE_P["phase"] = "terminé"
+    except Exception as e:
+        SIRENE_P["phase"] = f"arrêt sur erreur : {e}"
+    finally:
+        SIRENE_P["actif"] = False
+
+
+@router.get("/v3/validation/api/profils-sirene")
+async def profils_sirene(req: Request, lancement: str = "", confirmer: int = 0, etat: int = 0):
+    """Admin. Représentants légaux SIRENE (contacts « Président de SAS (SIRENE) »…) encore à décider : recherche de leur
+    profil LinkedIn, vrai poste, puis e-mail Kaspr. ?lancement=… (morceaux de noms, virgules) ou * pour tous.
+    Sans &confirmer : essai à blanc (profils cherchés et montrés, rien d'écrit). &confirmer=1 : écriture + Kaspr,
+    moins d'une heure après l'essai des mêmes lancements. &etat=1 : avancement et détail."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    vue = {k: v for k, v in SIRENE_P.items() if not k.startswith("_")}
+    if etat or SIRENE_P["actif"]:
+        return vue | ({"conseil": "en cours : rechargez dans une minute"} if SIRENE_P["actif"] else {})
+    lancements = [x.strip().lower() for x in lancement.split(",") if x.strip()]
+    if not lancements:
+        return vue | {"conseil": "ajoutez ?lancement=… (ou * pour tous les lancements)"}
+    if confirmer:
+        if not (SIRENE_P["lancement"] == ",".join(lancements) and SIRENE_P["mode"] == "essai à blanc"
+                and SIRENE_P["phase"].startswith("essai à blanc terminé") and time.time() - SIRENE_P["_quand"] < 3600):
+            return JSONResponse({"erreur": "faites d'abord l'essai à blanc de ces mêmes lancements, il y a moins d'une heure"}, 409)
+    else:
+        SIRENE_P.update(societes=0, cherches=0, trouves=0, emails=0, ecrites=0, lignes=[], _cibles=[])
+    SIRENE_P["lancement"] = ",".join(lancements)
+    asyncio.create_task(_tache_profils_sirene(lancements, bool(confirmer)))
+    return {"lance": "écriture + Kaspr" if confirmer else "essai à blanc",
+            "conseil": "ajoutez &etat=1 à l'adresse (sans &confirmer) pour suivre ; comptez 1 à 2 minutes pour 20 profils"}

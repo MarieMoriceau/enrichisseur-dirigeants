@@ -33,6 +33,9 @@ URL_PUBLIQUE = os.getenv("RENDER_EXTERNAL_URL", "")   # adresse publique du serv
 CSV_HEBERGES: dict = {}                              # jeton -> (contenu CSV, heure) servis aux phantoms
 KASPR_KEY = os.getenv("KASPR_API_KEY", "")
 FULLENRICH_KEY = os.getenv("FULLENRICH_API_KEY", "")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Représentants SIRENE sans profil : recherche de leur profil LinkedIn (recherche web Claude), puis Kaspr (05/11)
+PROFILS_SIRENE = os.getenv("PROFILS_SIRENE", "1") != "0"
 PIPEDRIVE_KEY = os.getenv("PIPEDRIVE_API_KEY", "")
 PB_API = "https://api.phantombuster.com/api/v2"
 MAX_LINKEDIN = 150          # quota prudent par lancement (recommandation PhantomBuster avec Sales Navigator)
@@ -1016,6 +1019,80 @@ def dirigeants_sirene(res: list) -> list:
     return out
 
 
+def page_societe(url: str) -> str:
+    """URL de page société LinkedIn propre (« …/company/x/about/?y » → « https://www.linkedin.com/company/x/ ») ; "" sinon."""
+    m = re.search(r"linkedin\.com/(company|school|showcase)/([^/?#\s]+)", url or "", re.I)
+    return f"https://www.linkedin.com/{m.group(1).lower()}/{m.group(2)}/" if m else ""
+
+
+def _profil_propre(url: str) -> str:
+    m = re.search(r"linkedin\.com/in/([^/?#\s|)>\]]+)", url or "", re.I)
+    return f"https://www.linkedin.com/in/{m.group(1)}" if m else ""
+
+
+async def profil_representant(c: httpx.AsyncClient, d: dict, r: dict) -> tuple:
+    """Profil LinkedIn d'un représentant légal SIRENE (nom + société), par recherche web Claude.
+    Renvoie (url du profil, intitulé du poste actuel) ; ("", "") si rien de sûr."""
+    if not ANTHROPIC_KEY or not d.get("nom"):
+        return "", ""
+    qui = f"{d.get('prenom', '')} {d['nom']}".strip()
+    soc = r.get("nom_linkedin") or r.get("nom") or ""
+    sir = r.get("siren") or r.get("siren_site") or r.get("siren_nom") or r.get("siren_crm") or ""
+    ident = ", ".join(x for x in (f"raison sociale {r['raison_sociale']}" if r.get("raison_sociale") else "",
+                                   f"site {r['domaine']}" if r.get("domaine") else "",
+                                   f"SIREN {sir}" if sir else "") if x)
+    qualite = (d.get("fonction_sirene") or d.get("fonction") or "").replace("(SIRENE)", "").strip()
+    prompt = (f"Trouve le profil LinkedIn personnel de {qui}, {qualite or 'dirigeant'} de la société française « {soc} »"
+              f"{' (' + ident + ')' if ident else ''}. Le profil doit montrer un poste ACTUEL dans cette société "
+              "(pas un homonyme, pas une autre société). Réponds UNIQUEMENT sur une ligne au format "
+              "« URL du profil | intitulé exact du poste actuel », ou NON si tu n'es pas sûr.")
+    try:
+        rep = await c.post("https://api.anthropic.com/v1/messages", timeout=90, headers={
+            "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-beta": "web-search-2025-03-05",
+            "content-type": "application/json"},
+            json={"model": "claude-sonnet-4-6", "max_tokens": 1024,
+                  "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+                  "messages": [{"role": "user", "content": prompt}]})
+        if rep.status_code != 200:
+            return "", ""
+        txt = " ".join(b.get("text", "") for b in rep.json().get("content", []) if b.get("type") == "text").strip()
+    except Exception:
+        return "", ""
+    lignes = [l for l in txt.splitlines() if "linkedin.com/in/" in l.lower()]
+    if not lignes or txt.strip(" .").upper() == "NON":
+        return "", ""
+    url = _profil_propre(lignes[-1])
+    titre = lignes[-1].split("|", 1)[1].strip(" .*`") if "|" in lignes[-1] else ""
+    return url, titre[:150]
+
+
+async def profils_representants(c: httpx.AsyncClient, paires: list, journal=lambda m: None) -> int:
+    """paires = [(société, dirigeant SIRENE sans profil)] → profil, vrai poste et rôle remplis sur place. Renvoie le nombre trouvé."""
+    sem, n = asyncio.Semaphore(3), 0
+    async def un(r, d):
+        nonlocal n
+        async with sem:
+            url, titre = await profil_representant(c, d, r)
+        d["profil_cherche"] = time.strftime("%Y-%m-%d")
+        if not url:
+            return
+        d.setdefault("fonction_sirene", d.get("fonction", ""))
+        d["linkedin"] = url
+        if titre:
+            d["fonction"] = titre
+            d["role"] = role(titre) or d.get("role", "")
+        d["source"] = "SIRENE + profil LinkedIn (recherche web)"
+        n += 1
+    await asyncio.gather(*(un(r, d) for r, d in paires))
+    if paires:
+        journal(f"Représentants SIRENE : {n} profil(s) LinkedIn trouvé(s) sur {len(paires)} cherché(s)")
+    return n
+
+
+def representants_sans_profil(r: dict) -> list:
+    return [d for d in r.get("dirigeants", []) if d.get("source") == "SIRENE" and not d.get("linkedin") and not d.get("profil_cherche")]
+
+
 # ───────────────────────── orchestration des étapes 3 à 5 ─────────────────────────
 async def etapes_linkedin(job: dict, ressemblance, domaine):
     res = [r for r in job["resultats"] if r.get("statut") not in ("Radiée",) and not r.get("memoire")
@@ -1034,7 +1111,9 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         # 3a. page LinkedIn : celle du site d'abord, sinon Company URL Finder
         for r in res:
             r["linkedin"], r["source_linkedin"] = (r.get("linkedin_site") or ""), ("site web" if r.get("linkedin_site") else "")
-            if not r["linkedin"] and r.get("linkedin_fichier"):       # page ajoutée à la main dans le fichier : prioritaire
+            if r.get("linkedin_corrige"):                             # page corrigée dans la validation : prioritaire sur tout
+                r["linkedin"], r["source_linkedin"] = page_societe(r["linkedin_corrige"]), "fichier"
+            elif not r["linkedin"] and r.get("linkedin_fichier"):     # page ajoutée à la main dans le fichier : prioritaire
                 r["linkedin"] = re.sub(r"/(home|about|people|posts|jobs)/?$", "/", r["linkedin_fichier"].split("?")[0])
                 r["source_linkedin"] = "fichier"
         manquants = [r for r in res if not r["linkedin"]]
@@ -1099,7 +1178,10 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
                 # page trouvée par URL Finder : on vérifie que c'est la bonne société
                 if r["source_linkedin"].startswith("URL Finder"):
                     site_li = domaine(l.get("website") or "")
-                    ok = (r.get("domaine") and site_li == r["domaine"]) or ressemblance(r["nom"], l.get("name", "")) >= 0.85
+                    # site différent = autre société, même si le nom ressemble (« CA EXPERTISES » à Écully pour CAA EXPERTISE)
+                    autre_site = bool(r.get("domaine") and site_li and site_li != r["domaine"])
+                    ok = (r.get("domaine") and site_li == r["domaine"]) or \
+                        (not autre_site and ressemblance(r["nom"], l.get("name", "")) >= 0.85)
                     if not ok:
                         r["controle_linkedin"] = f"❌ page écartée : « {l.get('name', '')} » ({site_li or 'sans site'})"
                         r["linkedin"] = ""
@@ -1243,6 +1325,10 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
             journal(f"SIRENE : {sum(len(r['dirigeants']) for r in sirene)} représentants légaux repris pour {len(sirene)} société(s) "
                     f"sans dirigeant LinkedIn ({', '.join(r['nom'] for r in sirene[:6])}{'…' if len(sirene) > 6 else ''})")
         cibles = cibles + [r for r in sirene if r not in cibles]
+        # 3d. leurs profils LinkedIn (nom + société) : vrai poste, et Kaspr pourra chercher l'e-mail
+        if sirene and PROFILS_SIRENE and not stop():
+            job["phase"] = "Représentants SIRENE : recherche de leurs profils LinkedIn…"
+            await profils_representants(c, [(r, d) for r in sirene for d in representants_sans_profil(r)], journal)
 
         # 4a. plafond par code NAF (avocats : 5 dirigeants au plus), avant les contrôles CRM et la recherche d'e-mails
         ecartes = [(r["nom"], plafonner_dirigeants(r)) for r in cibles]
