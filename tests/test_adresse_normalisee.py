@@ -24,6 +24,7 @@ def test_remplacement():
     assert T.remplacer("21, rue d uzes", n) == "remplacer"                       # sans code postal
     assert T.remplacer("21 rue d'Uzès 75009 Paris", n) == "remplacer"           # même lieu, code postal faux
     assert T.remplacer("21 Rue d'Uzès 75002 Paris", n) == "garder"
+    assert T.remplacer("21 Rue d'Uzès, 75002 Paris, France", n) == "garder"     # même lieu, simple écriture
     assert T.remplacer("8 rue de Choiseul 75002 Paris", n) == "garder"          # autre lieu : on n'y touche pas
 
 
@@ -54,3 +55,12 @@ def test_lancement_jamais_bloque(monkeypatch):
     monkeypatch.setattr(T, "lire_terrain", panne)
     vus = []
     assert asyncio.run(T.completer_lancement([{"nom": "X"}], vus.append)) == 0 and "illisible" in vus[0]
+
+
+def test_meme_lieu_avec_et_sans_code_postal():
+    base = [_t("Yves Delorme", "10 rue de la pépinière", ""), _t("Yves Delorme", "10 rue de la pépinière 75008 Paris", "")]
+    base[1]["date"] = "2026-11-01"
+    t, c = T.apparier("Yves Delorme", "", base, None)
+    assert t is not None and c == "nom"
+    base = [_t("Messine audit", "10 rue de la pépinière", ""), _t("Messine audit", "13 Rue de la Pépinière 75008 Paris", "")]
+    assert T.apparier("Messine audit", "", base, None)[0] is None

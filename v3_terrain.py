@@ -174,9 +174,12 @@ def remplacer(avant: str, nouvelle: str) -> str:
         return "remplacer"
     if avant.strip().lower() == nouvelle.strip().lower():
         return "garder"
-    if not re.search(r"\b\d{5}\b", avant) or meme_lieu(avant, nouvelle):
-        return "remplacer"
-    return "garder"
+    cp_avant, cp_nouv = re.search(r"\b\d{5}\b", avant), re.search(r"\b\d{5}\b", nouvelle)
+    if not cp_avant:
+        return "remplacer" if meme_lieu(avant, nouvelle) or not LI.cle_adresse(_avec_cp_fictif(avant)) else "garder"
+    if meme_lieu(avant, nouvelle) and cp_nouv and cp_avant.group(0) != cp_nouv.group(0):
+        return "remplacer"                             # même lieu, code postal corrigé
+    return "garder"                                    # même lieu écrit autrement (« , France »), ou autre lieu
 
 
 async def completer_lancement(orgs: list, log=lambda m: None) -> int:
@@ -229,10 +232,11 @@ def apparier(nom: str, id_pd: str, terrain: list, ressemblance) -> tuple:
     proches = [t for t in terrain if t["adresse"] and (meme_nom(nom, t["nom"]) or meme_nom(nom, t["nom_pd"]))]
     if not proches:
         return None, "absente de Prospection terrain"
-    adresses = {LI.cle_adresse(adresse_complete(t)) or adresse_complete(t).lower() for t in proches}
+    lieu = lambda t: (k[:2] if (k := LI.cle_adresse(_avec_cp_fictif(adresse_complete(t)))) else adresse_complete(t).lower())
+    adresses = {lieu(t) for t in proches}            # « 10 rue de la pépinière » = « 10 rue de la Pépinière 75008 Paris »
     if len(adresses) > 1:
         return None, "plusieurs adresses terrain pour ce nom : " + " | ".join(sorted({adresse_complete(t) for t in proches}))[:200]
-    return max(proches, key=lambda t: t["date"]), "nom"
+    return max(proches, key=lambda t: (bool(adresse_normalisee(t)), t["date"])), "nom"
 
 
 # Abréviations des négos → nom de la liste des opérateurs (v3_sirene.OPERATEURS_FLEX)
@@ -361,7 +365,7 @@ async def _tourner(lancements: list, confirmer: bool, par: str = ""):
                         if not re.search(r"\b\d{5}\b", a):
                             ligne["action"] = "code postal introuvable : non reportée" if not avant else "déjà renseignée"
                         elif avant and remplacer(avant, a) == "garder":
-                            ligne["action"] = "déjà renseignée" if avant.strip().lower() == a.strip().lower() \
+                            ligne["action"] = "déjà renseignée" if meme_lieu(avant, a) \
                                 else "autre adresse dans la fiche : non touchée"
                         else:
                             ligne["action"] = ("à remplacer" if avant else "à reporter") if not confirmer else ("remplacée" if avant else "reportée")
