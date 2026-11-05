@@ -467,12 +467,20 @@ function ecranSociete() {
         </div>
         <p class="msg" id="msgFlex"></p></div>
     </div>
-    ${d.linkedin ? `<p class="note">Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})</p>` : ""}
+    <p class="note">${d.linkedin ? `Page LinkedIn : <a href="${esc(d.linkedin)}" target="_blank" rel="noopener">${esc(d.nom_linkedin || d.linkedin)}</a> (${esc(d.source_linkedin || "")})` : "Aucune page LinkedIn retenue"}
+      ${d.linkedin_corrige ? ` · <b>corrigée : <a href="${esc(d.linkedin_corrige)}" target="_blank" rel="noopener">${esc(d.linkedin_corrige.replace(/^https:\/\/www\.linkedin\.com\//, ""))}</a></b>, prise en compte à la prochaine relance` : ""}
+      · <button class="lien" id="corrLi" type="button" style="font-size:12px">${d.linkedin_corrige ? "Changer la page corrigée" : "Corriger la page LinkedIn"}</button></p>
+    <div id="panLi" hidden style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:-4px 0 10px">
+      <input type="url" id="nouvelleLi" value="${esc(d.linkedin_corrige || "")}" placeholder="https://www.linkedin.com/company/…" aria-label="Page LinkedIn de la société" style="min-width:320px;margin:0">
+      <button class="btn primary" id="okLi" type="button" style="padding:6px 10px;font-size:13px">Enregistrer</button>
+      ${d.linkedin_corrige ? `<button class="btn ghost" id="razLi" type="button" style="padding:6px 10px;font-size:13px">Retirer la correction</button>` : ""}
+      <button class="btn ghost" id="annLi" type="button" style="padding:6px 10px;font-size:13px">Annuler</button>
+    </div>
     <div class="actions">
       <button class="btn primary" id="okSoc">Valider la société</button>
       <button class="btn ghost" id="koSoc">Écarter…</button>
       ${info.validation !== "À valider" ? `<button class="btn ghost" id="raz">Remettre à valider</button>` : ""}
-      <button class="btn ghost" id="relance" title="Après une correction du nom ou du SIREN : nouvelle recherche du site, de LinkedIn, des dirigeants et des e-mails (compte LinkedIn de Marie)">Relancer cette société</button>
+      <button class="btn ghost" id="relance" title="Après une correction du nom, du SIREN ou de la page LinkedIn : nouvelle recherche du site, de LinkedIn, des dirigeants et des e-mails (compte LinkedIn de Marie)">Relancer cette société</button>
       <span class="msg" id="msg"></span>
     </div>
     <div class="ecart" id="panEcart" hidden>
@@ -646,6 +654,18 @@ function ecranSociete() {
       message(`Nom corrigé : ${r.nom}. Pensez à « Relancer cette société » pour chercher ses dirigeants sous ce nom.`);
     } catch (e) { $("#okNom").disabled = false; message(e.message, true); }
   };
+  $("#corrLi").onclick = () => { $("#panLi").hidden = false; $("#corrLi").hidden = true; $("#nouvelleLi").focus(); };
+  $("#annLi").onclick = () => { $("#panLi").hidden = true; $("#corrLi").hidden = false; };
+  const sauverLi = async (url) => {
+    try {
+      await api("/v3/validation/api/page-linkedin/" + courant, {url});
+      await ouvrir(courant);
+      message(url ? "Page LinkedIn corrigée. Cliquez sur « Relancer cette société » pour chercher ses dirigeants sur cette page."
+                  : "Correction retirée.");
+    } catch (e) { message(e.message, true); }
+  };
+  $("#okLi").onclick = () => sauverLi($("#nouvelleLi").value.trim());
+  if ($("#razLi")) $("#razLi").onclick = () => sauverLi("");
   $("#relance").onclick = async () => {
     if (!confirm(`Relancer « ${info.nom} » ? L'enrichisseur refait toute la recherche sous ce nom${info.siren ? " et ce SIREN" : ""}. Comptez 10 à 20 minutes.`)) return;
     $("#relance").disabled = true; message("Lancement…");

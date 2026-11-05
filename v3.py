@@ -1548,7 +1548,7 @@ async def attribuer_anciens(req: Request, mail: str = "mmoriceau@equation-sie.co
 
 # ───────────────────────── relance des sociétés traitées sans dirigeants (phantom en panne) ─────────────────────────
 CHAMPS_ORG = ("id", "nom", "site_crm", "siren_crm", "adresse_crm", "cp", "ville", "adresse_notion", "linkedin_fichier", "infos_source", "base_quali_crm",
-              "debut_bail_crm", "flex_crm", "tels_crm")
+              "debut_bail_crm", "flex_crm", "tels_crm", "linkedin_corrige")
 
 
 @router.get("/v3/validation/api/relancer-vides")
@@ -1610,6 +1610,36 @@ async def corriger_nom(page_id: str, req: Request):
     if isinstance(maj, JSONResponse):
         return maj
     return {"ok": True, "nom": nom}
+
+
+@router.post("/v3/validation/api/page-linkedin/{page_id}")
+async def corriger_page_linkedin(page_id: str, req: Request):
+    """Admin : la page LinkedIn de la société est fausse (« CA EXPERTISES » à Écully pour CAA EXPERTISE).
+    Corps : {"url": "https://www.linkedin.com/company/…"} ; {"url": ""} retire la correction.
+    La page corrigée passe avant toute autre à la prochaine « Relancer cette société »."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if not VALID.RE_PAGE.fullmatch(page_id):
+        return JSONResponse({"erreur": "identifiant invalide"}, 400)
+    b = await req.json()
+    brut = str(b.get("url") or "").strip()
+    url = LI.page_societe(brut)
+    if brut and not url:
+        return JSONResponse({"erreur": "page société attendue : https://www.linkedin.com/company/…"}, 400)
+    data = await MEM.lire(page_id)
+    if not data:
+        return JSONResponse({"erreur": "fiche illisible : réessayez"}, 502)
+    if url:
+        data["linkedin_corrige"] = url
+    else:
+        data.pop("linkedin_corrige", None)
+    from v3_rattrapage import _reecrire
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            await _reecrire(c, page_id, data)
+    except RuntimeError as e:
+        return JSONResponse({"erreur": f"Notion : {e}"}, 502)
+    return {"ok": True, "linkedin_corrige": url}
 
 
 async def _orgs_a_relancer(pages: list) -> list:
