@@ -85,3 +85,14 @@ def test_route_page_linkedin(monkeypatch):
     ecrit.clear()
     assert c.post(f"/v3/validation/api/page-linkedin/{p}", json={"url": ""}).status_code == 200 and "linkedin_corrige" not in ecrit
     assert "linkedin_corrige" in v3.CHAMPS_ORG[7:]                 # repris par « Relancer cette société »
+
+
+def test_reponses_inventees_ou_sans_poste(monkeypatch):
+    monkeypatch.setattr(LI, "ANTHROPIC_KEY", "k")
+    for txt in ("https://www.linkedin.com/in/maxime-peronnin-XXXX` | Directeur général",
+                "https://www.linkedin.com/in/...` | Gérant",
+                "https://www.linkedin.com/in/gregory-bellaiche-42b780106",                 # pas de poste : pas sûr
+                "https://www.linkedin.com/in/f-shoukry-11365810 | Président de SAS (SIRENE)"):
+        assert asyncio.run(LI.profil_representant(_C(txt), _rep(), CAA)) == ("", ""), txt
+    url, t = asyncio.run(LI.profil_representant(_C("https://www.linkedin.com/in/st%C3%A9phan-constance-3b0658 | Président-fondateur"), _rep(), CAA))
+    assert url.endswith("st%C3%A9phan-constance-3b0658") and t == "Président-fondateur"
