@@ -631,6 +631,10 @@ async def profils_sirene(req: Request, lancement: str = "", confirmer: int = 0, 
                 and SIRENE_P["phase"].startswith("essai à blanc terminé") and time.time() - SIRENE_P["_quand"] < 3600):
             return JSONResponse({"erreur": "faites d'abord l'essai à blanc de ces mêmes lancements, il y a moins d'une heure"}, 409)
     else:
+        # adresse de l'essai rouverte (onglet rechargé) : on remontre le dernier essai au lieu d'en relancer un (05/11)
+        if SIRENE_P["lancement"] == ",".join(lancements) and SIRENE_P["phase"].startswith(("essai à blanc terminé", "terminé")) \
+                and time.time() - SIRENE_P["_quand"] < 900:
+            return vue | {"conseil": "résultat du dernier essai (moins de 15 min) ; &confirmer=1 pour écrire, ou attendez 15 min pour un nouvel essai"}
         SIRENE_P.update(societes=0, cherches=0, trouves=0, emails=0, ecrites=0, lignes=[], _cibles=[])
     SIRENE_P["lancement"] = ",".join(lancements)
     asyncio.create_task(_tache_profils_sirene(lancements, bool(confirmer)))

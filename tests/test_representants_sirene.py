@@ -96,3 +96,15 @@ def test_reponses_inventees_ou_sans_poste(monkeypatch):
         assert asyncio.run(LI.profil_representant(_C(txt), _rep(), CAA)) == ("", ""), txt
     url, t = asyncio.run(LI.profil_representant(_C("https://www.linkedin.com/in/st%C3%A9phan-constance-3b0658 | Président-fondateur"), _rep(), CAA))
     assert url.endswith("st%C3%A9phan-constance-3b0658") and t == "Président-fondateur"
+
+
+def test_essai_rouvert_pas_relance(monkeypatch):
+    import time
+    monkeypatch.setattr(RAT.VALID, "_refus", lambda req, role: None)
+    lances = []
+    monkeypatch.setattr(RAT, "_tache_profils_sirene", lambda l, c: lances.append(c) or __import__("asyncio").sleep(0))
+    RAT.SIRENE_P.update(actif=False, lancement="dossier enrichisseur sl", mode="essai à blanc",
+                        phase="essai à blanc terminé : 20 profils trouvés sur 33", _quand=time.time(), trouves=20)
+    app = FastAPI(); app.include_router(RAT.router)
+    r = TestClient(app).get("/v3/validation/api/profils-sirene?lancement=dossier enrichisseur SL")
+    assert r.status_code == 200 and r.json()["trouves"] == 20 and not lances
