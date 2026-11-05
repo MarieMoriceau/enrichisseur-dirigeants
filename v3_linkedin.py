@@ -1026,8 +1026,15 @@ def page_societe(url: str) -> str:
 
 
 def _profil_propre(url: str) -> str:
-    m = re.search(r"linkedin\.com/in/([^/?#\s|)>\]]+)", url or "", re.I)
-    return f"https://www.linkedin.com/in/{m.group(1)}" if m else ""
+    """URL de profil propre ; "" pour un identifiant douteux (« maxime-peronnin-XXXX », « ... » : réponse inventée)."""
+    m = re.search(r"linkedin\.com/in/([^/?#\s|)>\]`'\"*]+)", url or "", re.I)
+    if not m:
+        return ""
+    slug = m.group(1).strip(".-_")
+    if len(slug) < 3 or "..." in m.group(1) or "…" in slug or re.search(r"x{3,}", slug, re.I) \
+            or not re.fullmatch(r"[A-Za-z0-9%\-_]+", slug):
+        return ""
+    return f"https://www.linkedin.com/in/{slug}"
 
 
 async def profil_representant(c: httpx.AsyncClient, d: dict, r: dict) -> tuple:
@@ -1063,6 +1070,9 @@ async def profil_representant(c: httpx.AsyncClient, d: dict, r: dict) -> tuple:
         return "", ""
     url = _profil_propre(lignes[-1])
     titre = lignes[-1].split("|", 1)[1].strip(" .*`") if "|" in lignes[-1] else ""
+    # sans intitulé de poste lu sur le profil, rien ne prouve que la recherche l'a vraiment trouvé : on n'en garde rien
+    if not url or not titre or "(sirene)" in titre.lower() or titre.upper() == "NON":
+        return "", ""
     return url, titre[:150]
 
 
