@@ -11,6 +11,12 @@ Une saisie à la main dans la validation n'est jamais remplacée ; un opérateur
   … &confirmer=1                                                                  → écriture
   … &etat=1                                                                       → avancement / rapport
   ?lancement=*                                                                    → tous les lancements
+  … &par=Sébastien                                                                → seulement les sociétés de ce négo
+                                                                                    (son prénom reçu ou ses propres lancements)
+Adresse : colonne « Adresse normalisée » de la base (« 11 Rue du Faubourg Poissonnière, 75009 Paris, France ») quand elle a
+un code postal ; sinon l'ancienne lecture de « Adresse » + « CP » (BAN). Une adresse terrain déjà présente est remplacée par
+la normalisée seulement s'il s'agit du même numéro dans la même rue (ou si elle n'avait pas de code postal).
+Au lancement (traiter), les sociétés trouvées dans la base reçoivent aussi cette adresse (completer_lancement).
 La base terrain doit être partagée avec l'intégration Notion de l'outil (comme la mémoire).
 """
 import asyncio, os, re, time
@@ -46,7 +52,8 @@ async def lire_terrain(c: httpx.AsyncClient) -> list:
             out.append({"nom": _v(p, "Société"), "nom_pd": _v(p, "Nom Pipedrive"), "id": re.sub(r"\D", "", _v(p, "ID Pipedrive")),
                         "adresse": _v(p, "Adresse"), "cp": _v(p, "CP"), "nego": _v(p, "Négo"),
                         "date": _v(p, "Date de visite")[:10], "remarques": _v(p, "Remarques"),
-                        "type": _v(p, "Type de société")})
+                        "type": _v(p, "Type de société"), "adresse_norm": _v(p, "Adresse normalisée"),
+                        "page": (pg.get("id") or "").replace("-", "")})
         if not j.get("has_more"):
             return out
         curseur = j.get("next_cursor")
@@ -130,6 +137,73 @@ async def adresse_paris(t: dict, autres: list) -> str:
         return adresse_complete(t)
     a, _ = await SIRENE.completer_adresse(rue, autres + ["1 rue de la Paix 75002 Paris"])
     return a
+
+
+def adresse_normalisee(t: dict) -> str:
+    """« 40 Rue du Faubourg Poissonnière, 75010 Paris, France » → « 40 bis Rue du Faubourg Poissonnière 75010 Paris »
+    (le « bis » relevé par le négo est remis). "" sans code postal (« 102 Rue Rayon, Paris, France »)."""
+    a = re.sub(r"\s+", " ", t.get("adresse_norm") or "").strip(" ,")
+    a = re.sub(r",?\s*France$", "", a, flags=re.I).strip(" ,")
+    if not re.search(r"\b\d{5}\b", a):
+        return ""
+    a = re.sub(r"\s*,\s*", " ", a)
+    brut = re.match(r"\s*(\d+)\s*(bis|ter)\b", t.get("adresse") or "", re.I)
+    if brut and re.match(rf"{brut.group(1)}\b(?!\s*(bis|ter))", a, re.I):
+        a = f"{brut.group(1)} {brut.group(2).lower()}{a[len(brut.group(1)):]}"
+    return a
+
+
+async def adresse_terrain(t: dict, autres: list) -> str:
+    """Adresse normalisée de la base d'abord, sinon l'adresse relevée complétée (BAN, code postal du négo…)."""
+    return adresse_normalisee(t) or await adresse_paris(t, autres)
+
+
+def meme_lieu(a: str, b: str) -> bool:
+    """Même numéro dans la même rue (code postal ignoré : c'est lui qu'on corrige souvent)."""
+    ka, kb = LI.cle_adresse(_avec_cp_fictif(a)), LI.cle_adresse(_avec_cp_fictif(b))
+    return bool(ka and kb and ka[0] == kb[0] and ka[1] and kb[1] and (ka[1] in kb[1] or kb[1] in ka[1]))
+
+
+def _avec_cp_fictif(a: str) -> str:
+    return a if re.search(r"\b\d{5}\b", a or "") else f"{a} 00000"
+
+
+def remplacer(avant: str, nouvelle: str) -> str:
+    """Que faire de l'adresse terrain déjà présente : "garder" (identique ou autre lieu) ou "remplacer"."""
+    if not avant:
+        return "remplacer"
+    if avant.strip().lower() == nouvelle.strip().lower():
+        return "garder"
+    if not re.search(r"\b\d{5}\b", avant) or meme_lieu(avant, nouvelle):
+        return "remplacer"
+    return "garder"
+
+
+async def completer_lancement(orgs: list, log=lambda m: None) -> int:
+    """Au lancement : les sociétés passées en prospection terrain reçoivent l'adresse normalisée de la base
+    (adresse_notion = « Prospection physique »). Une adresse terrain venue du fichier n'est remplacée que si c'est
+    le même lieu mieux écrit. Ne bloque jamais le lancement."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            terrain = await lire_terrain(c)
+    except Exception as e:
+        log(f"Prospection terrain illisible ({e}) : adresses du fichier seulement")
+        return 0
+    n = 0
+    for o in orgs:
+        ref = re.sub(r"[^0-9a-f]", "", str((o.get("infos_source") or {}).get("ref_notion") or "").lower())
+        t = next((x for x in terrain if ref and x["page"] == ref and x["adresse"]), None)
+        if not t:
+            t, _ = apparier(o.get("nom", ""), re.sub(r"\D", "", str(o.get("id") or "")), terrain, None)
+        if not t or not (a := adresse_normalisee(t)):
+            continue
+        if remplacer(o.get("adresse_notion", ""), a) == "remplacer":
+            o["adresse_notion"] = a
+            o["cp"] = o.get("cp") or re.search(r"\b(\d{5})\b", a).group(1)
+            n += 1
+    if n:
+        log(f"Prospection terrain : adresse normalisée reprise pour {n} société(s)")
+    return n
 
 
 def meme_nom(a: str, b: str) -> bool:
@@ -250,7 +324,7 @@ async def _flex(s: dict, t: dict, terrain: list, ligne: dict, confirmer: bool):
         ligne["flex"] = "écriture refusée par Notion : " + action
 
 
-async def _tourner(lancements: list, confirmer: bool):
+async def _tourner(lancements: list, confirmer: bool, par: str = ""):
     from v3 import ressemblance                        # import tardif (v3 importe ce module)
     ETAT.update(en_cours=True, mode="réel" if confirmer else "essai à blanc", phase="Lecture de Prospection terrain…",
                 fait=0, total=0, lignes=[], fini="", erreur="")
@@ -260,6 +334,11 @@ async def _tourner(lancements: list, confirmer: bool):
             ETAT["phase"] = "Lecture de la mémoire…"
             pages = [s for s in await VALID._toutes()
                      if lancements == ["*"] or any(l.lower() in (s.get("lancement") or "").lower() for l in lancements)]
+            if par:
+                import v3_equipe as EQ
+                liste = await EQ.membres()
+                pages = [s for s in pages if EQ.norm(par) in {EQ.norm(p) for p in EQ.attribution(liste, s.get("negos", ""),
+                                                                                                   s.get("lance_par", ""))["a"]}]
             ETAT["total"] = len(pages)
             for s in pages:
                 ETAT["phase"] = f"{s['nom']}…"
@@ -275,14 +354,19 @@ async def _tourner(lancements: list, confirmer: bool):
                     else:
                         autres = [x for x in (data.get("adresse_crm"), data.get("adresse_site"), data.get("adresse_linkedin"),
                                               data.get("adresse_google"), data.get("siege_insee")) if x]
-                        a = await adresse_paris(t, autres)
-                        ligne.update(adresse_terrain=a, trouvee_par=f"{comment} ({t['nego']}, visite du {t['date'] or '?'})")
-                        if data.get("adresse_notion"):                 # déjà donnée par le fichier : on n'y touche pas
-                            ligne["action"] = "déjà renseignée"
-                        elif not re.search(r"\b\d{5}\b", a):
-                            ligne["action"] = "code postal introuvable : non reportée"
+                        a = await adresse_terrain(t, autres)
+                        ligne.update(adresse_terrain=a, trouvee_par=f"{comment} ({t['nego']}, visite du {t['date'] or '?'})"
+                                     + (" · adresse normalisée" if adresse_normalisee(t) else ""))
+                        avant = data.get("adresse_notion") or ""
+                        if not re.search(r"\b\d{5}\b", a):
+                            ligne["action"] = "code postal introuvable : non reportée" if not avant else "déjà renseignée"
+                        elif avant and remplacer(avant, a) == "garder":
+                            ligne["action"] = "déjà renseignée" if avant.strip().lower() == a.strip().lower() \
+                                else "autre adresse dans la fiche : non touchée"
                         else:
-                            ligne["action"] = "à reporter" if not confirmer else "reportée"
+                            ligne["action"] = ("à remplacer" if avant else "à reporter") if not confirmer else ("remplacée" if avant else "reportée")
+                            if s.get("adresse_retenue"):
+                                ligne["note"] = f"adresse retenue à la validation inchangée : {s['adresse_retenue']}"
                             if confirmer:
                                 data["adresse_notion"] = a
                                 data.update(LI.decider_adresse(data))
@@ -295,10 +379,12 @@ async def _tourner(lancements: list, confirmer: bool):
         ETAT["erreur"] = str(e)
     finally:
         n = sum(1 for l in ETAT["lignes"] if l["action"] in ("à reporter", "reportée"))
+        r = sum(1 for l in ETAT["lignes"] if l["action"].startswith(("à remplacer", "remplacée")))
         f = sum(1 for l in ETAT["lignes"] if l.get("flex") and l["flex"] != "déjà à jour" and "non touché" not in l["flex"])
         f_conflits = sum(1 for l in ETAT["lignes"] if "conflit" in (l.get("flex") or ""))
         ETAT.update(en_cours=False, phase="", fini=time.strftime("%H:%M"),
                     resume=f"{len(ETAT['lignes'])} sociétés lues, {n} adresses {'reportées' if confirmer else 'à reporter'}, "
+                           f"{r} {'remplacées' if confirmer else 'à remplacer'} par l'adresse normalisée, "
                            f"{f} fiches flex {'mises à jour' if confirmer else 'à mettre à jour'} (dont {f_conflits} opérateurs vidés pour conflit)")
 
 
@@ -312,7 +398,7 @@ def _rapport() -> dict:
 
 
 @router.get("/v3/validation/api/adresses-terrain")
-async def adresses_terrain(req: Request, lancement: str = "", confirmer: int = 0, etat: int = 0):
+async def adresses_terrain(req: Request, lancement: str = "", confirmer: int = 0, etat: int = 0, par: str = ""):
     if (x := VALID._refus(req, "admin")):
         return x
     if etat or ETAT["en_cours"]:
@@ -322,7 +408,10 @@ async def adresses_terrain(req: Request, lancement: str = "", confirmer: int = 0
         return JSONResponse({"erreur": "indiquez ?lancement=… (un ou plusieurs morceaux de nom de lancement, séparés par des virgules)"}, 400)
     if confirmer and ETAT.get("mode") != "essai à blanc":
         return JSONResponse({"erreur": "faites d'abord l'essai à blanc (sans &confirmer=1)"}, 400)
-    asyncio.create_task(_tourner(lancements, bool(confirmer)))
+    if confirmer and (ETAT.get("lancements"), ETAT.get("par")) != (lancements, par):
+        return JSONResponse({"erreur": "l'essai à blanc portait sur d'autres lancements ou un autre négo : refaites-le"}, 400)
+    ETAT.update(lancements=lancements, par=par)
+    asyncio.create_task(_tourner(lancements, bool(confirmer), par))
     await asyncio.sleep(0.2)
     return {"lance": True, "mode": "réel" if confirmer else "essai à blanc",
             "suivi": "rechargez la page avec &etat=1 pour voir l'avancement et le rapport"}
