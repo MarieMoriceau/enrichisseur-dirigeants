@@ -896,6 +896,8 @@ async def traiter(job_id: str, orgs: list):
         await SUIVI.maj(job["notion_id"], {"Nb sociétés": job["total"], "Nb LinkedIn": len(orgs) if job["linkedin"] else 0,
                                            "Nb mémoire": job.get("nb_memoire", 0)})
         if orgs:
+            job["phase"] = "Prospection terrain : adresses normalisées…"
+            await TERRAIN.completer_lancement(orgs, lambda m: jlog(job, m))
             job["phase"] = "Sites web et SIREN…"
             await _traiter(job_id, orgs)
         if job["linkedin"] and any(r.get("effectif_linkedin") not in (None, "") for r in job["resultats"]):
