@@ -336,6 +336,19 @@ async def base_quali_pipedrive(api: httpx.AsyncClient, org_id: str) -> str:
         return ""
 
 
+def meme_societe_crm(a: str, b: str) -> bool:
+    """Même société dans Pipedrive : nom identique ou presque (fautes de frappe). Un mot en commun ne suffit pas quand le nom
+    cherché tient en un seul mot : « Oliver » ≠ « Oliver Wyman » ≠ « Bernd Oliver Bühler » (06/11)."""
+    na, nb = norm_nom(a), norm_nom(b)
+    if not na or not nb:
+        return False
+    if na == nb or na.replace(" ", "") == nb.replace(" ", "") or SequenceMatcher(None, na, nb).ratio() >= 0.9:
+        return True
+    ta, tb = set(na.split()), set(nb.split())
+    court = ta if len(ta) <= len(tb) else tb
+    return len(court) >= 2 and court <= (ta | tb) and len(ta & tb) == len(court)
+
+
 async def chercher_crm(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
     """Cherche la société dans Pipedrive par son nom (et son code postal s'il est connu)."""
     if not PIPEDRIVE_KEY:
@@ -345,7 +358,7 @@ async def chercher_crm(api: httpx.AsyncClient, nom: str, cp: str) -> dict:
         r = await api.get("https://api.pipedrive.com/v1/organizations/search",
                           params={"term": nom, "fields": "name", "limit": 5, "api_token": PIPEDRIVE_KEY})
         items = [i.get("item", {}) for i in (r.json().get("data") or {}).get("items", [])]
-        cands = [i for i in items if ressemblance(nom, i.get("name", "")) >= 0.9]
+        cands = [i for i in items if meme_societe_crm(nom, i.get("name", ""))]
         if cp:
             meme_cp = [i for i in cands if cp in str((i.get("address") or ""))]
             cands = meme_cp or cands
@@ -1642,6 +1655,17 @@ async def corriger_page_linkedin(page_id: str, req: Request):
     return {"ok": True, "linkedin_corrige": url}
 
 
+async def nom_pipedrive(org_id: str) -> str:
+    if not PIPEDRIVE_KEY or not str(org_id).isdigit():
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=15) as api:
+            r = await api.get(f"https://api.pipedrive.com/v1/organizations/{org_id}", params={"api_token": PIPEDRIVE_KEY})
+            return ((r.json() or {}).get("data") or {}).get("name") or ""
+    except Exception:
+        return ""
+
+
 async def _orgs_a_relancer(pages: list) -> list:
     """Reconstruit chaque société comme dans un fichier, avec le nom de la fiche (corrigé à la main le cas échéant)
     et le SIREN corrigé à la main s'il y en a un."""
@@ -1655,6 +1679,11 @@ async def _orgs_a_relancer(pages: list) -> list:
         o["nom"] = info.get("nom") or o["nom"]
         if info.get("siren_corrige") and luhn_ok(info.get("siren") or ""):
             o["siren_crm"] = info["siren"]
+        if o["id"] and (info.get("siren_corrige") or (info.get("nom") and info["nom"] != d.get("nom"))):
+            # fiche Pipedrive trouvée par l'outil sur un mot du nom (« Oliver » → « Bernd Oliver Bühler ») : on la lâche
+            nom_pd = await nom_pipedrive(o["id"])
+            if nom_pd and not meme_societe_crm(o["nom"], nom_pd) and not meme_societe_crm(d.get("nom", ""), nom_pd):
+                o["id"] = ""
         return o | {k: d[k] for k in CHAMPS_ORG[7:] if d.get(k) not in (None, "", {})}
     return [o for o in await asyncio.gather(*(une(p) for p in pages)) if o.get("nom")]
 
