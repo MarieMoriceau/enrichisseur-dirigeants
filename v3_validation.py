@@ -343,6 +343,17 @@ def nouveaux_dirigeants(data: dict) -> list:
     return sorted([d for d in data.get("dirigeants", []) if not d.get("dans_pipedrive")], key=lambda d: str(d.get("role", "")))
 
 
+def pourquoi_aucun_nouveau(data: dict, perimetre: str = "") -> str:
+    """Ligne affichée sous « Aucun nouveau dirigeant » : pourquoi la société n'a pas de nouveau contact."""
+    ds = data.get("dirigeants") or []
+    if ds and all(d.get("dans_pipedrive") for d in ds):
+        return f"{len(ds)} dirigeant(s) trouvé(s), tous déjà au CRM (voir « Contacts déjà au CRM »)"
+    if data.get("pourquoi_contact") and not ds:
+        return data["pourquoi_contact"]
+    return LI.pourquoi_pas_de_contact({k: v for k, v in data.items() if k != "memoire"},
+                                      {"perimetre": perimetre or "tout"}) or "aucun dirigeant retenu"
+
+
 def _sans_listes(s: dict) -> dict:
     return {k: v for k, v in s.items() if k not in ("decisions", "nouveaux")}
 
@@ -386,6 +397,7 @@ async def admin_societe(page_id: str, req: Request):
     for p in info["data"].get("contacts_crm", []):
         p.setdefault("role", LI.role(p.get("fonction", "")))
     info["fiches"] = [fiche_nouveau(d, info["nouveaux"].get(cle_contact(d), {})) for d in nouveaux_dirigeants(info["data"])]
+    info["pourquoi_aucun"] = "" if info["fiches"] else pourquoi_aucun_nouveau(info["data"], info.get("perimetre", ""))
     info["roles"] = ROLES
     appliquer_correction_siren(info)
     return avec_attribution(info, await EQ.membres())
@@ -586,7 +598,8 @@ async def negos_societe(page_id: str, req: Request):
             "attribue_a": avec_attribution(info, qui["equipe"] or await EQ.membres())["attribue_a"],
             "adresse": info["adresse_retenue"] if adresse_validee else (data.get("adresse_proposee") or data.get("adresse_crm") or ""),
             "adresse_validee": adresse_validee, "linkedin_societe": data.get("linkedin", ""),
-            "nouveaux": nouveaux, "crm": crm, "roles": ROLES}
+            "nouveaux": nouveaux, "crm": crm, "roles": ROLES,
+            "pourquoi_aucun": "" if nouveaux else pourquoi_aucun_nouveau(data, info.get("perimetre", ""))}
 
 
 def _telephone(t: str) -> str:

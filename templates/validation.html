@@ -951,7 +951,7 @@ function ecranContacts() {
       <span class="msg" id="msg">${info.validation === "Contacts validés" ? "Déjà validés le " + esc(info.validee) + " : vous pouvez modifier et revalider." : ""}</span>
     </div>
     <h3>Nouveaux contacts <span class="pill">${fiches.length}</span></h3>
-    <div id="nouveaux">${fiches.length ? tableSaisie(fiches, info.roles || [], finAdmin, "Décision") : `<p class="msg">Aucun nouveau dirigeant.</p>`}</div>
+    <div id="nouveaux">${fiches.length ? tableSaisie(fiches, info.roles || [], finAdmin, "Décision") : `<p class="msg">Aucun nouveau dirigeant.${info.pourquoi_aucun ? `<br><b>Pourquoi :</b> ${esc(info.pourquoi_aucun)}` : ""}</p>`}</div>
     ${fiches.length ? `<p class="note">Pour les runs que vous lancez, validez ou écartez ici directement. Pour ceux des négos, la décision leur revient dans <a href="/v3/contacts">Nouveaux contacts</a> (vous y voyez aussi tout).</p>` : ""}`;
   const brancherAdmin = () => document.querySelectorAll("#nouveaux [data-s]").forEach(b => b.onclick = () =>
     sauverContact(fiches, +b.dataset.s, b.dataset.etat || null, info.roles || [], finAdmin, () => brancherAdmin()));

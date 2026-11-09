@@ -150,3 +150,11 @@ def test_marque_posee_a_la_correction(monkeypatch):
     app = FastAPI(); app.include_router(v3.router)
     TestClient(app).post(f"/v3/validation/api/page-linkedin/{'0' * 32}", json={"url": "linkedin.com/company/caa-expertise"})
     assert props["LinkedIn corrigé"]["rich_text"][0]["text"]["content"] == "https://www.linkedin.com/company/caa-expertise/"
+
+
+def test_pourquoi_aucun_nouveau():
+    P = v3.VALID.pourquoi_aucun_nouveau
+    assert P({"dirigeants": [{"dans_pipedrive": "1"}, {"dans_pipedrive": "2"}]}).startswith("2 dirigeant(s) trouvé(s), tous déjà au CRM")
+    assert P({"dirigeants": [], "linkedin_id": "", "confiance": "haute"}) == "aucune page LinkedIn trouvée, et aucun président ou gérant (personne physique) dans SIRENE"
+    assert P({"dirigeants": [], "linkedin_id": "9", "sn_vus": 4, "sn_ecartes": ["Comptable"], "memoire": True}).startswith("Sales Navigator : 4 personne(s) vue(s)")
+    assert P({"dirigeants": [], "pourquoi_contact": "société fermée à l'INSEE"}) == "société fermée à l'INSEE"

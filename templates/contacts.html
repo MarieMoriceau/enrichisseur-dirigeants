@@ -353,7 +353,7 @@ function dessiner() {
         s.effectif != null ? esc(s.effectif) + " salariés LinkedIn" : "", s.linkedin_societe ? `<a href="${esc(s.linkedin_societe)}" target="_blank" rel="noopener">page LinkedIn</a>` : ""].filter(Boolean).join(" · ")}</span></div>
     <p class="note">Bureaux : <b>${esc(s.adresse || "inconnue")}</b> ${s.adresse_validee ? `<span class="pill ok">adresse validée</span>` : `<span class="pill warn">adresse pas encore validée</span>`}</p>
     <h3>Nouveaux contacts <span class="pill">${s.nouveaux.length}</span></h3>
-    <div id="nouveaux">${s.nouveaux.length ? tableSaisie(s.nouveaux, s.roles, finNegos, "Décision") : `<p class="msg">Aucun nouveau contact.</p>`}</div>
+    <div id="nouveaux">${s.nouveaux.length ? tableSaisie(s.nouveaux, s.roles, finNegos, "Décision") : `<p class="msg">Aucun nouveau contact.${s.pourquoi_aucun ? `<br><b>Pourquoi :</b> ${esc(s.pourquoi_aucun)}` : ""}</p>`}</div>
     <p class="note">Complétez ou corrigez librement (e-mail ou téléphone trouvé ailleurs, fonction, rôle, LinkedIn), puis « Valider pour HubSpot ». « Enregistrer » garde vos saisies sans décider.
       Un contact déjà dans Pipedrive ailleurs : vous dites s'il faut l'ajouter, Marie ou Michel décident ensuite s'il change de société.</p>
     <h3>Déjà au CRM <span class="pill">${s.crm.length}</span></h3>
