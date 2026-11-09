@@ -181,6 +181,9 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
     <a class="btn ghost" id="phoning" hidden style="display:block;text-align:center;margin:0 0 8px;font-size:13px">📞 Liste de phoning de ce fichier (Excel)</a>
     <button class="btn ghost" id="profils" hidden style="display:block;width:100%;text-align:center;margin:0 0 4px;font-size:13px">🔎 Lire les profils LinkedIn restants</button>
     <div class="msg" id="profilsMsg" style="font-size:12px;margin:0 0 8px"></div>
+    <button class="btn ghost" id="relCorr" hidden style="display:block;width:100%;text-align:center;margin:0 0 4px;font-size:13px"
+            title="Nouvelle recherche des dirigeants sur la page LinkedIn que vous avez corrigée (compte LinkedIn de Marie, 50 par clic)"></button>
+    <div class="msg" id="relCorrMsg" style="font-size:12px;margin:0 0 8px"></div>
     <select id="tri" aria-label="Ordre de la liste" style="margin-bottom:8px;width:100%"><option value="alpha">Ordre alphabétique (repérer les doublons)</option><option value="date">Les plus récentes d'abord</option></select>
     <input type="search" id="cherche" placeholder="Chercher une société, un SIREN, un lancement…" aria-label="Chercher">
     <div class="items" id="items"><div class="vide">Chargement de la mémoire Notion…</div></div>
@@ -218,8 +221,28 @@ async function charger() {
   try { j = await api("/v3/validation/api/societes"); SOC = j.societes; }
   catch (e) { $("#items").innerHTML = `<div class="vide">${esc(e.message)}</div>`; return; }
   if (j.equipe_erreur) $("#items").insertAdjacentHTML("beforebegin", `<p class="note">${esc(j.equipe_erreur)}</p>`);
-  NEGOS = j.negos || []; dessinerFiltres(); dessinerListe();
+  NEGOS = j.negos || []; dessinerFiltres(); dessinerListe(); dessinerRelCorr();
 }
+
+// Fiches dont la page LinkedIn a été corrigée et pas encore relancée
+function dessinerRelCorr() {
+  const n = SOC.filter(s => s.linkedin_corrige && s.validation !== "Écartée").length;
+  $("#relCorr").hidden = !n;
+  $("#relCorr").textContent = `🔁 Relancer ${n > 1 ? "les " + n + " fiches" : "la fiche"} à page LinkedIn corrigée`;
+}
+$("#relCorr").onclick = async () => {
+  $("#relCorr").disabled = true;
+  try {
+    const r = await api("/v3/validation/api/relancer-corriges", {});
+    $("#relCorrMsg").innerHTML = r.lance
+      ? `${r.a_relancer} société(s) relancée(s) : <a href="/v3/journee" target="_blank" rel="noopener">suivre le run</a>.`
+        + (r.restent ? ` ${r.restent} autre(s) au prochain clic.` : "") + " Les nouvelles fiches arriveront « À valider »."
+      : esc(r.message || "Rien à relancer.");
+    SOC.forEach(s => { if (s.linkedin_corrige) s.linkedin_corrige = ""; });
+    if (r.restent) setTimeout(charger, 2000); else dessinerRelCorr();
+  } catch (e) { $("#relCorrMsg").textContent = e.message; }
+  $("#relCorr").disabled = false;
+};
 
 // Filtre par négo : chaque société porte « attribue_a » (prénoms) et « non_attribue »
 function dessinerQui(negos) {
@@ -660,7 +683,9 @@ function ecranSociete() {
     try {
       await api("/v3/validation/api/page-linkedin/" + courant, {url});
       await ouvrir(courant);
-      message(url ? "Page LinkedIn corrigée. Cliquez sur « Relancer cette société » pour chercher ses dirigeants sur cette page."
+      const soc = SOC.find(x => x.page.replace(/-/g, "") === courant.replace(/-/g, ""));
+      if (soc) { soc.linkedin_corrige = url; dessinerRelCorr(); }
+      message(url ? "Page LinkedIn corrigée. Relancez-la maintenant (« Relancer cette société ») ou plus tard avec les autres (bouton 🔁 dans la liste)."
                   : "Correction retirée.");
     } catch (e) { message(e.message, true); }
   };

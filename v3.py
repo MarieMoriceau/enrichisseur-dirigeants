@@ -1652,7 +1652,29 @@ async def corriger_page_linkedin(page_id: str, req: Request):
             await _reecrire(c, page_id, data)
     except RuntimeError as e:
         return JSONResponse({"erreur": f"Notion : {e}"}, 502)
+    # colonne visible dans la liste : la fiche attend la relance groupée (« Relancer les fiches corrigées »)
+    if await VALID.assurer_colonne("LinkedIn corrigé"):
+        await VALID._maj(page_id, {"LinkedIn corrigé": {"rich_text": [{"text": {"content": url}}] if url else []}})
     return {"ok": True, "linkedin_corrige": url}
+
+
+@router.post("/v3/validation/api/relancer-corriges")
+async def relancer_corriges(req: Request):
+    """Admin : bouton « Relancer les fiches à page LinkedIn corrigée ». Pas d'essai à blanc : le bouton affiche déjà
+    le nombre de fiches. 50 par clic au plus. Chaque relance crée une fiche neuve (sans la marque) : rien n'est relancé deux fois."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    try:
+        socs = await VALID._toutes()
+    except RuntimeError as e:
+        return JSONResponse({"erreur": str(e)}, 502)
+    pages = [s["page"].replace("-", "") for s in socs if s.get("linkedin_corrige") and s["validation"] != "Écartée"]
+    if not pages:
+        return {"a_relancer": 0, "message": "aucune fiche à page LinkedIn corrigée en attente"}
+    rep = await _relancer(req, pages[:50], True, PLAN.OUTILS)
+    if isinstance(rep, dict):
+        rep["restent"] = max(0, len(pages) - 50)
+    return rep
 
 
 async def nom_pipedrive(org_id: str) -> str:
