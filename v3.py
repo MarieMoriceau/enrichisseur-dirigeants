@@ -1636,7 +1636,7 @@ async def corriger_page_linkedin(page_id: str, req: Request):
         return JSONResponse({"erreur": "identifiant invalide"}, 400)
     b = await req.json()
     brut = str(b.get("url") or "").strip()
-    url = LI.page_societe(brut)
+    url = LI.AUCUNE_PAGE if brut.lower() == LI.AUCUNE_PAGE else LI.page_societe(brut)
     if brut and not url:
         return JSONResponse({"erreur": "page société attendue : https://www.linkedin.com/company/…"}, 400)
     data = await MEM.lire(page_id)

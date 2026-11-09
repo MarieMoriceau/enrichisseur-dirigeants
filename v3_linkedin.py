@@ -1019,6 +1019,9 @@ def dirigeants_sirene(res: list) -> list:
     return out
 
 
+AUCUNE_PAGE = "aucune"       # valeur de linkedin_corrige : la société n'a pas de page (URL Finder n'est plus tenté)
+
+
 def page_societe(url: str) -> str:
     """URL de page société LinkedIn propre (« …/company/x/about/?y » → « https://www.linkedin.com/company/x/ ») ; "" sinon."""
     m = re.search(r"linkedin\.com/(company|school|showcase)/([^/?#\s]+)", url or "", re.I)
@@ -1121,12 +1124,14 @@ async def etapes_linkedin(job: dict, ressemblance, domaine):
         # 3a. page LinkedIn : celle du site d'abord, sinon Company URL Finder
         for r in res:
             r["linkedin"], r["source_linkedin"] = (r.get("linkedin_site") or ""), ("site web" if r.get("linkedin_site") else "")
-            if r.get("linkedin_corrige"):                             # page corrigée dans la validation : prioritaire sur tout
+            if r.get("linkedin_corrige") == AUCUNE_PAGE:              # « pas de page LinkedIn » confirmé dans la validation
+                r["linkedin"], r["source_linkedin"] = "", "aucune page (confirmé à la main)"
+            elif r.get("linkedin_corrige"):                           # page corrigée dans la validation : prioritaire sur tout
                 r["linkedin"], r["source_linkedin"] = page_societe(r["linkedin_corrige"]), "fichier"
             elif not r["linkedin"] and r.get("linkedin_fichier"):     # page ajoutée à la main dans le fichier : prioritaire
                 r["linkedin"] = re.sub(r"/(home|about|people|posts|jobs)/?$", "/", r["linkedin_fichier"].split("?")[0])
                 r["source_linkedin"] = "fichier"
-        manquants = [r for r in res if not r["linkedin"]]
+        manquants = [r for r in res if not r["linkedin"] and r.get("linkedin_corrige") != AUCUNE_PAGE]
         if manquants and PB_URL_FINDER:
             job["phase"] = f"Recherche des pages LinkedIn manquantes ({len(manquants)})…"
             try:
