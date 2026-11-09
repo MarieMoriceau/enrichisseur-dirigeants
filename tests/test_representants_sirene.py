@@ -158,3 +158,24 @@ def test_pourquoi_aucun_nouveau():
     assert P({"dirigeants": [], "linkedin_id": "", "confiance": "haute"}) == "aucune page LinkedIn trouvée, et aucun président ou gérant (personne physique) dans SIRENE"
     assert P({"dirigeants": [], "linkedin_id": "9", "sn_vus": 4, "sn_ecartes": ["Comptable"], "memoire": True}).startswith("Sales Navigator : 4 personne(s) vue(s)")
     assert P({"dirigeants": [], "pourquoi_contact": "société fermée à l'INSEE"}) == "société fermée à l'INSEE"
+
+
+def test_pas_de_page_linkedin(monkeypatch):
+    ecrit, props = {}, {}
+    async def lire(p):
+        return {"nom": "Akiva", "linkedin": "https://linkedin.com/company/ecole-akiva"}
+    async def reecrire(c, p, d):
+        ecrit.update(d)
+    async def colonne(nom, genre="rich_text"):
+        return True
+    async def maj(p, pr):
+        props.update(pr)
+    monkeypatch.setattr(v3.VALID, "_refus", lambda req, role: None)
+    monkeypatch.setattr(v3.MEM, "lire", lire)
+    monkeypatch.setattr(RAT, "_reecrire", reecrire)
+    monkeypatch.setattr(v3.VALID, "assurer_colonne", colonne)
+    monkeypatch.setattr(v3.VALID, "_maj", maj)
+    app = FastAPI(); app.include_router(v3.router)
+    r = TestClient(app).post(f"/v3/validation/api/page-linkedin/{'0' * 32}", json={"url": "aucune"})
+    assert r.status_code == 200 and ecrit["linkedin_corrige"] == "aucune"
+    assert props["LinkedIn corrigé"]["rich_text"][0]["text"]["content"] == "aucune"      # compté dans la relance groupée
