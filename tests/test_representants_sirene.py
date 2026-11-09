@@ -76,6 +76,9 @@ def test_route_page_linkedin(monkeypatch):
     monkeypatch.setattr(v3.VALID, "_refus", lambda req, role: None)
     monkeypatch.setattr(v3.MEM, "lire", lire)
     monkeypatch.setattr(RAT, "_reecrire", reecrire)
+    async def pas_de_colonne(nom, genre="rich_text"):
+        return False
+    monkeypatch.setattr(v3.VALID, "assurer_colonne", pas_de_colonne)
     app = FastAPI(); app.include_router(v3.router)
     c = TestClient(app)
     p = "0" * 32
@@ -108,3 +111,42 @@ def test_essai_rouvert_pas_relance(monkeypatch):
     app = FastAPI(); app.include_router(RAT.router)
     r = TestClient(app).get("/v3/validation/api/profils-sirene?lancement=dossier enrichisseur SL")
     assert r.status_code == 200 and r.json()["trouves"] == 20 and not lances
+
+
+def test_relance_groupee_des_pages_corrigees(monkeypatch):
+    socs = [{"page": "a" * 32, "linkedin_corrige": "https://www.linkedin.com/company/x/", "validation": "À valider"},
+            {"page": "b" * 32, "linkedin_corrige": "", "validation": "À valider"},
+            {"page": "c" * 32, "linkedin_corrige": "https://www.linkedin.com/company/y/", "validation": "Écartée"}]
+    vus = {}
+    async def toutes():
+        return socs
+    async def relancer(req, pages, confirmer, origine):
+        vus.update(pages=pages, confirmer=confirmer)
+        return {"lance": "j1", "a_relancer": len(pages)}
+    monkeypatch.setattr(v3.VALID, "_refus", lambda req, role: None)
+    monkeypatch.setattr(v3.VALID, "_toutes", toutes)
+    monkeypatch.setattr(v3, "_relancer", relancer)
+    app = FastAPI(); app.include_router(v3.router)
+    r = TestClient(app).post("/v3/validation/api/relancer-corriges", json={})
+    assert r.status_code == 200 and r.json()["a_relancer"] == 1 and r.json()["restent"] == 0
+    assert vus == {"pages": ["a" * 32], "confirmer": True}                  # pas d'essai à blanc, écartée exclue
+
+
+def test_marque_posee_a_la_correction(monkeypatch):
+    props = {}
+    async def lire(p):
+        return {"nom": "X"}
+    async def reecrire(c, p, d):
+        pass
+    async def colonne(nom, genre="rich_text"):
+        return True
+    async def maj(p, pr):
+        props.update(pr)
+    monkeypatch.setattr(v3.VALID, "_refus", lambda req, role: None)
+    monkeypatch.setattr(v3.MEM, "lire", lire)
+    monkeypatch.setattr(RAT, "_reecrire", reecrire)
+    monkeypatch.setattr(v3.VALID, "assurer_colonne", colonne)
+    monkeypatch.setattr(v3.VALID, "_maj", maj)
+    app = FastAPI(); app.include_router(v3.router)
+    TestClient(app).post(f"/v3/validation/api/page-linkedin/{'0' * 32}", json={"url": "linkedin.com/company/caa-expertise"})
+    assert props["LinkedIn corrigé"]["rich_text"][0]["text"]["content"] == "https://www.linkedin.com/company/caa-expertise/"
