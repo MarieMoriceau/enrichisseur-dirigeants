@@ -282,6 +282,22 @@ def _json(v, defaut):
         return defaut
 
 
+RE_RACHAT_LIBRE = re.compile(r"(?:rachet[ée]e?s?|absorb[ée]e?s?|reprise?|devenue?)\s+(?:par\s+)?(.+)", re.I)
+
+
+def repreneur_de(repreneur: str, motif: str) -> str:
+    """Repreneur saisi ; à défaut, lu dans un motif libre écrit avant le 09/11 (« RACHETEE PAR OH MY CREAM »)."""
+    if repreneur:
+        return repreneur
+    for morceau in (motif or "").split(" · "):
+        if morceau.strip() == MOTIF_RACHAT:
+            continue
+        m = RE_RACHAT_LIBRE.search(morceau.strip())
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return ""
+
+
 def _props(pg: dict) -> dict:
     p = pg.get("properties") or {}
     nb = lambda n: (p.get(n) or {}).get("number")
@@ -294,6 +310,7 @@ def _props(pg: dict) -> dict:
             "hubspot": MEM._val(p, "Envoyée à HubSpot le")[:10], "lance_par": MEM._val(p, "Lancé par"),
             "negos": MEM._val(p, "Négos"),
             "decision_ecart": MEM._val(p, "Écartée pour"), "motif_ecart": MEM._val(p, "Motif écart"),
+            "repreneur": repreneur_de(MEM._val(p, "Repreneur"), MEM._val(p, "Motif écart")),
             "partis": MEM._val(p, "Partis suivis"), "siren_corrige": MEM._val(p, "SIREN corrigé"),
             "base_quali": MEM._val(p, "Base quali"), "debut_bail": MEM._val(p, "Début de bail"),
             "flexoffice": MEM._val(p, "Flexoffice") == "oui", "operateur_flex": MEM._val(p, "Opérateur flex"),
@@ -443,18 +460,19 @@ async def assurer_colonne(nom: str, genre: str = "rich_text") -> bool:
 
 
 DECISIONS_ECART = ["Hors cible HubSpot", "À supprimer de la base"]
-MOTIFS_ECART = ["Effectif trop faible", "Hors Île-de-France", "Société fermée", "Doublon"]
+MOTIF_RACHAT = "Rachetée / renommée"
+MOTIFS_ECART = ["Effectif trop faible", "Hors Île-de-France", "Société fermée", MOTIF_RACHAT, "Doublon"]
 _COLONNES_ECART = {"ok": False}
 
 
 async def _assurer_colonnes_ecart():
-    """Crée une fois les colonnes « Écartée pour » et « Motif écart » dans la base mémoire Notion si elles manquent."""
+    """Crée une fois les colonnes « Écartée pour », « Motif écart » et « Repreneur » dans la base mémoire Notion si elles manquent."""
     if _COLONNES_ECART["ok"]:
         return
     async with httpx.AsyncClient(timeout=30) as c:
         r = await MEM._req(c, "PATCH", f"https://api.notion.com/v1/databases/{MEM.MEMOIRE_DB}", json={"properties": {
             "Écartée pour": {"select": {"options": [{"name": n} for n in DECISIONS_ECART]}},
-            "Motif écart": {"rich_text": {}}}})
+            "Motif écart": {"rich_text": {}}, "Repreneur": {"rich_text": {}}}})
     _COLONNES_ECART["ok"] = r.status_code == 200
     if r.status_code != 200:
         print(f"[V3 VALIDATION] colonnes d'écart : Notion {r.status_code} {r.text[:200]}")
@@ -476,7 +494,7 @@ async def valider_societe(page_id: str, req: Request):
         return JSONResponse({"erreur": "cochez ou saisissez l'adresse retenue"}, 400)
     if source and source not in SOURCES:
         return JSONResponse({"erreur": "source inconnue"}, 400)
-    decision, motif = "", ""
+    decision, motif, repreneur = "", "", ""
     if statut == "Écartée":
         decision = b.get("decision") or "À supprimer de la base"     # depuis le 26/10 : écarter = à supprimer de la base
         if decision not in DECISIONS_ECART:
@@ -484,12 +502,18 @@ async def valider_societe(page_id: str, req: Request):
         motifs = [m for m in (b.get("motifs") or []) if m in MOTIFS_ECART]
         libre = re.sub(r"\s+", " ", str(b.get("motif_libre") or "")).strip()[:300]
         motif = " · ".join(motifs + ([libre] if libre else []))
+        repreneur = re.sub(r"\s+", " ", str(b.get("repreneur") or "")).strip()[:200]
+        if MOTIF_RACHAT in motifs and not repreneur:
+            return JSONResponse({"erreur": "indiquez le repreneur ou le nouveau nom"}, 400)
+        if MOTIF_RACHAT not in motifs:
+            repreneur = ""
     await _assurer_colonnes_ecart()
     props = {"Validation": {"select": {"name": statut}},
              "Validée le": {"date": {"start": datetime.now(timezone.utc).isoformat(timespec="seconds")} if statut != "À valider" else None}}
     if _COLONNES_ECART["ok"]:                     # écartée : la décision ; sinon on efface une ancienne décision
         props["Écartée pour"] = {"select": {"name": decision}} if decision else {"select": None}
         props["Motif écart"] = MEM._txt(motif)
+        props["Repreneur"] = MEM._txt(repreneur)
     if statut == "Société validée":
         props["Adresse retenue"] = MEM._txt(adresse)
         props["Source adresse retenue"] = {"select": {"name": source}} if source else {"select": None}

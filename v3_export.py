@@ -211,16 +211,19 @@ def construire(socs: list) -> tuple:
     feuille(wb, "Sociétés des partis", ["Company Domain Name", "Name", "LinkedIn Company Page", "Street Address", "Postal Code",
                                         "City", "Effectif LinkedIn"], l_soc_partis)
     a_suppr = [s for s in ecartees if s.get("decision_ecart") == "À supprimer de la base"]
-    feuille(wb, "Sociétés écartées", ["Société", "Domaine", "SIREN", "ID Pipedrive", "Décision", "Motif", "Écartée le"],
+    feuille(wb, "Sociétés écartées", ["Société", "Domaine", "SIREN", "ID Pipedrive", "Décision", "Motif", "Repreneur", "Écartée le"],
             [[s["nom"], domaine_de[s["page"]], s["siren"], (s["data"] or {}).get("id", ""), s.get("decision_ecart") or "Hors cible HubSpot",
-              s.get("motif_ecart", ""), _date(s["validee"])] for s in ecartees])
-    feuille(wb, "À supprimer", ["Société", "ID Pipedrive", "SIREN", "Domaine", "Motif", "Décidé le"],
-            [[s["nom"], (s["data"] or {}).get("id", ""), s["siren"], domaine_de[s["page"]], s.get("motif_ecart", ""), _date(s["validee"])]
-             for s in a_suppr])
+              s.get("motif_ecart", ""), s.get("repreneur", ""), _date(s["validee"])] for s in ecartees])
+    feuille(wb, "À supprimer", ["Société", "ID Pipedrive", "SIREN", "Domaine", "Motif", "Repreneur", "Décidé le"],
+            [[s["nom"], (s["data"] or {}).get("id", ""), s["siren"], domaine_de[s["page"]], s.get("motif_ecart", ""), s.get("repreneur", ""),
+              _date(s["validee"])] for s in a_suppr])
+    repris = [s for s in ecartees if s.get("repreneur")]          # repreneurs et nouveaux noms : à lancer dans l'enrichisseur
+    feuille(wb, "Repreneurs", ["Repreneur ou nouveau nom", "Ancienne société", "SIREN ancienne société", "Adresse retenue", "Écartée le"],
+            [[s["repreneur"], s["nom"], s["siren"], s.get("adresse_retenue", ""), _date(s["validee"])] for s in repris])
     b = io.BytesIO()
     wb.save(b)
     resume = {"societes": len(l_soc), "contacts": len(l_new), "existants": len(l_exist), "crm": len(l_crm), "ecartees": len(ecartees),
-              "a_supprimer": len(a_suppr), "partis": len(l_partis)}
+              "a_supprimer": len(a_suppr), "partis": len(l_partis), "repreneurs": len(repris)}
     return b.getvalue(), resume
 
 

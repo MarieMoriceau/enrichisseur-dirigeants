@@ -129,7 +129,7 @@ input.sel{width:17px;height:17px;margin:0 8px 0 0;vertical-align:-3px;cursor:poi
 .choix-ecart small{display:block;color:var(--muted);font-size:12.5px}
 .motifs{display:flex;flex-wrap:wrap;gap:6px 16px;margin:12px 0 8px;font-size:14px}
 .motifs label{display:flex;gap:6px;align-items:center;cursor:pointer}
-#motifLibre{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+#motifLibre,#repreneur{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
 @media (max-width:720px){.choix-ecart{grid-template-columns:1fr}}
 .boutons{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .boutons .btn{padding:6px 10px;font-size:13px}
@@ -200,7 +200,8 @@ const ETAPES = ["À valider","Société validée","Contacts validés","Écartée
 const LIB = {"À valider":"Sociétés à valider","Société validée":"Contacts à valider","Contacts validés":"Terminées","Écartée":"Écartées","Toutes":"Toutes"};
 const lib = e => LIB[e] || e;
 const SEUIL_EFFECTIF = 10;                       // en dessous : signalé « effectif trop faible » (suggestion)
-const MOTIFS = ["Effectif trop faible", "Hors Île-de-France", "Société fermée", "Doublon"];
+const MOTIF_RACHAT = "Rachetée / renommée";
+const MOTIFS = ["Effectif trop faible", "Hors Île-de-France", "Société fermée", MOTIF_RACHAT, "Doublon"];
 const IDF = ["75", "77", "78", "91", "92", "93", "94", "95"];   // départements d'Île-de-France
 const PILL = {"À valider":"", "Société validée":"warn", "Contacts validés":"ok", "Écartée":"ko"};
 let SOC = [], filtre = "À valider", courant = null, info = null, ecran = "societe";
@@ -479,7 +480,7 @@ function ecranSociete() {
   if (/radi|ferm/i.test(d.statut || "")) alertes.push(["Société fermée", "Société fermée à l'INSEE"]);
   $("#ecran").innerHTML = `
     ${alertes.length ? `<div class="alerte"><b>À regarder :</b> ${alertes.map(a => esc(a[1])).join(" · ")}. Elle n'entre peut-être pas dans HubSpot.</div>` : ""}
-    ${info.validation === "Écartée" ? `<div class="alerte ko"><b>${esc(info.decision_ecart || "À supprimer de la base")}</b>${info.motif_ecart ? " · " + esc(info.motif_ecart) : ""}${info.validee ? ` · le ${esc(info.validee)}` : ""}</div>` : ""}
+    ${info.validation === "Écartée" ? `<div class="alerte ko"><b>${esc(info.decision_ecart || "À supprimer de la base")}</b>${info.motif_ecart ? " · " + esc(info.motif_ecart) : ""}${info.repreneur ? " · repreneur : " + esc(info.repreneur) : ""}${info.validee ? ` · le ${esc(info.validee)}` : ""}</div>` : ""}
     <div class="reco"><b>Recommandation de l'outil :</b> ${esc(physique(d.action_adresse) || "aucune")}
       ${d.adresse_proposee ? `<br><b>Adresse proposée :</b> ${esc(d.adresse_proposee)}` : ""}
       ${d.confiance_adresse ? `<br><small>Confiance ${esc(d.confiance_adresse)}${d.sources_adresse ? " · sources : " + esc(physique(d.sources_adresse)) : ""}</small>` : ""}
@@ -554,6 +555,7 @@ function ecranSociete() {
       <h3>Écarter cette société</h3>
       <p class="note">La société sera <b>à supprimer de la base</b> : listée dans l'onglet « À supprimer » de l'export (Pipedrive aujourd'hui, HubSpot demain). Pour un nom ou un SIREN faux, ne l'écartez pas : corrigez-le puis « Relancer cette société ».</p>
       <div class="motifs">${MOTIFS.map(m => `<label><input type="checkbox" value="${esc(m)}" ${alertes.some(a => a[0] === m) || (info.motif_ecart || "").includes(m) ? "checked" : ""}> ${esc(m)}</label>`).join("")}</div>
+      <input type="text" id="repreneur" value="${esc(info.repreneur || "")}" placeholder="Repreneur ou nouveau nom (ex. BDO Advisory, act legal France)" aria-label="Repreneur ou nouveau nom" ${(info.motif_ecart || "").includes(MOTIF_RACHAT) ? "" : "hidden"} style="margin-bottom:8px">
       <input type="text" id="motifLibre" placeholder="Autre précision (facultatif)" aria-label="Autre précision">
       <div class="actions"><button class="btn primary" id="okEcart">Confirmer l'écart</button><button class="btn ghost" id="annEcart">Annuler</button></div>
     </div>`;
@@ -757,10 +759,16 @@ function ecranSociete() {
   };
   $("#koSoc").onclick = () => { $("#panEcart").hidden = false; $("#panEcart").scrollIntoView({behavior: "smooth", block: "nearest"}); };
   $("#annEcart").onclick = () => { $("#panEcart").hidden = true; };
-  $("#okEcart").onclick = () => envoyerSociete({statut: "Écartée",
-    decision: "À supprimer de la base",
-    motifs: [...document.querySelectorAll("#panEcart .motifs input:checked")].map(x => x.value),
-    motif_libre: $("#motifLibre").value.trim()});
+  const caseRachat = [...document.querySelectorAll("#panEcart .motifs input")].find(x => x.value === MOTIF_RACHAT);
+  caseRachat.onchange = () => { $("#repreneur").hidden = !caseRachat.checked; if (caseRachat.checked) $("#repreneur").focus(); };
+  $("#okEcart").onclick = () => {
+    if (caseRachat.checked && !$("#repreneur").value.trim()) { $("#repreneur").focus(); $("#msg").textContent = "Indiquez le repreneur ou le nouveau nom."; return; }
+    envoyerSociete({statut: "Écartée",
+      decision: "À supprimer de la base",
+      motifs: [...document.querySelectorAll("#panEcart .motifs input:checked")].map(x => x.value),
+      motif_libre: $("#motifLibre").value.trim(),
+      repreneur: caseRachat.checked ? $("#repreneur").value.trim() : ""});
+  };
   $("#raz") && ($("#raz").onclick = () => envoyerSociete({statut: "À valider"}, "societe"));
 }
 
@@ -797,7 +805,7 @@ async function envoyerSociete(corps, suite) {
   message("Enregistrement dans Notion…");
   try {
     const maj = await api("/v3/validation/api/societe/" + courant, corps);
-    Object.assign(info, {validation: maj.validation, adresse_retenue: maj.adresse_retenue, decision_ecart: maj.decision_ecart, motif_ecart: maj.motif_ecart});
+    Object.assign(info, {validation: maj.validation, adresse_retenue: maj.adresse_retenue, decision_ecart: maj.decision_ecart, motif_ecart: maj.motif_ecart, repreneur: maj.repreneur});
     const s = SOC.find(s => s.page === courant); if (s) Object.assign(s, maj, {decisions: undefined});
     dessinerFiltres();
     if (corps.statut === "Écartée") return suivante();
