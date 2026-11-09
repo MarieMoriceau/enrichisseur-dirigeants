@@ -21,8 +21,10 @@ def _client(monkeypatch):
             return R(200)
         props = json["properties"]
         sel = lambda n: {"type": "select", "select": props[n]["select"] if n in props else None}
+        txt = lambda n: {"type": "rich_text", "rich_text": [{"plain_text": b["text"]["content"]}
+                                                            for b in props.get(n, {}).get("rich_text", [])]}
         return R(200, {"id": PAGE, "properties": {"Validation": sel("Validation"), "Écartée pour": sel("Écartée pour"),
-                       "Motif écart": props.get("Motif écart", {"rich_text": []})}})
+                       "Motif écart": txt("Motif écart"), "Repreneur": txt("Repreneur")}})
     monkeypatch.setattr(VAL.MEM, "_req", faux_req)
     monkeypatch.setattr(VAL, "_refus", lambda req, besoin: None)
     VAL._COLONNES_ECART["ok"] = False
@@ -52,3 +54,36 @@ def test_remettre_a_valider_efface(monkeypatch):
 def test_decision_inconnue(monkeypatch):
     c, _ = _client(monkeypatch)
     assert c.post(f"/v3/validation/api/societe/{PAGE}", json={"statut": "Écartée", "decision": "n'importe"}).status_code == 400
+
+
+def test_rachetee_avec_repreneur(monkeypatch):
+    c, envois = _client(monkeypatch)
+    r = c.post(f"/v3/validation/api/societe/{PAGE}", json={"statut": "Écartée", "motifs": ["Rachetée / renommée"],
+                                                         "repreneur": "  BDO   Advisory "})
+    assert r.status_code == 200, r.text
+    assert "Repreneur" in envois[0][2]["properties"]                         # colonne créée avec les autres
+    props = envois[1][2]["properties"]
+    assert props["Motif écart"]["rich_text"][0]["text"]["content"] == "Rachetée / renommée"
+    assert props["Repreneur"]["rich_text"][0]["text"]["content"] == "BDO Advisory"
+    assert r.json()["repreneur"] == "BDO Advisory"
+
+
+def test_rachetee_sans_repreneur_refusee(monkeypatch):
+    c, envois = _client(monkeypatch)
+    r = c.post(f"/v3/validation/api/societe/{PAGE}", json={"statut": "Écartée", "motifs": ["Rachetée / renommée"]})
+    assert r.status_code == 400
+    assert not any(m == "PATCH" and "/pages/" in u for m, u, _ in envois)
+
+
+def test_repreneur_ignore_sans_le_motif(monkeypatch):
+    c, envois = _client(monkeypatch)
+    c.post(f"/v3/validation/api/societe/{PAGE}", json={"statut": "Écartée", "motifs": ["Société fermée"], "repreneur": "X"})
+    assert envois[-1][2]["properties"]["Repreneur"]["rich_text"][0]["text"]["content"] == ""
+
+
+def test_repreneur_lu_dans_un_ancien_motif():
+    assert VAL.repreneur_de("", "RACHETEE PAR OH MY CREAM") == "OH MY CREAM"
+    assert VAL.repreneur_de("", "Effectif trop faible · absorbée par BDO Advisory") == "BDO Advisory"
+    assert VAL.repreneur_de("", "Rachetée / renommée") == ""
+    assert VAL.repreneur_de("", "Société fermée · PAS ASSEZ D INFOS") == ""
+    assert VAL.repreneur_de("Stax", "RACHETEE PAR AUTRE") == "Stax"
