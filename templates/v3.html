@@ -176,6 +176,10 @@ footer a{color:var(--tag-ink)}
           <option value="negos">Demande de négo · compte LinkedIn « négos »</option>
         </select>
         <small id="origineInfo" style="display:block;color:var(--muted)">Les exports de la géolocalisation et de la prospection hebdo sont reconnus tout seuls.</small><!--/ORIGINE-->
+        <label style="margin-top:14px;display:flex;gap:8px;align-items:flex-start;font-weight:400">
+          <input type="checkbox" name="forcer" value="1" style="width:auto;margin-top:3px">
+          <span><b>Ignorer la mémoire</b> · relance après une panne (Anthropic, Kaspr…) : tout est recherché à nouveau,
+            même les sociétés traitées il y a moins de 6 mois.</span></label>
         <label for="mail" style="margin-top:14px">Votre e-mail <span style="font-weight:400;color:var(--muted)">(l'Excel vous y sera envoyé à la fin)</span></label>
         <input type="email" id="mail" name="mail" required placeholder="prenom.nom@equation-sie.com" autocomplete="email">
         <div class="row">

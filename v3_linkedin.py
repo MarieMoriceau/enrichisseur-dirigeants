@@ -544,6 +544,44 @@ class PhantomEnPanne(RuntimeError):
     on arrête le lancement au lieu de continuer à vide."""
 
 
+class FournisseurEnPanne(RuntimeError):
+    """Anthropic (recherche web Claude) ou Kaspr refuse les demandes : paiement, crédits épuisés, clé refusée.
+    On arrête le lancement net au lieu de rendre un Excel qui a l'air complet mais ne contient rien (17/11)."""
+    def __init__(self, service: str, code: int, detail: str = ""):
+        self.service, self.code = service, code
+        super().__init__(f"{service} refuse les demandes (code {code})" + (f" : {detail}" if detail else ""))
+
+
+MOTS_PANNE = ("credit", "crédit", "balance", "billing", "payment", "paiement", "subscription", "abonnement",
+              "insufficient", "upgrade", "expired")
+
+
+def _detail_erreur(r) -> str:
+    try:
+        j = r.json()
+        e = j.get("error")
+        msg = (e.get("message") if isinstance(e, dict) else e) or j.get("message") or ""
+    except Exception:
+        msg = ""
+    return str(msg or r.text or "")[:200].strip()
+
+
+def panne_anthropic(r):
+    """400 à 404 sur nos demandes, toujours les mêmes : compte non payé, clé refusée ou modèle retiré. Jamais passager.
+    429 et 529 (surcharge) restent des erreurs ponctuelles."""
+    if r.status_code in (400, 401, 402, 403, 404):
+        return FournisseurEnPanne("Anthropic (recherche web Claude)", r.status_code, _detail_erreur(r))
+    return None
+
+
+def panne_kaspr(r):
+    """401 à 403 : clé ou abonnement refusé. 400 / 429 seulement si le message parle de crédits ou de paiement
+    (404 = profil introuvable, c'est normal)."""
+    if r.status_code in (401, 402, 403) or (r.status_code in (400, 429) and any(m in r.text.lower() for m in MOTS_PANNE)):
+        return FournisseurEnPanne("Kaspr", r.status_code, _detail_erreur(r))
+    return None
+
+
 SN_ECHECS_MAX = 2          # lots Sales Navigator d'affilée en erreur et sans aucun profil avant d'arrêter
 SCRAPER_LOT = int(os.getenv("SCRAPER_LOT", "20"))   # Company Scraper : sociétés par lancement (125 d'un coup = plus d'une heure)
 SCRAPER_ECHECS_MAX = 2     # lots Company Scraper d'affilée sans aucune page lue avant d'arrêter
@@ -559,6 +597,8 @@ async def kaspr_email(c: httpx.AsyncClient, nom: str, url_profil: str) -> str:
             "Authorization": f"Bearer {KASPR_KEY}", "Content-Type": "application/json", "accept-version": "v2.0"},
             json={"name": nom, "id": url_profil, "dataToGet": ["workEmail"]})
         if r.status_code != 200:
+            if (panne := panne_kaspr(r)):
+                raise panne
             return ""
         d = r.json()
         for cle in ("emails", "workEmails", "work_emails"):
@@ -575,6 +615,8 @@ async def kaspr_email(c: httpx.AsyncClient, nom: str, url_profil: str) -> str:
             v = e if isinstance(e, str) else (e.get("email") or e.get("value") or "")
             if "@" in v:
                 return v
+    except FournisseurEnPanne:
+        raise
     except Exception:
         pass
     return ""
@@ -1064,8 +1106,12 @@ async def profil_representant(c: httpx.AsyncClient, d: dict, r: dict) -> tuple:
                   "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
                   "messages": [{"role": "user", "content": prompt}]})
         if rep.status_code != 200:
+            if (panne := panne_anthropic(rep)):
+                raise panne
             return "", ""
         txt = " ".join(b.get("text", "") for b in rep.json().get("content", []) if b.get("type") == "text").strip()
+    except FournisseurEnPanne:
+        raise
     except Exception:
         return "", ""
     lignes = [l for l in txt.splitlines() if "linkedin.com/in/" in l.lower()]
