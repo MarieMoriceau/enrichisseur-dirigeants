@@ -583,7 +583,11 @@ async def chercher_domaine(api: httpx.AsyncClient, nom: str, cp: str, ville: str
                     return domaine(m[-1]), "recherche web (Claude)"
                 return "", "recherche web : aucun site sûr"
             print(f"[V3 RECHERCHE SITE] {r.status_code} {r.text[:200]}")
+            if (panne := LI.panne_anthropic(r)):
+                raise panne
             return "", f"recherche web en erreur ({r.status_code})"
+        except LI.FournisseurEnPanne:
+            raise
         except Exception as e:
             print(f"[V3 RECHERCHE SITE] {e}")
             return "", "recherche web en erreur"
@@ -934,6 +938,15 @@ async def traiter(job_id: str, orgs: list):
             await SUIVI.alerte_phantom(job, n)
         except Exception as e:
             jlog(job, f"alerte phantom impossible : {e}")
+    if job.get("fournisseur_en_panne"):              # Anthropic et Kaspr servent aux deux comptes : tout est suspendu
+        try:
+            n = 0
+            for o in (PLAN.OUTILS, PLAN.NEGOS):
+                n += await SUIVI.suspendre_attente(o, f"{job['fournisseur_en_panne'][:120]} ({job['nom']})")
+            jlog(job, f"{n} liste(s) programmée(s) suspendue(s) en attendant la réparation")
+            await SUIVI.alerte_fournisseur(job, n)
+        except Exception as e:
+            jlog(job, f"alerte panne impossible : {e}")
     jlog(job, f"fin du run : {job['motif_texte']}" + (f" · {job['reliquat']} sociétés reportées" if job.get("reliquat") else ""))
     try:
         xl = excel(job) if job["resultats"] else None
@@ -952,6 +965,15 @@ async def traiter(job_id: str, orgs: list):
     if job["resultats"] or not job.get("report"):     # tout reporté : le mail « programmé » suffit
         await SUIVI.envoyer_resultat(job, xl, fn, xl_nego, fn.replace(".xlsx", "_contacts.xlsx"))
     job["envoi"] = "fait"
+
+
+def panne(job: dict, e: Exception):
+    """Fournisseur payant en panne (Anthropic, Kaspr) : on note la cause une fois et on arrête tout le lancement.
+    L'état « erreur » empêche aussi d'enregistrer ces résultats vides dans la mémoire."""
+    if not job.get("fournisseur_en_panne"):
+        job["erreur"] = job["fournisseur_en_panne"] = str(e)
+        jlog(job, f"⛔ {e} : lancement arrêté")
+    job["stop"] = True
 
 
 async def _traiter(job_id: str, orgs: list):
@@ -1057,7 +1079,12 @@ async def _traiter(job_id: str, orgs: list):
                 row.update(LI.decider_adresse(row))
                 job["resultats"].append(row)
                 job["fait"] += 1
-        await asyncio.gather(*(un(o) for o in orgs))
+        async def un_garde(o):
+            try:
+                await un(o)
+            except LI.FournisseurEnPanne as e:      # Anthropic ou Kaspr ne répond plus : tout s'arrête
+                panne(job, e)
+        await asyncio.gather(*(un_garde(o) for o in orgs))
     if job.get("linkedin") and not job["stop"]:
         try:
             if await entrer_file(job):                 # un seul run à la fois sur les phantoms d'un même compte
@@ -1067,6 +1094,8 @@ async def _traiter(job_id: str, orgs: list):
         except LI.PhantomEnPanne as e:                  # dirigeants impossibles : on s'arrête et on prévient
             job["erreur"] = job["phantom_en_panne"] = str(e)
             jlog(job, f"⛔ {e}")
+        except LI.FournisseurEnPanne as e:
+            panne(job, e)
         except Exception as e:
             job.setdefault("journal", []).append(f"étapes LinkedIn interrompues : {e}")
             print(f"[V3 LINKEDIN] {e}")
@@ -1604,6 +1633,55 @@ async def relancer_vides(req: Request, lancement: str = "", confirmer: int = 0, 
     jid = nouveau_job(f"{lancement} (relance sans dirigeants)", [VALID.utilisateur(req)] if VALID.utilisateur(req) else [],
                       "tout", orgs, origine=origine)
     jlog(JOBS[jid], f"relance de {len(orgs)} sociétés du lancement « {lancement} » enregistrées sans dirigeant")
+    return rep | {"lance": jid, "relancees": len(orgs), "suivi": f"/v3/status/{jid}"}
+
+
+def _cle_lancement(nom: str) -> str:
+    """« Prosp terrain 17:11:26 », « Prosp_terrain_17_11_26 », « prosp terrain 17/11/26 » → même clé."""
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", nom or "").encode("ascii", "ignore").decode().lower())
+
+
+def fiches_du_lancement(idx: list, lancement: str) -> list:
+    cle = _cle_lancement(re.sub(r"( \(suite \d+/\d+\))+$", "", lancement.strip()))
+    return [e for e in idx if cle and any(_cle_lancement(re.sub(r"( \(suite \d+/\d+\))+$", "", x.strip())) == cle
+                                          for x in (e.get("lancement") or "").split(";"))]
+
+
+@router.get("/v3/validation/api/relancer-lancement")
+async def relancer_lancement(req: Request, lancement: str = "", confirmer: int = 0, origine: str = PLAN.OUTILS):
+    """Admin. Relance TOUTES les sociétés d'un lancement sans passer par la mémoire (après une panne Anthropic, Kaspr…).
+    Sans &confirmer=1 : essai à blanc (liste, rien n'est lancé). Sociétés écartées à la validation : laissées de côté.
+    Le nom du lancement peut s'écrire avec / : _ ou espaces (« Prosp terrain 17/11/26 »)."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if len(lancement.strip()) < 3:
+        return JSONResponse({"erreur": "précisez le nom du lancement (?lancement=Prosp terrain 17/11/26)"}, 400)
+    if origine not in (PLAN.OUTILS, PLAN.NEGOS):
+        return JSONResponse({"erreur": "origine : outils ou negos"}, 400)
+    idx = await MEM.index(lambda m: None, tout=True)
+    fiches = fiches_du_lancement(idx, lancement)
+    if not fiches:
+        proches = sorted({x.strip() for e in idx for x in (e.get("lancement") or "").split(";")
+                          if x.strip() and _cle_lancement(x)[:8] == _cle_lancement(lancement)[:8]})[:20]
+        return {"essai_a_blanc": True, "lancement": lancement, "a_relancer": 0, "lancements_proches": proches}
+    ecartees = {s["page"] for s in await VALID._toutes() if s["validation"] == "Écartée"}
+    vus, cibles = set(), []
+    for e in fiches:                                  # une fiche par société (la plus récente)
+        if e["page"] in ecartees or (e.get("nom") or e["page"]) in vus:
+            continue
+        vus.add(e.get("nom") or e["page"])
+        cibles.append(e)
+    rep = {"essai_a_blanc": not confirmer, "lancement": lancement, "a_relancer": len(cibles),
+           "ecartees_laissees": sum(1 for e in fiches if e["page"] in ecartees),
+           "compte_linkedin": PLAN.NOM_COMPTE[PLAN.compte(origine)], "societes": [e.get("nom", "") for e in cibles],
+           "attention": "seules les sociétés enregistrées dans la mémoire sont relancées (il faut un SIREN ou un site) : "
+                        "comparez avec le nombre de lignes du fichier de départ"}
+    if not confirmer or not cibles:
+        return rep
+    orgs = await _orgs_a_relancer([e["page"] for e in cibles])
+    jid = nouveau_job(f"{lancement.strip()} (relance)", [VALID.utilisateur(req)] if VALID.utilisateur(req) else [], "tout", orgs,
+                      forcer=True, origine=origine)
+    jlog(JOBS[jid], f"relance de {len(orgs)} sociétés du lancement « {lancement.strip()} », sans la mémoire")
     return rep | {"lance": jid, "relancees": len(orgs), "suivi": f"/v3/status/{jid}"}
 
 

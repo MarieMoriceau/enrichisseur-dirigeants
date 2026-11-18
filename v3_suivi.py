@@ -531,6 +531,25 @@ async def alerte_phantom(job: dict, suspendues: int):
     await asyncio.to_thread(_envoyer, COPIE_COMPLETE, f"⛔ Enrichisseur : phantom en panne ({compte})", corps, None, "")
 
 
+async def alerte_fournisseur(job: dict, suspendues: int):
+    """Mail à l'administratrice : Anthropic ou Kaspr refuse les demandes (paiement, crédits, clé). Lancement arrêté net."""
+    if not SMTP_USER or not SMTP_PASS or not COPIE_COMPLETE:
+        return
+    cause = job["fournisseur_en_panne"]
+    quoi = "Kaspr" if cause.startswith("Kaspr") else "Anthropic"
+    ou = ("l'abonnement et les crédits Kaspr" if quoi == "Kaspr" else
+          "la facturation et les crédits de la console Anthropic (console.anthropic.com, Billing)")
+    corps = (f"Bonjour,\n\nLe lancement « {job['nom']} » s'est arrêté : {cause}.\n\n"
+             f"À vérifier : {ou}.\n\n"
+             f"Les résultats de ce lancement n'ont pas été enregistrés dans la mémoire : rien ne sera repris à tort.\n"
+             f"{suspendues} liste(s) programmée(s) ont été suspendues pour ne pas consommer le quota LinkedIn à vide.\n\n"
+             f"Une fois le paiement réglé :\n"
+             f"  1. remettez les listes suspendues EN_ATTENTE dans la base Notion « Enrichisseur Dirigeants — Runs » ;\n"
+             f"  2. relancez ce lancement depuis la page de lancement (case « Ignorer la mémoire ») "
+             f"ou par /v3/validation/api/relancer-lancement?lancement=… (essai à blanc d'abord).\n")
+    await asyncio.to_thread(_envoyer, COPIE_COMPLETE, f"⛔ Enrichisseur : {quoi} refuse les demandes", corps, None, "")
+
+
 async def prevenir_report(mails: list, nom: str, lots: list, perimetre: str, motif: str = "quota", origine: str = "negos"):
     """Mail immédiat au négo : sa liste est coupée, la suite part demain (ou plus tard)."""
     if not mails or not SMTP_USER or not SMTP_PASS:
