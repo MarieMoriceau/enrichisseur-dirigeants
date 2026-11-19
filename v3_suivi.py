@@ -320,11 +320,14 @@ def _jour(d) -> tuple:
     return debut, debut + timedelta(days=1)
 
 
-async def utilise_le(d, origine: str = "") -> int:
+async def utilise_le(d, origine: str = "", exclure: set | None = None) -> int:
     """Sociétés passées (ou programmées) par LinkedIn le jour d, d'après la base Notion des lancements.
-    origine « outils » ou « negos » : seulement ces lancements-là (sans origine renseignée = négos)."""
+    origine « outils » ou « negos » : seulement ces lancements-là (sans origine renseignée = négos).
+    Une liste SUSPENDU ne compte pas : elle ne partira pas ce jour-là (avant le 19/11, elle bloquait le quota du jour
+    et repoussait toute relance derrière la dernière suite suspendue). `exclure` : pages Notion à ne pas compter."""
     if not NOTION_KEY:
         return 0
+    exclure = {x.replace("-", "") for x in (exclure or set())}
     debut, fin = _jour(d)
     total, curseur = 0, None
     async with httpx.AsyncClient(timeout=15) as c:
@@ -334,7 +337,8 @@ async def utilise_le(d, origine: str = "") -> int:
                 {"property": "Phases", "rich_text": {"does_not_contain": LIBELLES["siren"]}},
                 {"property": "Démarré le", "date": {"on_or_after": debut.isoformat()}},
                 {"property": "Démarré le", "date": {"before": fin.isoformat()}},
-                {"property": "Statut", "select": {"does_not_equal": "ARRETE"}}]
+                {"property": "Statut", "select": {"does_not_equal": "ARRETE"}},
+                {"property": "Statut", "select": {"does_not_equal": "SUSPENDU"}}]
                 + ([{"property": "Origine", "select": {"equals": "Outils"}}] if origine == "outils" else
                    [{"property": "Origine", "select": {"does_not_equal": "Outils"}}] if origine == "negos" else [])},
                 "page_size": 100}
@@ -346,6 +350,8 @@ async def utilise_le(d, origine: str = "") -> int:
                 return total
             j = r.json()
             for p in j.get("results", []):
+                if p.get("id", "").replace("-", "") in exclure:
+                    continue
                 nl = _val(p["properties"], "Nb LinkedIn")
                 total += int(nl if nl is not None and nl != "" else (_val(p["properties"], "Nb sociétés") or 0))
             if not j.get("has_more"):
@@ -358,8 +364,66 @@ def _filtre_compte(c: str) -> str:
     return "" if c == "unique" else c
 
 
-async def utilise_compte(d, c: str) -> int:
-    return await utilise_le(d, _filtre_compte(c))
+async def utilise_compte(d, c: str, exclure: set | None = None) -> int:
+    return await utilise_le(d, _filtre_compte(c), exclure)
+
+
+async def listes_programmees(origine: str) -> list:
+    """Listes EN_ATTENTE ou SUSPENDU d'une origine, dans l'ordre de départ prévu :
+    [{page, nom, statut, depart, nb, erreur}]."""
+    if not NOTION_KEY:
+        return []
+    out, curseur = [], None
+    async with httpx.AsyncClient(timeout=30) as c:
+        while True:
+            corps = {"filter": {"and": [
+                {"property": "Phases", "rich_text": {"starts_with": "v3"}},
+                {"or": [{"property": "Statut", "select": {"equals": "EN_ATTENTE"}},
+                        {"property": "Statut", "select": {"equals": "SUSPENDU"}}]},
+                {"property": "Origine", "select": {"equals": "Outils"}} if origine == "outils" else
+                {"property": "Origine", "select": {"does_not_equal": "Outils"}}]},
+                "sorts": [{"property": "Démarré le", "direction": "ascending"}], "page_size": 100}
+            if curseur:
+                corps["start_cursor"] = curseur
+            r = await _n(c, "POST", f"https://api.notion.com/v1/databases/{NOTION_DB}/query", headers=_h(), json=corps)
+            if r.status_code != 200:
+                raise RuntimeError(f"listes programmées illisibles (Notion {r.status_code})")
+            j = r.json()
+            for pg in j.get("results", []):
+                p = pg["properties"]
+                siren = LIBELLES["siren"] in (_val(p, "Phases") or "")
+                out.append({"page": pg["id"], "nom": _val(p, "Nom"), "statut": _val(p, "Statut"), "depart": _val(p, "Démarré le"),
+                            "nb": 0 if siren else int(_val(p, "Nb sociétés") or 0), "erreur": _val(p, "Erreur")})
+            if not j.get("has_more"):
+                return out
+            curseur = j.get("next_cursor")
+
+
+async def replanifier(listes: list, origine: str) -> list:
+    """Nouveau départ de chaque liste, dans l'ordre reçu : le premier jour (à partir d'aujourd'hui) où elle tient
+    entière dans le quota du compte. Aujourd'hui = tout de suite ; les jours suivants = heure de reprise.
+    Jamais avant le jour de la liste précédente : l'ordre est gardé."""
+    import v3_planning as PLAN
+    c = PLAN.compte(origine)
+    exclure = {x["page"] for x in listes}
+    maintenant = PLAN.maintenant().astimezone(PARIS)
+    jours = [maintenant] + [PLAN.reprise_du(maintenant + timedelta(days=i)) for i in range(1, 90)]
+    pris = {}
+    plan, debut = [], 0
+    for x in listes:
+        for i, d in enumerate(jours):
+            if i < debut:
+                continue
+            if i not in pris:
+                pris[i] = await utilise_compte(d, c, exclure)
+            if pris[i] + x["nb"] <= QUOTA_JOUR or (x["nb"] > QUOTA_JOUR and pris[i] == 0):
+                pris[i] += x["nb"]
+                debut = i
+                plan.append(x | {"nouveau_depart": d.isoformat(timespec="minutes")})
+                break
+        else:
+            plan.append(x | {"nouveau_depart": ""})
+    return plan
 
 
 async def quota_du_jour() -> dict:

@@ -1636,6 +1636,36 @@ async def relancer_vides(req: Request, lancement: str = "", confirmer: int = 0, 
     return rep | {"lance": jid, "relancees": len(orgs), "suivi": f"/v3/status/{jid}"}
 
 
+@router.get("/v3/validation/api/reprendre-listes")
+async def reprendre_listes(req: Request, origine: str = PLAN.OUTILS, confirmer: int = 0, dabord: str = "relance"):
+    """Admin. Remet en marche les listes SUSPENDU (après une panne réparée) et recale toutes les listes programmées
+    du compte : chacune au premier jour où elle tient dans le quota, aujourd'hui compris (départ immédiat).
+    Les listes dont le nom contient `dabord` (par défaut « relance ») passent en premier.
+    Sans &confirmer=1 : essai à blanc (nouveau planning affiché, rien n'est écrit)."""
+    if (x := VALID._refus(req, "admin")):
+        return x
+    if origine not in (PLAN.OUTILS, PLAN.NEGOS):
+        return JSONResponse({"erreur": "origine : outils ou negos"}, 400)
+    listes = await SUIVI.listes_programmees(origine)
+    d = (dabord or "").lower().strip()
+    listes = sorted(listes, key=lambda x: 0 if d and d in (x["nom"] or "").lower() else 1)   # tri stable : ordre de départ gardé
+    plan = await SUIVI.replanifier(listes, origine)
+    rep = {"essai_a_blanc": not confirmer, "compte_linkedin": PLAN.NOM_COMPTE[PLAN.compte(origine)],
+           "suspendues_reprises": sum(1 for x in plan if x["statut"] == "SUSPENDU"),
+           "listes": [{"nom": x["nom"], "statut": x["statut"], "societes": x["nb"], "ancien_depart": x["depart"][:16],
+                       "nouveau_depart": x["nouveau_depart"]} for x in plan]}
+    if not confirmer:
+        return rep
+    ecrites = 0
+    for x in plan:
+        if not x["nouveau_depart"]:
+            continue
+        await SUIVI.maj(x["page"], {"Statut": "EN_ATTENTE", "Démarré le": x["nouveau_depart"],
+                                    "Erreur": f"Reprise le {datetime.now(SUIVI.PARIS):%d/%m %H:%M}" if x["statut"] == "SUSPENDU" else (x["erreur"] or "")})
+        ecrites += 1
+    return rep | {"ecrites": ecrites, "note": "les listes dues maintenant partent dans les 2 minutes"}
+
+
 def _cle_lancement(nom: str) -> str:
     """« Prosp terrain 17:11:26 », « Prosp_terrain_17_11_26 », « prosp terrain 17/11/26 » → même clé."""
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", nom or "").encode("ascii", "ignore").decode().lower())

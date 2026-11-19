@@ -65,7 +65,7 @@ def test_simulation():
 def _faux_quota(monkeypatch, deja: dict):
     """deja : {(date iso, filtre) : sociétés déjà comptées}."""
     import v3_suivi as SUIVI
-    async def utilise_le(d, origine=""):
+    async def utilise_le(d, origine="", exclure=None):
         return deja.get((d.date().isoformat(), origine), 0)
     monkeypatch.setattr(SUIVI, "utilise_le", utilise_le)
     monkeypatch.setattr(SUIVI, "QUOTA_JOUR", 150)
