@@ -160,6 +160,16 @@ input:focus-visible,button:focus-visible,select:focus-visible,a:focus-visible{ou
     <span class="msg" id="xMsg"></span>
   </div>
 </div>
+<div class="card export" id="exportPd">
+  <div><b>Export Pipedrive</b> <span class="msg">les mêmes données au format d'import Pipedrive (mise à jour par l'ID Pipedrive) ; un onglet à importer à la fois, dans l'ordre du Lisez-moi</span></div>
+  <div class="actions" style="margin-top:8px">
+    <button class="btn primary" id="xpMail">Envoyer l'export par mail</button>
+    <a class="btn ghost" href="/v3/validation/api/export-pipedrive">Télécharger l'Excel</a>
+    <select id="xpOnglet" aria-label="Onglet à télécharger"></select>
+    <button class="btn ghost" id="xpUn">Un onglet</button>
+    <span class="msg" id="xpMsg"></span>
+  </div>
+</div>
 <div class="card export partis" id="partis">
   <div class="ligne-partis"><b>Contacts partis</b>
     <span class="msg" id="pResume">Chargement…</span>
@@ -1001,6 +1011,7 @@ let xTimer = null;
 async function suivreExport() {
   clearTimeout(xTimer);
   let e; try { e = await api("/v3/validation/api/export/etat"); } catch (er) { return; }
+  suivrePipedrive(e);
   if (e.actif) {
     $("#xMsg").className = "msg";
     $("#xMsg").textContent = `Préparation en cours : ${e.total ? e.fait + " / " + e.total + " sociétés lues" : "démarrage"}${e.phase === "envoi du mail" ? ", envoi du mail" : ""}…`;
@@ -1015,6 +1026,28 @@ async function suivreExport() {
       + ((r.sautees || []).length ? ` Fiches illisibles, absentes du fichier : ${r.sautees.join(", ")}.` : "");
   }
 }
+function suivrePipedrive(e) {
+  const sel = $("#xpOnglet");
+  if (!sel.options.length && (e.onglets_pipedrive || []).length)
+    sel.innerHTML = e.onglets_pipedrive.map((o, i) => `<option value="${esc(o)}">${i + 1}. ${esc(o)}</option>`).join("");
+  $("#xpMail").disabled = !!e.actif;
+  if (e.actif) { $("#xpMsg").className = "msg"; $("#xpMsg").textContent = `Préparation en cours : ${e.total ? e.fait + " / " + e.total + " sociétés lues" : "démarrage"}…`; return; }
+  if (e.erreur) { $("#xpMsg").className = "msg err"; $("#xpMsg").textContent = "Échec : " + e.erreur; return; }
+  if (e.pret_pipedrive) {
+    const r = e.resume_pipedrive || {};
+    $("#xpMsg").className = "msg";
+    $("#xpMsg").textContent = `Fichier prêt (${r.org_maj} organisations à mettre à jour, ${r.org_neuves} à créer, ${r.contacts} personnes à créer)${e.envoi ? ", " + e.envoi : ""}.`;
+  }
+}
+$("#xpUn").onclick = () => { const o = $("#xpOnglet").value; if (o) location.href = "/v3/validation/api/export-pipedrive?onglet=" + encodeURIComponent(o); };
+$("#xpMail").onclick = async () => {
+  $("#xpMail").disabled = true; $("#xpMsg").className = "msg"; $("#xpMsg").textContent = "Lancement…";
+  try {
+    const r = await api("/v3/validation/api/export-pipedrive/mail", {});
+    if (r.en_preparation) { $("#xpMsg").textContent = `Préparation lancée : le mail partira vers ${r.envoye_a.join(", ")} dès que le fichier est prêt.`; setTimeout(suivreExport, 3000); }
+    else { $("#xpMsg").textContent = `Envoyé à ${r.envoye_a.join(", ")}.`; $("#xpMail").disabled = false; }
+  } catch (e) { $("#xpMsg").className = "msg err"; $("#xpMsg").textContent = e.message; $("#xpMail").disabled = false; }
+};
 $("#xMail").onclick = async () => {
   $("#xMail").disabled = true; $("#xMsg").className = "msg"; $("#xMsg").textContent = "Lancement…";
   try {
