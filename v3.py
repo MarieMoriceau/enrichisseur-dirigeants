@@ -835,6 +835,8 @@ async def _programmer_reste(job: dict, reste: list) -> list:
     lots = await SUIVI.planifier_suite(reste, origine)
     base = re.sub(r"( \(suite \d+/\d+\))+$", "", job["nom"])
     for n, (depart, lot) in enumerate(lots, 1):
+        if job.get("forcer"):                         # « Ignorer la mémoire » suit les sociétés reportées (perdu avant le 19/11)
+            lot = [o | {"sans_memoire": True} for o in lot]
         await SUIVI.programmer(f"{base} (suite {n}/{len(lots)})", job["perimetre"], job.get("mails", []), lot, depart, origine)
     job["reliquat"] = job.get("reliquat", 0) + sum(len(l) for _, l in lots)
     job.setdefault("lots_reportes", []).extend({"depart": d.isoformat(timespec="minutes"), "societes": len(l)} for d, l in lots)
@@ -894,6 +896,8 @@ async def traiter(job_id: str, orgs: list):
     else:
         job["notion_id"] = await SUIVI.notion_creer(job)
     try:
+        if orgs and all(o.get("sans_memoire") for o in orgs):
+            job["forcer"] = True
         if not job.get("forcer") and job["perimetre"] != "siren":
             job["phase"] = "Mémoire : sociétés déjà traitées depuis moins de 6 mois ?"
             reprises, orgs = await MEM.reprendre(job, orgs, norm_nom, domaines, lambda m: jlog(job, m))
@@ -1678,7 +1682,8 @@ def fiches_du_lancement(idx: list, lancement: str) -> list:
 
 
 @router.get("/v3/validation/api/relancer-lancement")
-async def relancer_lancement(req: Request, lancement: str = "", confirmer: int = 0, origine: str = PLAN.OUTILS):
+async def relancer_lancement(req: Request, lancement: str = "", confirmer: int = 0, origine: str = PLAN.OUTILS,
+                             noms: str = ""):
     """Admin. Relance TOUTES les sociétés d'un lancement sans passer par la mémoire (après une panne Anthropic, Kaspr…).
     Sans &confirmer=1 : essai à blanc (liste, rien n'est lancé). Sociétés écartées à la validation : laissées de côté.
     Le nom du lancement peut s'écrire avec / : _ ou espaces (« Prosp terrain 17/11/26 »)."""
@@ -1694,6 +1699,9 @@ async def relancer_lancement(req: Request, lancement: str = "", confirmer: int =
         proches = sorted({x.strip() for e in idx for x in (e.get("lancement") or "").split(";")
                           if x.strip() and _cle_lancement(x)[:8] == _cle_lancement(lancement)[:8]})[:20]
         return {"essai_a_blanc": True, "lancement": lancement, "a_relancer": 0, "lancements_proches": proches}
+    if noms.strip():                                  # &noms=Fideliz,Webgains : seulement ces sociétés du lancement
+        voulus = {_cle_lancement(n) for n in noms.split(",") if n.strip()}
+        fiches = [e for e in fiches if _cle_lancement(e.get("nom", "")) in voulus]
     ecartees = {s["page"] for s in await VALID._toutes() if s["validation"] == "Écartée"}
     vus, cibles = set(), []
     for e in fiches:                                  # une fiche par société (la plus récente)
