@@ -56,3 +56,17 @@ def test_quota_ne_compte_pas_les_suspendues(monkeypatch):
     assert total == 30
     filtres = corps[0]["filter"]["and"]
     assert {"property": "Statut", "select": {"does_not_equal": "SUSPENDU"}} in filtres
+
+
+def test_sans_memoire_suit_les_lots_reportes(monkeypatch):
+    import v3
+    programmes = []
+    async def planifier(reste, origine):
+        return [(datetime(2026, 11, 20, 8, tzinfo=SUIVI.PARIS), reste)]
+    async def programmer(nom, perimetre, mails, lot, depart, origine):
+        programmes.append(lot)
+    monkeypatch.setattr(SUIVI, "planifier_suite", planifier)
+    monkeypatch.setattr(SUIVI, "programmer", programmer)
+    job = {"id": "x", "nom": "Prosp terrain 17/11/26 (relance)", "perimetre": "tout", "forcer": True, "origine": "outils"}
+    asyncio.run(v3._programmer_reste(job, [{"nom": "Fideliz"}, {"nom": "Webgains"}]))
+    assert all(o["sans_memoire"] for o in programmes[0])
