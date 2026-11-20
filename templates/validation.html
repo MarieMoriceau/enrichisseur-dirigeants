@@ -1032,7 +1032,7 @@ function suivrePipedrive(e) {
     sel.innerHTML = e.onglets_pipedrive.map((o, i) => `<option value="${esc(o)}">${i + 1}. ${esc(o)}</option>`).join("");
   $("#xpMail").disabled = !!e.actif;
   if (e.actif) { $("#xpMsg").className = "msg"; $("#xpMsg").textContent = `Préparation en cours : ${e.total ? e.fait + " / " + e.total + " sociétés lues" : "démarrage"}…`; return; }
-  if (e.erreur) { $("#xpMsg").className = "msg err"; $("#xpMsg").textContent = "Échec : " + e.erreur; return; }
+  if (e.erreur || e.erreur_pipedrive) { $("#xpMsg").className = "msg err"; $("#xpMsg").textContent = "Échec : " + (e.erreur || e.erreur_pipedrive); return; }
   if (e.pret_pipedrive) {
     const r = e.resume_pipedrive || {};
     $("#xpMsg").className = "msg";
