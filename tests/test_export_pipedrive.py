@@ -95,6 +95,32 @@ def test_pipedrive_en_panne_ne_bloque_pas_hubspot(monkeypatch):
     monkeypatch.setattr(EX, "construire_pipedrive", lambda socs: 1 / 0)
     asyncio.run(EX._preparer())
     assert EX.EXPORT["xl"] and not EX.EXPORT["erreur"] and EX.EXPORT["xl_pd"] is None
+    relances = []
+    monkeypatch.setattr(EX, "_lancer", lambda mail: relances.append(mail))
+    r = c.get("/v3/validation/api/export-pipedrive")             # erreur affichée, plus de page « Préparation » sans fin
+    assert "échoué" in r.text and "ZeroDivisionError" in r.text and "refresh" not in r.text and relances == []
+    assert c.get("/v3/validation/api/export/etat").json()["erreur_pipedrive"]
+    assert "Sociétés" in _feuilles(c.get("/v3/validation/api/export").content)    # HubSpot toujours servi
+
+
+def test_erreur_hubspot_sans_relance(monkeypatch):
+    c = _client(monkeypatch)
+    relances = []
+    monkeypatch.setattr(EX, "_lancer", lambda mail: relances.append(mail))
+    EX.EXPORT.update(erreur="RuntimeError : Notion 502")
+    r = c.get("/v3/validation/api/export")
+    assert "502" in r.text and "refresh" not in r.text and relances == []
+    c.get("/v3/validation/api/export", params={"refaire": 1})       # « Réessayer » relance bien
+    assert relances == [False] and EX.EXPORT["erreur"] == ""
+
+
+def test_valeurs_liste_ou_dictionnaire():
+    socs = F.socs()
+    socs[1]["adresse_retenue"] = "6 Rue d'Amboise, 75002 Paris"
+    socs[0]["data"]["contacts_crm"][0]["detail"] = ["plus sur LinkedIn", "e-mail en erreur"]
+    socs[0]["data"]["id"] = {"value": 4101}
+    xl, _ = EX.construire_pipedrive(socs)
+    assert _feuilles(xl)["Personnes CRM"][0]["Détail du contrôle"] == "plus sur LinkedIn ; e-mail en erreur"
 
 
 def test_mails_demandes(monkeypatch):

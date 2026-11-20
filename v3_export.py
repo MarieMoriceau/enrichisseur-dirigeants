@@ -317,6 +317,11 @@ def _onglet_pd(wb, titre: str, colonnes: list, lignes: list):
         v = l.get(k)
         if k == "_decision":
             return v or "Hors cible"
+        if isinstance(v, (list, tuple, set)):          # openpyxl refuse les listes et dictionnaires : écrits en texte
+            return " ; ".join(str(x) for x in v)
+        if isinstance(v, dict):
+            import json
+            return json.dumps(v, ensure_ascii=False)
         return "" if v is None else v
     feuille(wb, titre, [c for c, _ in colonnes], [[case(l, k) for _, k in colonnes] for l in lignes])
 
@@ -393,7 +398,7 @@ def nom_fichier(fmt: str = "hubspot", onglet: str = "") -> str:
 # 0,4 s pour tout le serveur), bien plus que ce qu'un navigateur attend. Le fichier prêt reste disponible une heure.
 # Une seule lecture de la mémoire sert aux deux fichiers : HubSpot (« xl ») et Pipedrive (« xl_pd »).
 EXPORT = {"actif": False, "fait": 0, "total": 0, "phase": "", "erreur": "", "xl": None, "resume": {}, "pret_le": 0.0,
-          "mail": False, "envoi": "", "xl_pd": None, "resume_pd": {}, "mails": []}
+          "mail": False, "envoi": "", "xl_pd": None, "resume_pd": {}, "mails": [], "erreur_pd": "", "debut": 0.0}
 EXPORT_GARDE = 3600
 _FORMATS = {"hubspot": ("xl", "resume", "HubSpot"), "pipedrive": ("xl_pd", "resume_pd", "Pipedrive")}
 
@@ -429,7 +434,8 @@ async def _envoyer_mail(fmt: str):
 
 
 async def _preparer():
-    EXPORT.update(actif=True, phase="lecture de la mémoire Notion", erreur="", fait=0, total=0, envoi="", sautees=[], en_lecture={})
+    EXPORT.update(actif=True, phase="lecture de la mémoire Notion", erreur="", erreur_pd="", fait=0, total=0, envoi="", sautees=[],
+                  en_lecture={}, debut=time.time())
     try:
         socs = await _donnees(EXPORT)
         xl, r = construire(socs)
@@ -437,7 +443,9 @@ async def _preparer():
         try:
             xl_pd, r_pd = construire_pipedrive(socs)
         except Exception as e:                       # l'export Pipedrive ne doit jamais bloquer l'export HubSpot
-            print(f"[V3 EXPORT PIPEDRIVE] {e}")
+            import traceback
+            traceback.print_exc()
+            EXPORT["erreur_pd"] = f"{type(e).__name__} : {e}"         # affichée, sans relance automatique (20/11)
             xl_pd, r_pd = None, {}
         EXPORT.update(xl=xl, resume=r | sautees, xl_pd=xl_pd, resume_pd=r_pd | sautees, pret_le=time.time(), phase="prêt")
         if EXPORT["mail"] and "hubspot" not in EXPORT["mails"]:      # ancien appel _lancer(True)
@@ -480,7 +488,7 @@ def _etat() -> dict:
     return {k: EXPORT.get(k) for k in ("actif", "fait", "total", "phase", "erreur", "envoi")} | {
         "sautees": EXPORT.get("sautees", []), "en_lecture": list((EXPORT.get("en_lecture") or {}).values()), "notion": _notion(),
         "pret": _pret(), "resume": EXPORT["resume"] if _pret() else {},
-        "pret_pipedrive": _pret("pipedrive"), "resume_pipedrive": EXPORT["resume_pd"] if _pret("pipedrive") else {},
+        "pret_pipedrive": _pret("pipedrive"), "erreur_pipedrive": EXPORT.get("erreur_pd", ""), "resume_pipedrive": EXPORT["resume_pd"] if _pret("pipedrive") else {},
         "onglets_pipedrive": ONGLETS_PD,
         "pret_depuis_min": int((time.time() - EXPORT["pret_le"]) // 60) if _pret() else None}
 
@@ -500,18 +508,27 @@ def _servir(fmt: str, refaire: int, onglet: str = "") -> HTMLResponse | Streamin
         return StreamingResponse(io.BytesIO(xl), headers={"Content-Disposition": f'attachment; filename="{nom_fichier(fmt, onglet)}"'},
                                  media_type=_XLSX)
     if refaire and not EXPORT["actif"]:
-        EXPORT.update(xl=None, xl_pd=None, pret_le=0.0)
+        EXPORT.update(xl=None, xl_pd=None, pret_le=0.0, erreur="", erreur_pd="")
+    # Échec : on l'affiche et on s'arrête. Avant le 20/11, chaque rechargement de la page relançait une préparation
+    # (plusieurs minutes de lecture Notion), si bien qu'une erreur donnait une page « Préparation » sans fin.
+    echec = EXPORT["erreur"] or (EXPORT.get("erreur_pd", "") if fmt == "pipedrive" and _pret("hubspot") else "")
+    if echec and not EXPORT["actif"]:
+        return HTMLResponse(f"""<!doctype html><meta charset="utf-8"><title>Export en échec</title>
+<body style="font:16px system-ui;margin:40px;color:#2b2233;background:#faf8f5">
+<p>La préparation de l'export {_FORMATS[fmt][2]} a échoué : <b>{echec}</b></p>
+<p><a href="{url}?refaire=1">Réessayer</a> · <a href="/v3/validation">Retour à la validation</a></p></body>""")
     _lancer(False)
-    if EXPORT["erreur"] and not EXPORT["actif"]:
-        msg = f"La préparation a échoué : {EXPORT['erreur']}. Rechargez la page pour réessayer."
-    else:
-        avance = f"{EXPORT['fait']} / {EXPORT['total']} sociétés lues" if EXPORT["total"] else "démarrage"
-        msg = f"Préparation de l'export {_FORMATS[fmt][2]} en cours ({avance}). Le téléchargement démarre tout seul quand le fichier est prêt."
-        enc = list((EXPORT.get("en_lecture") or {}).values())
-        if enc:
-            msg += f"<br><small>En lecture : {', '.join(enc)}. Une fiche qui ne répond pas est sautée au bout de {LECTURE_MAX // 60} min.</small>"
-        if (n := _notion()):
-            msg += f"<br><small>{n}</small>"
+    avance = f"{EXPORT['fait']} / {EXPORT['total']} sociétés lues" if EXPORT["total"] else "démarrage"
+    if EXPORT["actif"] and EXPORT.get("debut"):
+        avance += f", depuis {int((time.time() - EXPORT['debut']) // 60)} min"
+    msg = f"Préparation de l'export {_FORMATS[fmt][2]} en cours ({avance}). Le téléchargement démarre tout seul quand le fichier est prêt."
+    enc = list((EXPORT.get("en_lecture") or {}).values())
+    if enc:
+        msg += f"<br><small>En lecture : {', '.join(enc)}. Une fiche qui ne répond pas est sautée au bout de {LECTURE_MAX // 60} min.</small>"
+    if (n := _notion()):
+        msg += f"<br><small>{n}</small>"
+    msg += ("<br><small>Si un lancement tourne en même temps (voir /v3/journee), la lecture de Notion est nettement plus lente : "
+            "comptez plutôt 15 à 30 minutes.</small>")
     from urllib.parse import quote
     retour = url + (f"?onglet={quote(onglet)}" if onglet else "")
     return HTMLResponse(f"""<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="8;url={retour}">
